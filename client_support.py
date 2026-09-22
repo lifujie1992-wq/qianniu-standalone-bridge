@@ -151,6 +151,55 @@ def inspect(root: Path) -> dict[str, Any]:
     return report
 
 
+def gpu_rendering_state() -> dict[str, Any]:
+    """Report whether the client's GPU process fell back to software rendering.
+
+    Qianniu runs CEF, and when no usable GPU is present (virtual display,
+    missing driver, virtualised desktop) the GPU process silently switches to
+    swiftshader: the whole UI is then drawn on the CPU, which customers feel as
+    "Qianniu is slow" long before any bridge metric moves.
+    """
+    state: dict[str, Any] = {
+        "checked": False,
+        "software_rendering": False,
+        "gpu_processes": 0,
+        "cpu_seconds": 0.0,
+        "angle_backend": "",
+        "error": "",
+    }
+    try:
+        import psutil  # local import: the file-level checker must stay dependency-free
+    except ImportError:
+        state["error"] = "psutil unavailable"
+        return state
+    try:
+        for process in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                if str(process.info.get("name") or "").lower() != "alirender.exe":
+                    continue
+                command = " ".join(process.info.get("cmdline") or [])
+                if "--type=gpu-process" not in command:
+                    continue
+                state["checked"] = True
+                state["gpu_processes"] += 1
+                if "swiftshader" in command.lower():
+                    state["software_rendering"] = True
+                for token in command.split():
+                    if token.startswith("--use-angle="):
+                        state["angle_backend"] = token.split("=", 1)[1]
+                try:
+                    times = process.cpu_times()
+                    state["cpu_seconds"] += float(times.user) + float(times.system)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception as error:  # noqa: BLE001 - diagnostics must never raise
+        state["error"] = str(error)[:200]
+    state["cpu_seconds"] = round(state["cpu_seconds"], 1)
+    return state
+
+
 class ClientSupportWatcher(threading.Thread):
     """Periodically inspect the runtime and re-inject any lost webui bridge."""
 
@@ -172,6 +221,7 @@ class ClientSupportWatcher(threading.Thread):
         self.reinjections = 0
         self.last_checked_at = 0.0
         self.last_error = ""
+        self._gpu_warned = False
 
     def refresh(self) -> dict[str, Any]:
         try:
@@ -229,12 +279,21 @@ class ClientSupportWatcher(threading.Thread):
             build["name"]: bool(build["send_supported"])
             for build in self.report.get("builds", [])
         }
+        gpu = gpu_rendering_state()
+        if gpu["software_rendering"] and not self._gpu_warned:
+            self._gpu_warned = True
+            LOG.warning(
+                "client GPU process is rendering in software (angle=%s, %s gpu process(es), %.1fs cpu): "
+                "UI drawing runs on the CPU, which reads as 'Qianniu is slow'",
+                gpu["angle_backend"] or "unknown", gpu["gpu_processes"], gpu["cpu_seconds"],
+            )
         return {
             "last_checked_at": self.last_checked_at,
             "reinjections": self.reinjections,
             "last_error": self.last_error,
             "active_build": active,
             "active_build_supported": supported.get(active, None),
+            "gpu": gpu,
             "profiles": self.report.get("profiles", {}),
             "builds": [
                 {
