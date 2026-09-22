@@ -110,6 +110,35 @@ node --check .\appbiz_agent.js
 
 当前回归集为 26 项，覆盖接收去重、durable ACK、内置工作台详情、主工作台与吸附窗点击边界、未绑定时草稿编辑、聚合窗左右停靠、运行时剥离、WebUI 注入幂等、更新守卫、当前进程 AppBiz 选择、MessageSDK 回调、发送回显确认、超时未知状态和发送请求的原子幂等。
 
+## 消息源开关
+
+页内桥有四条消息来源，由注入时写入页面的 `window.__qn_standalone_options` 控制，配置项同名：
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `bridge_invoke_observer` | true | 观察 `imsdk.invoke`，仅用于发现会话 ID；不在该路径上报消息，避免与事件路径重复 |
+| `bridge_ws_mirror` | true | 探测并镜像千牛自身的 IM WebSocket 帧（先调原函数再镜像） |
+| `bridge_discovery_poll` | true | 每 4 秒轮换一个"最近会话列表"API，只为发现 ccode |
+| `bridge_history_poll` | **false** | 主动拉取 `GetNewMsg` / `PeekNewMsg`。会推进千牛自己的消息游标，默认关闭 |
+
+改动后需要重新注入并让千牛重新加载聊天页：
+
+```powershell
+py -3.10 tools\inject_runtime_webui.py runtime config.json browser_bridge.js
+```
+
+## 客户端版本自检
+
+| 工具 | 用途 |
+|---|---|
+| `tools/check_client_support.py` | 报告每个客户端版本是否有 AppBiz profile、webui 是否已注入、是否存在待替换的 `runtime\new\*` |
+| `tools/verify_appbiz_profile.py` | 在**运行中的**客户端进程里校验 profile 的 RVA 与 vtable 槽位 |
+| `tools/verify_adapter_load.py` | 在运行中的客户端进程里加载 adapter 并校验导出与 MSVC STL 布局 |
+| `tools/map_appbiz_offsets.py` | 客户端升级后，从已知版本推导新版本偏移（函数锚点 + vtable 内容 + 相对布局，三重自校验） |
+| `tools/build_appbiz_adapter_offline.ps1` | 没有 Visual Studio 时，用拼装的 MSVC 工具链重建 adapter |
+
+桥启动时也会自动跑一遍客户端支持检查（status 的 `client_support`），每 10 分钟复查并自动重新注入丢失的 webui 桥。
+
 ## 仓库边界
 
 本仓库只包含桥自身的源码与逆向记录，以下内容不随仓库发布：
