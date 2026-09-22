@@ -127,6 +127,16 @@ node --check .\appbiz_agent.js
 py -3.10 tools\inject_runtime_webui.py runtime config.json browser_bridge.js
 ```
 
+## 时延相关开关
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `brain_event_delay_seconds` | 0.2 | 捕获到的事件在本地队列里等多久才首次上传。事件入队时会唤醒上传线程，所以这个值就是入口延迟；上下文增强到达后由 `enrich_event` 以新 revision 重传，大脑按 msg_id 判重，不会二次回复 |
+| `command_sender_pool_enabled` | true | 把"取指令"与"发送"解耦：一条指令等平台回执（appbiz 回调 2s 典型、`send_confirmation_timeout_seconds` 15s 最坏）时，不再占住取指令循环 |
+| `command_sender_workers` | 6 | 发送池线程数（夹在 1–8）。同一 `(account, buyer_id)` 由逐会话锁保证有序，池满（64）回退串行形成背压；关掉开关即回到改动前的串行行为 |
+
+改动前入口延迟约 2.5s（门控）+ 0~0.5s（轮询），出站单线程时吞吐上限约几条/分钟。回归测试见 `tests/test_latency_p0.py`。
+
 ## 客户端版本自检
 
 | 工具 | 用途 |

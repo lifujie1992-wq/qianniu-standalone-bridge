@@ -471,7 +471,7 @@ class Config:
                 ),
                 "heartbeat_seconds": float(self.raw.get("brain_heartbeat_seconds", 2.0)),
                 "command_poll_seconds": float(self.raw.get("brain_command_poll_seconds", 1.5)),
-                "event_delay_seconds": float(self.raw.get("brain_event_delay_seconds", 2.5)),
+                "event_delay_seconds": float(self.raw.get("brain_event_delay_seconds", 0.2)),
             }
 
     def update_brain_settings(self, values: dict[str, Any]) -> dict[str, Any]:
@@ -1854,6 +1854,16 @@ class BrainConnector:
             target=self.run_events, name="brain-events", daemon=True
         )
         self.draft_wakeup = threading.Event()
+        # Outbound send pool. A reply waits for the platform receipt (appbiz
+        # callback 2s typical, send_confirmation_timeout 15s worst case), so a
+        # single-threaded egress lets the previous command's confirmation hold
+        # the fetch loop hostage and caps throughput at a few messages/minute.
+        self._sender_queue: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=64)
+        self._sender_threads: list[threading.Thread] = []
+        self._sender_conv_locks: dict[str, threading.Lock] = {}
+        self._sender_conv_locks_guard = threading.Lock()
+        self._sender_pool_guard = threading.Lock()
+        self._sender_pool_running = False
         self.lock = threading.RLock()
         self.registered = False
         self.state = "disabled"
@@ -1889,6 +1899,7 @@ class BrainConnector:
         self._draft_seeded = False
 
     def start(self) -> None:
+        self.start_sender_pool()
         self.control_thread.start()
         self.command_thread.start()
         self.draft_thread.start()
@@ -2568,6 +2579,82 @@ class BrainConnector:
             "error": f"unsupported_command:{command_type}",
         }
 
+    # ------------------------------------------------------------------ 出站并发池
+    # 单线程出站时「取指令」会被上一条的发送确认占住（appbiz 回调默认 2s，最坏
+    # send_confirmation_timeout 15s），吞吐上限只有几条/分钟。这里把取指令与发送
+    # 解耦：取指令只入队，发送在池里并发；同一 (account, buyer_id) 由逐会话锁保证
+    # 有序；池满退回同步发送形成背压。开关关闭时行为与改动前完全一致。
+    def sender_worker_count(self) -> int:
+        try:
+            workers = int(self.app.config.get("command_sender_workers", 6) or 6)
+        except (TypeError, ValueError):
+            workers = 6
+        return max(1, min(workers, 8))
+
+    def sender_pool_ready(self) -> bool:
+        return self._sender_pool_running and not self.app.stop_event.is_set()
+
+    def sender_conversation_lock(self, command: dict[str, Any]) -> threading.Lock:
+        """同一买家保持串行，避免并发发送打乱回复顺序。"""
+        key = "{}|{}".format(
+            str(command.get("account") or command.get("seller") or "").strip(),
+            str(command.get("buyer_id") or command.get("buyer_cid") or "").strip(),
+        )
+        with self._sender_conv_locks_guard:
+            lock = self._sender_conv_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._sender_conv_locks[key] = lock
+            return lock
+
+    def sender_worker_loop(self, index: int) -> None:
+        while not self.app.stop_event.is_set():
+            try:
+                command = self._sender_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                with self.sender_conversation_lock(command):
+                    self.handle_command(command)
+            except Exception:
+                # 单条指令异常不能打死发送线程，否则出站会整体停摆。
+                LOG.exception("command sender worker %s failed", index)
+            finally:
+                self._sender_queue.task_done()
+
+    def start_sender_pool(self) -> None:
+        """幂等启动发送池；关闭开关时一个线程都不建。"""
+        if not bool(self.app.config.get("command_sender_pool_enabled", True)):
+            return
+        with self._sender_pool_guard:
+            if self._sender_threads:
+                self._sender_pool_running = True
+                return
+            workers = self.sender_worker_count()
+            for index in range(workers):
+                thread = threading.Thread(
+                    target=self.sender_worker_loop,
+                    args=(index + 1,),
+                    name="brain-command-sender-{}".format(index + 1),
+                    daemon=True,
+                )
+                thread.start()
+                self._sender_threads.append(thread)
+            self._sender_pool_running = True
+            LOG.info("command sender pool started workers=%s", workers)
+
+    def dispatch_command(self, command: dict[str, Any]) -> None:
+        """指令交给发送池；池未启用或已满时退回同步执行（与改动前一致）。"""
+        if not self.sender_pool_ready():
+            self.handle_command(command)
+            return
+        try:
+            self._sender_queue.put_nowait(command)
+        except queue.Full:
+            # 背压：池子写满时同步发送，宁慢不丢。
+            LOG.warning("command sender pool is full, falling back to inline send")
+            self.handle_command(command)
+
     def handle_command(self, command: dict[str, Any]) -> None:
         command_id = str(command.get("id") or command.get("command_id") or "").strip()
         command_type = str(command.get("type") or "send_text").strip().lower()
@@ -2821,7 +2908,7 @@ class BrainConnector:
             try:
                 self.retry_command_results()
                 for command in self.pull_commands():
-                    self.handle_command(command)
+                    self.dispatch_command(command)
                 with self.lock:
                     self.state = "online"
                     self.last_error = ""
@@ -2843,7 +2930,7 @@ class BrainConnector:
                 self.wakeup.clear()
                 continue
             rows = self.app.db.claim_brain_events(
-                float(self.app.config.get("brain_event_delay_seconds", 2.5)), 100
+                float(self.app.config.get("brain_event_delay_seconds", 0.2)), 100
             )
             if not rows:
                 self.wakeup.wait(0.5)
