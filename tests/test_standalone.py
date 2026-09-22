@@ -2055,19 +2055,28 @@ class AppBizSendSafetyTests(unittest.TestCase):
         self.assertNotIn("message_context_account_match", source)
         self.assertNotIn("xsd_pick_timeout_once.mp3", source)
 
-    def test_browser_bridge_never_consumes_or_rebinds_qianniu_messages(self):
+    def test_browser_bridge_keeps_active_fetch_behind_an_opt_in(self):
         browser_source = (ROOT / "browser_bridge.js").read_text(encoding="utf-8")
         bridge_source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
-        for unsafe in (
-            "im.singlemsg.GetNewMsg",
-            "im.singlemsg.PeekNewMsg",
-            "im.singlemsg.GetRemoteHisMsg",
-            "window.imsdk.invoke =",
-            "window.imsdk.off(",
-        ):
-            self.assertNotIn(unsafe, browser_source)
+        launcher_source = (ROOT / "launcher.py").read_text(encoding="utf-8")
+        injector_source = (ROOT / "tools" / "inject_runtime_webui.py").read_text(encoding="utf-8")
+        # The observe/mirror sources are allowed, but the cursor-advancing fetch
+        # path must stay opt-in and must never run by default.
+        self.assertIn("var HISTORY_POLL = OPTIONS.history_poll === true;", browser_source)
+        self.assertIn("if (!HISTORY_POLL || !ccode) return;", browser_source)
+        self.assertIn("if (!HISTORY_POLL || pollRunning) return;", browser_source)
+        self.assertIn("enable history_poll to allow them", browser_source)
+        self.assertIn("window.__qn_standalone_options", browser_source)
+        for source in (launcher_source, injector_source):
+            self.assertIn('"history_poll": bool(config.get("bridge_history_poll", False))', source)
+            self.assertIn('"ws_mirror": bool(config.get("bridge_ws_mirror", True))', source)
+        # Never unbind someone else's handler and never rebind via the window
+        # object literal (the wrapper captures and chains the original).
+        self.assertNotIn("window.imsdk.off(", browser_source)
+        self.assertNotIn("window.imsdk.invoke =", browser_source)
+        self.assertIn("sdk.invoke = wrapped;", browser_source)
+        self.assertIn("var result = originalSend.apply(this, arguments);", browser_source)
         self.assertNotIn("prepare_send_context", bridge_source)
-        self.assertNotIn("imsdk.invoke('im.singlemsg.GetNewMsg'", bridge_source)
         self.assertIn("window.imsdk.on([eventName], handler)", browser_source)
         self.assertIn("im.singlemsg.onReceiveNewMsg", browser_source)
         self.assertIn("passive imsdk hook", browser_source)

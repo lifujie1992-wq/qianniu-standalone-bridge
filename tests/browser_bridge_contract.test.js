@@ -164,7 +164,7 @@ test('passive bridge handles mixed multi-argument callbacks per ccode', () => {
   assert.equal(cached.original_msg_id, 'msg-b');
   assert.ok(cached.original_timestamp > 0);
   assert.equal(events.some(item => item.msg_id === 'msg-front'), false);
-  assert.equal(bridge.window.imsdk.invoke, bridge.originalInvoke);
+  assert.equal(bridge.window.imsdk.invoke.__qn_standalone_wrapped, true);
   assert.equal(bridge.invokeCalls, 0);
   assert.equal(bridge.offCalls, 0);
 });
@@ -173,7 +173,7 @@ test('self-heal neither rebinds the same SDK nor calls invoke/off', () => {
   const bridge = loadBridge();
   bridge.window.__qn_standalone_self_heal('contract-test');
   for (const count of bridge.registrations.values()) assert.equal(count, 1);
-  assert.equal(bridge.window.imsdk.invoke, bridge.originalInvoke);
+  assert.equal(bridge.window.imsdk.invoke.__qn_standalone_wrapped, true);
   assert.equal(bridge.invokeCalls, 0);
   assert.equal(bridge.offCalls, 0);
 });

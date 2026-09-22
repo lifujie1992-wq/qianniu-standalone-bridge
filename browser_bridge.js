@@ -13,6 +13,35 @@
   window.__qn_standalone_bridge_v1_installed = true;
 
   var BRIDGE_VERSION = "qn-standalone-browser-v6-stable-identity";
+  // Message-source switches, written by the injector from config.json. The
+  // three extra sources mirror what the commercial agent does inside the page:
+  // observing imsdk.invoke (conversation discovery only), mirroring the client's
+  // own IM WebSocket frames, and - off by default because it advances Qianniu's
+  // own message cursor - actively polling GetNewMsg/PeekNewMsg.
+  var OPTIONS = window.__qn_standalone_options || {};
+  var INVOKE_OBSERVER = OPTIONS.invoke_observer !== false;
+  var WS_MIRROR = OPTIONS.ws_mirror !== false;
+  var HISTORY_POLL = OPTIONS.history_poll === true;
+  var DISCOVERY_POLL = OPTIONS.discovery_poll !== false;
+  var MIRROR_CLIENT_PATHS = [
+    "_qn_ws_client",
+    "_wsClient",
+    "_imWsClient",
+    "_msgWsClient",
+    "_db.wsClient",
+    "_db._wsClient",
+  ];
+  var DISCOVERY_APIS = [
+    "im.conversation.GetRecentConversationList",
+    "im.uiutil.GetConversationList",
+    "im.uiutil.GetRecentConversationList",
+    "im.singlemsg.GetRecentSessionList",
+    "im.singlemsg.GetRecentContactList",
+  ];
+  var DISCOVERY_INTERVAL_MS = 4000;
+  var INVOKE_TIMEOUT_MS = 1200;
+  var MAX_POLL_TARGETS = 6;
+  var POLL_INTERVAL_MS = 5000;
   var WS_URL = String(window.__qn_standalone_ws_url || "ws://127.0.0.1:42110/");
   var STARTED_AT_MS = Date.now();
   var RECOVERY_WINDOW_MS = 5 * 60 * 1000;
@@ -44,6 +73,10 @@
   var passiveKeysCache = { signature: "", keys: [] };
   var lastPassiveDomAt = 0;
   var lastPassiveCacheAt = 0;
+  var pollCursor = 0;
+  var pollRunning = false;
+  var discoveryCursor = 0;
+  var lastDiscoveryAt = 0;
   var lastSellerNick = "";
   var lastDomScanAt = 0;
   var localRetryTimers = {};
@@ -94,6 +127,26 @@
     local_lookup_hits: 0,
     local_lookup_misses: 0,
     passive_cache_scans: 0,
+    invoke_observer_enabled: INVOKE_OBSERVER,
+    invoke_observer_active: false,
+    invoke_observer_calls: 0,
+    invoke_observer_conversations: 0,
+    invoke_observer_error: "",
+    ws_mirror_enabled: WS_MIRROR,
+    ws_mirror_hooked: false,
+    ws_mirror_client_path: "",
+    ws_mirror_frames: 0,
+    ws_mirror_sent: 0,
+    ws_mirror_parse_failures: 0,
+    ws_mirror_last_action: "",
+    ws_mirror_last_frame_at_ms: 0,
+    ws_mirror_last_error: "",
+    history_poll_enabled: HISTORY_POLL,
+    history_poll_calls: 0,
+    history_poll_errors: 0,
+    discovery_poll_enabled: DISCOVERY_POLL,
+    discovery_calls: 0,
+    discovery_hits: 0,
     passive_cache_changes: 0,
     passive_cache_last_at_ms: 0,
     invoke_notify_hooked: false,
@@ -271,6 +324,26 @@
         passive_cache_scans: diagnostics.passive_cache_scans,
         passive_cache_changes: diagnostics.passive_cache_changes,
         passive_cache_last_at_ms: diagnostics.passive_cache_last_at_ms,
+        invoke_observer_enabled: diagnostics.invoke_observer_enabled,
+        invoke_observer_active: diagnostics.invoke_observer_active,
+        invoke_observer_calls: diagnostics.invoke_observer_calls,
+        invoke_observer_conversations: diagnostics.invoke_observer_conversations,
+        invoke_observer_error: diagnostics.invoke_observer_error,
+        ws_mirror_enabled: diagnostics.ws_mirror_enabled,
+        ws_mirror_hooked: diagnostics.ws_mirror_hooked,
+        ws_mirror_client_path: diagnostics.ws_mirror_client_path,
+        ws_mirror_frames: diagnostics.ws_mirror_frames,
+        ws_mirror_sent: diagnostics.ws_mirror_sent,
+        ws_mirror_parse_failures: diagnostics.ws_mirror_parse_failures,
+        ws_mirror_last_action: diagnostics.ws_mirror_last_action,
+        ws_mirror_last_frame_at_ms: diagnostics.ws_mirror_last_frame_at_ms,
+        ws_mirror_last_error: diagnostics.ws_mirror_last_error,
+        history_poll_enabled: diagnostics.history_poll_enabled,
+        history_poll_calls: diagnostics.history_poll_calls,
+        history_poll_errors: diagnostics.history_poll_errors,
+        discovery_poll_enabled: diagnostics.discovery_poll_enabled,
+        discovery_calls: diagnostics.discovery_calls,
+        discovery_hits: diagnostics.discovery_hits,
         background_notifications: diagnostics.background_notifications,
         remote_fetch_calls: diagnostics.remote_fetch_calls,
         remote_fetch_success: diagnostics.remote_fetch_success,
@@ -1146,10 +1219,13 @@
         diagnostics.imsdk_hooked = false;
         return false;
       }
-      // Observe only. Never replace invoke(), unsubscribe handlers, or call a
-      // message-fetch API: those operations can advance Qianniu's UI cursor.
+      // Event subscription stays the primary path. The extra sources only
+      // observe (invoke results) or mirror (the client's own WS frames); active
+      // fetching stays behind history_poll because it advances Qianniu's cursor.
       diagnostics.imsdk_hooked = subscribeSdkEvents();
       installInvokeNotifyHook();
+      installInvokeObserver();
+      installWsMirror();
       console.log("[qn-bridge] passive imsdk hook", BRIDGE_VERSION);
       return diagnostics.imsdk_hooked;
     } catch (e) {
@@ -1265,6 +1341,266 @@
     return false;
   }
 
+  // ---------------------------------------------------------------------------
+  // Message sources mirrored from the commercial agent's in-page bridge.
+  // Their sender never alters the client's own behaviour: each wrapper calls the
+  // original first and mirrors afterwards, and conversation discovery never
+  // reports messages (that would duplicate the event path).
+  // ---------------------------------------------------------------------------
+
+  function decodeFrameJson(value) {
+    var current = value;
+    for (var i = 0; i < 3; i++) {
+      if (typeof current !== "string") break;
+      var trimmed = current.trim();
+      if (!trimmed || (trimmed.charAt(0) !== "{" && trimmed.charAt(0) !== "[")) break;
+      try {
+        current = JSON.parse(trimmed);
+      } catch (e) {
+        break;
+      }
+    }
+    return current;
+  }
+
+  function resolvePath(path) {
+    try {
+      var parts = String(path || "").split(".");
+      var current = window;
+      for (var i = 0; i < parts.length; i++) {
+        if (current == null) return null;
+        current = current[parts[i]];
+      }
+      return current == null ? null : current;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function invokeWithTimeout(api, param, timeoutMs) {
+    return new Promise(function (resolve) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        diagnostics.history_poll_errors += 1;
+        resolve(null);
+      }, timeoutMs || INVOKE_TIMEOUT_MS);
+      try {
+        Promise.resolve(window.imsdk.invoke(api, param)).then(function (value) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        }).catch(function () {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          diagnostics.history_poll_errors += 1;
+          resolve(null);
+        });
+      } catch (e) {
+        settled = true;
+        clearTimeout(timer);
+        diagnostics.history_poll_errors += 1;
+        resolve(null);
+      }
+    });
+  }
+
+  function installInvokeObserver() {
+    if (!INVOKE_OBSERVER) return false;
+    try {
+      var sdk = window.imsdk;
+      if (!sdk || typeof sdk.invoke !== "function") {
+        diagnostics.invoke_observer_active = false;
+        return false;
+      }
+      if (sdk.invoke.__qn_standalone_wrapped) {
+        diagnostics.invoke_observer_active = true;
+        return true;
+      }
+      var original = sdk.invoke.bind(sdk);
+      var wrapped = function (api, param) {
+        var ret = original(api, param);
+        try {
+          var apiName = String(api || "");
+          diagnostics.invoke_observer_calls += 1;
+          walkConversationIds(param, "invoke-param:" + apiName, 0);
+          if (/msg|message|chat|peek|receive/i.test(apiName)) {
+            Promise.resolve(ret).then(function (res) {
+              walkConversationIds(res, "invoke-result:" + apiName, 0);
+              diagnostics.invoke_observer_conversations = conversationOrder.length;
+            }).catch(function () {});
+          }
+        } catch (e) {
+          diagnostics.invoke_observer_error = String(e && e.message ? e.message : e).slice(0, 160);
+        }
+        return ret;
+      };
+      wrapped.__qn_standalone_wrapped = true;
+      wrapped.__qn_standalone_original = original;
+      sdk.invoke = wrapped;
+      diagnostics.invoke_observer_active = true;
+      diagnostics.invoke_observer_conversations = conversationOrder.length;
+      console.log("[qn-bridge] invoke observer installed", BRIDGE_VERSION);
+      return true;
+    } catch (e) {
+      diagnostics.invoke_observer_active = false;
+      diagnostics.invoke_observer_error = String(e && e.message ? e.message : e).slice(0, 160);
+      return false;
+    }
+  }
+
+  function mirrorFrame(raw) {
+    try {
+      var frame = decodeFrameJson(raw);
+      if (!frame || typeof frame !== "object") {
+        diagnostics.ws_mirror_parse_failures += 1;
+        diagnostics.ws_mirror_last_error = "frame is not a JSON object";
+        return { details: 0, sent: 0 };
+      }
+      diagnostics.ws_mirror_frames += 1;
+      diagnostics.ws_mirror_last_frame_at_ms = Date.now();
+      diagnostics.ws_mirror_last_action = textOf(frame.req_action || frame.action || frame.method || "");
+      diagnostics.ws_mirror_last_error = "";
+      var payload = Object.prototype.hasOwnProperty.call(frame, "data")
+        ? decodeFrameJson(frame.data)
+        : frame;
+      var result = emitChatPayload(
+        payload,
+        lastSellerNick,
+        "ws_mirror:" + (diagnostics.ws_mirror_last_action || "unknown")
+      );
+      diagnostics.ws_mirror_sent += result.sent;
+      return result;
+    } catch (e) {
+      diagnostics.ws_mirror_parse_failures += 1;
+      diagnostics.ws_mirror_last_error = String(e && e.message ? e.message : e).slice(0, 160);
+      return { details: 0, sent: 0 };
+    }
+  }
+
+  function installWsMirror() {
+    if (!WS_MIRROR) return false;
+    try {
+      var client = null;
+      var path = "";
+      for (var i = 0; i < MIRROR_CLIENT_PATHS.length; i++) {
+        var candidate = resolvePath(MIRROR_CLIENT_PATHS[i]);
+        if (candidate && typeof candidate.send === "function") {
+          client = candidate;
+          path = MIRROR_CLIENT_PATHS[i];
+          break;
+        }
+      }
+      if (!client) {
+        // The client object name is build-specific; keep probing quietly.
+        diagnostics.ws_mirror_hooked = false;
+        diagnostics.ws_mirror_client_path = "";
+        return false;
+      }
+      diagnostics.ws_mirror_client_path = path;
+      if (client.send.__qn_standalone_mirror) {
+        diagnostics.ws_mirror_hooked = true;
+        return true;
+      }
+      var originalSend = client.send;
+      var mirrored = function () {
+        // Send first so the client never sees a behaviour change, mirror after.
+        var result = originalSend.apply(this, arguments);
+        try {
+          mirrorFrame(arguments[0]);
+        } catch (e) {}
+        return result;
+      };
+      mirrored.__qn_standalone_mirror = true;
+      mirrored.__qn_standalone_original = originalSend;
+      client.send = mirrored;
+      diagnostics.ws_mirror_hooked = true;
+      diagnostics.ws_mirror_last_error = "";
+      console.log("[qn-bridge] ws mirror installed on " + path, BRIDGE_VERSION);
+      return true;
+    } catch (e) {
+      diagnostics.ws_mirror_hooked = false;
+      diagnostics.ws_mirror_last_error = String(e && e.message ? e.message : e).slice(0, 160);
+      return false;
+    }
+  }
+
+  function discoverRecentConversations() {
+    if (!DISCOVERY_POLL) return;
+    var now = Date.now();
+    if (now - lastDiscoveryAt < DISCOVERY_INTERVAL_MS) return;
+    lastDiscoveryAt = now;
+    var api = DISCOVERY_APIS[discoveryCursor % DISCOVERY_APIS.length];
+    discoveryCursor += 1;
+    diagnostics.discovery_calls += 1;
+    invokeWithTimeout(api, { count: 100 }, INVOKE_TIMEOUT_MS).then(function (res) {
+      if (!res || res.ok === false) return;
+      var payload = res.result != null ? res.result : res;
+      var before = conversationOrder.length;
+      walkConversationIds(payload, "discovery:" + api, 0);
+      if (conversationOrder.length > before) diagnostics.discovery_hits += 1;
+    }).catch(function () {});
+  }
+
+  function pollConversation(ccode) {
+    if (!HISTORY_POLL || !ccode) return;
+    var entry = knownConversations[ccode];
+    if (entry) entry.polled_at_ms = Date.now();
+    [
+      ["im.singlemsg.GetNewMsg", { ccode: ccode }],
+      ["im.singlemsg.PeekNewMsg", { ccode: ccode }],
+    ].forEach(function (pair) {
+      var api = pair[0];
+      var param = pair[1];
+      diagnostics.history_poll_calls += 1;
+      invokeWithTimeout(api, param, INVOKE_TIMEOUT_MS).then(function (res) {
+        if (!res || res.ok === false) return;
+        var payload = res.result != null ? res.result : res;
+        emitChatPayload(
+          { api: api, param: param, result: payload },
+          lastSellerNick,
+          "poll:" + api
+        );
+      }).catch(function () {
+        diagnostics.history_poll_errors += 1;
+      });
+    });
+  }
+
+  function nextPollTargets(current) {
+    var targets = [];
+    function add(ccode) {
+      if (ccode && targets.indexOf(ccode) < 0 && targets.length < MAX_POLL_TARGETS) targets.push(ccode);
+    }
+    add(current);
+    var checked = 0;
+    while (
+      conversationOrder.length &&
+      targets.length < MAX_POLL_TARGETS &&
+      checked < conversationOrder.length
+    ) {
+      if (pollCursor >= conversationOrder.length) pollCursor = 0;
+      add(conversationOrder[pollCursor]);
+      pollCursor += 1;
+      checked += 1;
+    }
+    return targets;
+  }
+
+  function pollRecentMessages() {
+    if (!HISTORY_POLL || pollRunning) return;
+    pollRunning = true;
+    try {
+      var current = currentCcode();
+      nextPollTargets(current).forEach(pollConversation);
+    } finally {
+      pollRunning = false;
+    }
+  }
+
   function scanDomNode(root) {
     if (!root || root.nodeType !== 1) return;
     var attrs = ["data-ccode", "ccode", "data-conversation-id", "conversation-id", "data-conversationid", "conversationid"];
@@ -1356,6 +1692,13 @@
     } else {
       passiveRefresh(false);
       flushOutbox();
+      // The page can swap its SDK or WS client object at any time; re-arming is
+      // idempotent and cheap. Discovery and history polling are switch-gated
+      // inside their own functions.
+      installWsMirror();
+      installInvokeObserver();
+      discoverRecentConversations();
+      pollRecentMessages();
     }
   }
 
@@ -1366,8 +1709,13 @@
   }
 
   async function runExpression(expression) {
-    if (/im\.singlemsg\.(?:GetNewMsg|PeekNewMsg|GetRemoteHisMsg)/i.test(String(expression || ""))) {
-      throw new Error("message-fetch APIs are blocked by passive bridge policy");
+    // Active message fetch advances Qianniu's own cursor, so it stays behind an
+    // explicit opt-in rather than being merely forbidden.
+    if (
+      !HISTORY_POLL &&
+      /im\.singlemsg\.(?:GetNewMsg|PeekNewMsg|GetRemoteHisMsg)/i.test(String(expression || ""))
+    ) {
+      throw new Error("message-fetch APIs are disabled; enable history_poll to allow them");
     }
     return await eval(expression);
   }

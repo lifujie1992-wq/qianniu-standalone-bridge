@@ -167,9 +167,18 @@ def build_injection(config: dict, bridge_source: str) -> str:
         raise ValueError("browser bridge requires a loopback host, valid port, and token")
     query = urllib.parse.urlencode({"token": token})
     ws_url = f"ws://{host}:{port}/?{query}"
+    # Message-source switches for the in-page bridge. history_poll stays off by
+    # default because GetNewMsg/PeekNewMsg advance Qianniu's own message cursor.
+    options = {
+        "invoke_observer": bool(config.get("bridge_invoke_observer", True)),
+        "ws_mirror": bool(config.get("bridge_ws_mirror", True)),
+        "history_poll": bool(config.get("bridge_history_poll", False)),
+        "discovery_poll": bool(config.get("bridge_discovery_poll", True)),
+    }
     return (
         f'<script {INJECTION_TAG}="v1">\n'
         f"window.__qn_standalone_ws_url={json.dumps(ws_url)};\n"
+        f"window.__qn_standalone_options={json.dumps(options, ensure_ascii=False)};\n"
         f"{bridge_source.rstrip()}\n"
         "</script>"
     )
