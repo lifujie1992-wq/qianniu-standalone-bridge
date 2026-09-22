@@ -18,6 +18,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from app_version import VERSION
+from brain_endpoint import brain_server_url
 from config_defaults import DEFAULT_WORKBENCH_PORT, apply_operational_defaults
 from device_identity import (
     atomic_write_json,
@@ -152,10 +153,7 @@ class ConfigDialog:
         self.root.title("千牛客服助手 · 配置")
         self.root.resizable(False, False)
 
-        self.brain_url = tk.StringVar(
-            master=self.root,
-            value=str(config.get("brain_server_url") or "")
-        )
+        self.brain_url = tk.StringVar(master=self.root, value=brain_server_url())
         self.brain_token = tk.StringVar(
             master=self.root,
             value=brain_workstation_token(config)
@@ -177,7 +175,7 @@ class ConfigDialog:
 
         ttk.Label(
             outer,
-            text="首次使用只需填写大脑地址和工位令牌，其余配置已自动完成。",
+            text="大脑地址已随安装包固定，首次使用只需填写工位令牌，其余配置已自动完成。",
             wraplength=480,
         ).grid(row=0, column=0, sticky="w", pady=(0, 12))
 
@@ -193,6 +191,9 @@ class ConfigDialog:
         for row, (label, variable) in enumerate(fields):
             ttk.Label(brain, text=label).grid(row=row, column=0, sticky="e", padx=(0, 8), pady=4)
             entry = ttk.Entry(brain, textvariable=variable, width=42)
+            if label == "大脑地址":
+                self.brain_url_entry = entry
+                entry.configure(state="readonly")
             if label == "工位令牌":
                 self.token_entry = entry
                 entry.configure(show="*")

@@ -13,6 +13,7 @@ bridge (immediate ingress + concurrent command sender):
 
 from __future__ import annotations
 
+import os
 import queue
 import sys
 import tempfile
@@ -25,6 +26,9 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Tests must never reach the shipped brain deployment.
+os.environ.setdefault("QN_BRAIN_SERVER_URL", "http://127.0.0.1:1")
 
 import standalone_bridge as bridge  # noqa: E402
 

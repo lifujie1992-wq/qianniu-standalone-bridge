@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import threading
@@ -10,6 +11,9 @@ from unittest.mock import Mock, patch
 PROJECT = Path(__file__).resolve().parents[1]
 if str(PROJECT) not in sys.path:
     sys.path.insert(0, str(PROJECT))
+
+# Tests must never reach the shipped brain deployment.
+os.environ.setdefault("QN_BRAIN_SERVER_URL", "http://127.0.0.1:1")
 
 import launcher
 import qianniu_app

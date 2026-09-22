@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from brain_endpoint import enforce as enforce_brain_endpoint
+
 
 CONFIG_DEFAULTS_REVISION = 3
 CONFIG_DEFAULTS_REVISION_KEY = "config_defaults_revision"
@@ -38,12 +40,15 @@ INTERNAL_SAFETY_DEFAULTS: dict[str, bool] = {
 
 
 def apply_operational_defaults(config: dict[str, Any]) -> bool:
+    # The brain address is pinned on every load, so a hand-edited value is
+    # corrected as soon as the bridge, the launcher or the dialog reads it.
+    changed = enforce_brain_endpoint(config)
     try:
         revision = int(config.get(CONFIG_DEFAULTS_REVISION_KEY) or 0)
     except (TypeError, ValueError):
         revision = 0
     if revision >= CONFIG_DEFAULTS_REVISION:
-        return False
+        return changed
 
     if revision < 1:
         config.update(OPERATIONAL_DEFAULTS)

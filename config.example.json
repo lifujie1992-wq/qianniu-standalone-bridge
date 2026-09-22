@@ -13,7 +13,7 @@
   "gateway_agent_token": "replace-with-your-local-agent-token",
   "device_id": "replace-with-your-device-id",
   "brain_enabled": true,
-  "brain_server_url": "http://YOUR_BRAIN_HOST:18765",
+  "brain_server_url": "http://47.107.138.228:18765",
   "brain_agent_token": "",
   "brain_agent_id": "replace-with-your-brain-agent-id",
   "brain_agent_name": "千牛本机工位",
