@@ -1,0 +1,470 @@
+function 0xa7b6c0..0xa7bac0 size=1024
+00a7b6c0  add      rcx, 8
+00a7b6c4  jmp      0xa69720
+00a7b6c9  int3     
+00a7b6ca  int3     
+00a7b6cb  int3     
+00a7b6cc  int3     
+00a7b6cd  int3     
+00a7b6ce  int3     
+00a7b6cf  int3     
+00a7b6d0  push     rbx
+00a7b6d2  sub      rsp, 0x20
+00a7b6d6  mov      rbx, rdx
+00a7b6d9  mov      rdx, qword ptr [rcx + 8]
+00a7b6dd  add      rdx, 8
+00a7b6e1  lea      rcx, [rbx + 0x28]
+00a7b6e5  call     0x5d9fc0
+00a7b6ea  test     al, al
+00a7b6ec  je       0xa7b700
+00a7b6ee  mov      dword ptr [rbx + 0x1a0], 1
+00a7b6f8  mov      al, 1
+00a7b6fa  add      rsp, 0x20
+00a7b6fe  pop      rbx
+00a7b6ff  ret      
+00a7b700  xor      al, al
+00a7b702  add      rsp, 0x20
+00a7b706  pop      rbx
+00a7b707  ret      
+00a7b708  int3     
+00a7b709  int3     
+00a7b70a  int3     
+00a7b70b  int3     
+00a7b70c  int3     
+00a7b70d  int3     
+00a7b70e  int3     
+00a7b70f  int3     
+00a7b710  mov      qword ptr [rsp + 8], rbx
+00a7b715  push     rdi
+00a7b716  sub      rsp, 0x20
+00a7b71a  mov      rdi, qword ptr [rcx + 8]
+00a7b71e  mov      rbx, rdx
+00a7b721  lea      rdx, [rdi + 8]
+00a7b725  lea      rcx, [rbx + 0x28]
+00a7b729  call     0x5d9fc0
+00a7b72e  test     al, al
+00a7b730  je       0xa7b74a
+00a7b732  movups   xmm0, xmmword ptr [rdi + 0x70]
+00a7b736  mov      al, 1
+00a7b738  movups   xmmword ptr [rbx + 0x1ac], xmm0
+00a7b73f  mov      rbx, qword ptr [rsp + 0x30]
+00a7b744  add      rsp, 0x20
+00a7b748  pop      rdi
+00a7b749  ret      
+00a7b74a  mov      rbx, qword ptr [rsp + 0x30]
+00a7b74f  xor      al, al
+00a7b751  add      rsp, 0x20
+00a7b755  pop      rdi
+00a7b756  ret      
+00a7b757  int3     
+00a7b758  int3     
+00a7b759  int3     
+00a7b75a  int3     
+00a7b75b  int3     
+00a7b75c  int3     
+00a7b75d  int3     
+00a7b75e  int3     
+00a7b75f  int3     
+00a7b760  push     rbx
+00a7b762  sub      rsp, 0x20
+00a7b766  mov      rbx, rdx
+00a7b769  mov      rdx, qword ptr [rcx + 8]
+00a7b76d  add      rdx, 8
+00a7b771  lea      rcx, [rbx + 0x28]
+00a7b775  call     0x5d9fc0
+00a7b77a  test     al, al
+00a7b77c  je       0xa7b790
+00a7b77e  mov      dword ptr [rbx + 0x1a0], 2
+00a7b788  mov      al, 1
+00a7b78a  add      rsp, 0x20
+00a7b78e  pop      rbx
+00a7b78f  ret      
+00a7b790  xor      al, al
+00a7b792  add      rsp, 0x20
+00a7b796  pop      rbx
+00a7b797  ret      
+00a7b798  int3     
+00a7b799  int3     
+00a7b79a  int3     
+00a7b79b  int3     
+00a7b79c  int3     
+00a7b79d  int3     
+00a7b79e  int3     
+00a7b79f  int3     
+00a7b7a0  mov      qword ptr [rsp + 8], rbx
+00a7b7a5  push     rdi
+00a7b7a6  sub      rsp, 0x20
+00a7b7aa  mov      rdi, qword ptr [rcx + 8]
+00a7b7ae  mov      rbx, rdx
+00a7b7b1  lea      rdx, [rdi + 0x38]
+00a7b7b5  lea      rcx, [rbx + 0x28]
+00a7b7b9  call     0x5d9fc0
+00a7b7be  test     al, al
+00a7b7c0  je       0xa7b7db
+00a7b7c2  lea      rdx, [rdi + 0x10]
+00a7b7c6  mov      rcx, rbx
+00a7b7c9  call     0x24e790
+00a7b7ce  mov      al, 1
+00a7b7d0  mov      rbx, qword ptr [rsp + 0x30]
+00a7b7d5  add      rsp, 0x20
+00a7b7d9  pop      rdi
+00a7b7da  ret      
+00a7b7db  mov      rbx, qword ptr [rsp + 0x30]
+00a7b7e0  xor      al, al
+00a7b7e2  add      rsp, 0x20
+00a7b7e6  pop      rdi
+00a7b7e7  ret      
+00a7b7e8  int3     
+00a7b7e9  int3     
+00a7b7ea  int3     
+00a7b7eb  int3     
+00a7b7ec  int3     
+00a7b7ed  int3     
+00a7b7ee  int3     
+00a7b7ef  int3     
+00a7b7f0  mov      qword ptr [rsp + 8], rbx
+00a7b7f5  push     rdi
+00a7b7f6  sub      rsp, 0x20
+00a7b7fa  mov      rdi, qword ptr [rcx + 8]
+00a7b7fe  mov      rbx, rdx
+00a7b801  lea      rdx, [rdi + 0x28]
+00a7b805  lea      rcx, [rbx + 0x28]
+00a7b809  call     0x5d9fc0
+00a7b80e  test     al, al
+00a7b810  je       0xa7b82a
+00a7b812  mov      rdx, rdi
+00a7b815  mov      rcx, rbx
+00a7b818  call     0x24e790
+00a7b81d  mov      al, 1
+00a7b81f  mov      rbx, qword ptr [rsp + 0x30]
+00a7b824  add      rsp, 0x20
+00a7b828  pop      rdi
+00a7b829  ret      
+00a7b82a  mov      rbx, qword ptr [rsp + 0x30]
+00a7b82f  xor      al, al
+00a7b831  add      rsp, 0x20
+00a7b835  pop      rdi
+00a7b836  ret      
+00a7b837  int3     
+00a7b838  int3     
+00a7b839  int3     
+00a7b83a  int3     
+00a7b83b  int3     
+00a7b83c  int3     
+00a7b83d  int3     
+00a7b83e  int3     
+00a7b83f  int3     
+00a7b840  mov      r11, rsp
+00a7b843  sub      rsp, 0xb8
+00a7b84a  movups   xmm0, xmmword ptr [r8]
+00a7b84e  xor      r9d, r9d
+00a7b851  lea      rax, [rip + 0xdd9040]
+00a7b858  movups   xmm1, xmmword ptr [r8 + 0x10]
+00a7b85d  mov      qword ptr [r8 + 0x18], 0xf
+00a7b865  add      rcx, 8
+00a7b869  movups   xmmword ptr [rsp + 0x20], xmm0
+00a7b86e  movups   xmmword ptr [rsp + 0x30], xmm1
+00a7b873  mov      qword ptr [r8 + 0x10], r9
+00a7b877  mov      byte ptr [r8], r9b
+00a7b87a  lea      r8, [rsp + 0x20]
+00a7b87f  movups   xmm1, xmmword ptr [rdx + 0x10]
+00a7b883  mov      qword ptr [r11 - 0x78], rax
+00a7b887  movups   xmm0, xmmword ptr [rdx + 0x20]
+00a7b88b  mov      eax, dword ptr [rdx + 8]
+00a7b88e  movups   xmmword ptr [rsp + 0x50], xmm1
+00a7b893  mov      dword ptr [rsp + 0x48], eax
+00a7b897  mov      eax, dword ptr [rdx + 0xc]
+00a7b89a  mov      qword ptr [rdx + 0x28], 0xf
+00a7b8a2  movups   xmmword ptr [rsp + 0x60], xmm0
+00a7b8a7  mov      dword ptr [rsp + 0x4c], eax
+00a7b8ab  mov      qword ptr [rdx + 0x20], r9
+00a7b8af  mov      byte ptr [rdx + 0x10], r9b
+00a7b8b3  movups   xmm1, xmmword ptr [rdx + 0x30]
+00a7b8b7  movups   xmm0, xmmword ptr [rdx + 0x40]
+00a7b8bb  mov      qword ptr [rdx + 0x48], 0xf
+00a7b8c3  movups   xmmword ptr [rsp + 0x70], xmm1
+00a7b8c8  movups   xmmword ptr [r11 - 0x38], xmm0
+00a7b8cd  mov      qword ptr [rdx + 0x40], r9
+00a7b8d1  mov      byte ptr [rdx + 0x30], r9b
+00a7b8d5  movups   xmm1, xmmword ptr [rdx + 0x50]
+00a7b8d9  movups   xmm0, xmmword ptr [rdx + 0x60]
+00a7b8dd  movups   xmmword ptr [r11 - 0x28], xmm1
+00a7b8e2  movups   xmmword ptr [r11 - 0x18], xmm0
+00a7b8e7  mov      qword ptr [rdx + 0x60], r9
+00a7b8eb  mov      qword ptr [rdx + 0x68], 0xf
+00a7b8f3  mov      byte ptr [rdx + 0x50], r9b
+00a7b8f7  lea      rdx, [r11 - 0x78]
+00a7b8fb  call     0xa698e0
+00a7b900  add      rsp, 0xb8
+00a7b907  ret      
+00a7b908  int3     
+00a7b909  int3     
+00a7b90a  int3     
+00a7b90b  int3     
+00a7b90c  int3     
+00a7b90d  int3     
+00a7b90e  int3     
+00a7b90f  int3     
+00a7b910  lea      rdx, [rcx + 0x80]
+00a7b917  add      rcx, 0x18
+00a7b91b  jmp      0xa68160
+00a7b920  lea      rax, [rip + 0x12bc889]
+00a7b927  ret      
+00a7b928  int3     
+00a7b929  int3     
+00a7b92a  int3     
+00a7b92b  int3     
+00a7b92c  int3     
+00a7b92d  int3     
+00a7b92e  int3     
+00a7b92f  int3     
+00a7b930  lea      rax, [rip + 0x12bcd49]
+00a7b937  ret      
+00a7b938  int3     
+00a7b939  int3     
+00a7b93a  int3     
+00a7b93b  int3     
+00a7b93c  int3     
+00a7b93d  int3     
+00a7b93e  int3     
+00a7b93f  int3     
+00a7b940  lea      rax, [rip + 0x12bcb19]
+00a7b947  ret      
+00a7b948  int3     
+00a7b949  int3     
+00a7b94a  int3     
+00a7b94b  int3     
+00a7b94c  int3     
+00a7b94d  int3     
+00a7b94e  int3     
+00a7b94f  int3     
+00a7b950  lea      rax, [rip + 0x12b9b09]
+00a7b957  ret      
+00a7b958  int3     
+00a7b959  int3     
+00a7b95a  int3     
+00a7b95b  int3     
+00a7b95c  int3     
+00a7b95d  int3     
+00a7b95e  int3     
+00a7b95f  int3     
+00a7b960  lea      rax, [rip + 0x12b97f9]
+00a7b967  ret      
+00a7b968  int3     
+00a7b969  int3     
+00a7b96a  int3     
+00a7b96b  int3     
+00a7b96c  int3     
+00a7b96d  int3     
+00a7b96e  int3     
+00a7b96f  int3     
+00a7b970  lea      rax, [rip + 0x12bcf69]
+00a7b977  ret      
+00a7b978  int3     
+00a7b979  int3     
+00a7b97a  int3     
+00a7b97b  int3     
+00a7b97c  int3     
+00a7b97d  int3     
+00a7b97e  int3     
+00a7b97f  int3     
+00a7b980  lea      rax, [rip + 0x12badf9]
+00a7b987  ret      
+00a7b988  int3     
+00a7b989  int3     
+00a7b98a  int3     
+00a7b98b  int3     
+00a7b98c  int3     
+00a7b98d  int3     
+00a7b98e  int3     
+00a7b98f  int3     
+00a7b990  lea      rax, [rip + 0x12bb359]
+00a7b997  ret      
+00a7b998  int3     
+00a7b999  int3     
+00a7b99a  int3     
+00a7b99b  int3     
+00a7b99c  int3     
+00a7b99d  int3     
+00a7b99e  int3     
+00a7b99f  int3     
+00a7b9a0  lea      rax, [rip + 0x12bbb39]
+00a7b9a7  ret      
+00a7b9a8  int3     
+00a7b9a9  int3     
+00a7b9aa  int3     
+00a7b9ab  int3     
+00a7b9ac  int3     
+00a7b9ad  int3     
+00a7b9ae  int3     
+00a7b9af  int3     
+00a7b9b0  lea      rax, [rip + 0x12ba849]
+00a7b9b7  ret      
+00a7b9b8  int3     
+00a7b9b9  int3     
+00a7b9ba  int3     
+00a7b9bb  int3     
+00a7b9bc  int3     
+00a7b9bd  int3     
+00a7b9be  int3     
+00a7b9bf  int3     
+00a7b9c0  lea      rax, [rip + 0x12b9679]
+00a7b9c7  ret      
+00a7b9c8  int3     
+00a7b9c9  int3     
+00a7b9ca  int3     
+00a7b9cb  int3     
+00a7b9cc  int3     
+00a7b9cd  int3     
+00a7b9ce  int3     
+00a7b9cf  int3     
+00a7b9d0  lea      rax, [rip + 0x12bd9c9]
+00a7b9d7  ret      
+00a7b9d8  int3     
+00a7b9d9  int3     
+00a7b9da  int3     
+00a7b9db  int3     
+00a7b9dc  int3     
+00a7b9dd  int3     
+00a7b9de  int3     
+00a7b9df  int3     
+00a7b9e0  lea      rax, [rip + 0x12bd6d9]
+00a7b9e7  ret      
+00a7b9e8  int3     
+00a7b9e9  int3     
+00a7b9ea  int3     
+00a7b9eb  int3     
+00a7b9ec  int3     
+00a7b9ed  int3     
+00a7b9ee  int3     
+00a7b9ef  int3     
+00a7b9f0  lea      rax, [rip + 0x12bd3e9]
+00a7b9f7  ret      
+00a7b9f8  int3     
+00a7b9f9  int3     
+00a7b9fa  int3     
+00a7b9fb  int3     
+00a7b9fc  int3     
+00a7b9fd  int3     
+00a7b9fe  int3     
+00a7b9ff  int3     
+00a7ba00  lea      rax, [rip + 0x12b9e39]
+00a7ba07  ret      
+00a7ba08  int3     
+00a7ba09  int3     
+00a7ba0a  int3     
+00a7ba0b  int3     
+00a7ba0c  int3     
+00a7ba0d  int3     
+00a7ba0e  int3     
+00a7ba0f  int3     
+00a7ba10  lea      rax, [rip + 0x12bc539]
+00a7ba17  ret      
+00a7ba18  int3     
+00a7ba19  int3     
+00a7ba1a  int3     
+00a7ba1b  int3     
+00a7ba1c  int3     
+00a7ba1d  int3     
+00a7ba1e  int3     
+00a7ba1f  int3     
+00a7ba20  lea      rax, [rip + 0x12bd299]
+00a7ba27  ret      
+00a7ba28  int3     
+00a7ba29  int3     
+00a7ba2a  int3     
+00a7ba2b  int3     
+00a7ba2c  int3     
+00a7ba2d  int3     
+00a7ba2e  int3     
+00a7ba2f  int3     
+00a7ba30  lea      rax, [rip + 0x12bd149]
+00a7ba37  ret      
+00a7ba38  int3     
+00a7ba39  int3     
+00a7ba3a  int3     
+00a7ba3b  int3     
+00a7ba3c  int3     
+00a7ba3d  int3     
+00a7ba3e  int3     
+00a7ba3f  int3     
+00a7ba40  lea      rax, [rip + 0x12b9ba9]
+00a7ba47  ret      
+00a7ba48  int3     
+00a7ba49  int3     
+00a7ba4a  int3     
+00a7ba4b  int3     
+00a7ba4c  int3     
+00a7ba4d  int3     
+00a7ba4e  int3     
+00a7ba4f  int3     
+00a7ba50  lea      rax, [rip + 0x12ba089]
+00a7ba57  ret      
+00a7ba58  int3     
+00a7ba59  int3     
+00a7ba5a  int3     
+00a7ba5b  int3     
+00a7ba5c  int3     
+00a7ba5d  int3     
+00a7ba5e  int3     
+00a7ba5f  int3     
+00a7ba60  lea      rax, [rip + 0x12bb589]
+00a7ba67  ret      
+00a7ba68  int3     
+00a7ba69  int3     
+00a7ba6a  int3     
+00a7ba6b  int3     
+00a7ba6c  int3     
+00a7ba6d  int3     
+00a7ba6e  int3     
+00a7ba6f  int3     
+00a7ba70  lea      rax, [rip + 0x12bb009]
+00a7ba77  ret      
+00a7ba78  int3     
+00a7ba79  int3     
+00a7ba7a  int3     
+00a7ba7b  int3     
+00a7ba7c  int3     
+00a7ba7d  int3     
+00a7ba7e  int3     
+00a7ba7f  int3     
+00a7ba80  lea      rax, [rip + 0x12bb7e9]
+00a7ba87  ret      
+00a7ba88  int3     
+00a7ba89  int3     
+00a7ba8a  int3     
+00a7ba8b  int3     
+00a7ba8c  int3     
+00a7ba8d  int3     
+00a7ba8e  int3     
+00a7ba8f  int3     
+00a7ba90  lea      rax, [rip + 0x12ba2a9]
+00a7ba97  ret      
+00a7ba98  int3     
+00a7ba99  int3     
+00a7ba9a  int3     
+00a7ba9b  int3     
+00a7ba9c  int3     
+00a7ba9d  int3     
+00a7ba9e  int3     
+00a7ba9f  int3     
+00a7baa0  lea      rax, [rip + 0x12ba129]
+00a7baa7  ret      
+00a7baa8  int3     
+00a7baa9  int3     
+00a7baaa  int3     
+00a7baab  int3     
+00a7baac  int3     
+00a7baad  int3     
+00a7baae  int3     
+00a7baaf  int3     
+00a7bab0  lea      rax, [rip + 0x12ba4e9]
+00a7bab7  ret      
+00a7bab8  int3     
+00a7bab9  int3     
+00a7baba  int3     
+00a7babb  int3     
+00a7babc  int3     
+00a7babd  int3     
+00a7babe  int3     
+00a7babf  int3     

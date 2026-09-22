@@ -1,0 +1,32 @@
+# 运行态与本机环境（不含在源码仓库内）
+runtime/
+delivery/
+exe_build/
+dist/
+build/
+work/
+state/
+vendor/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# 本机配置与凭据（只提交 config.example.json）
+config.json
+*.local.json
+*.token
+
+# 编译产物
+*.dll
+*.exe
+*.obj
+*.lib
+*.exp
+*.pdb
+
+# 备份与临时文件
+*.bak
+*.bak-*
+*.backup-*
+*.pre-*
+*.tmp

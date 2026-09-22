@@ -1,0 +1,159 @@
+function 0xa3ace0..0xa3af9c size=700
+00a3ace0  mov      qword ptr [rsp + 0x18], rbx
+00a3ace5  mov      qword ptr [rsp + 0x20], rbp
+00a3acea  push     rsi
+00a3aceb  push     rdi
+00a3acec  push     r14
+00a3acee  sub      rsp, 0x40
+00a3acf2  mov      rax, qword ptr [rip + 0x12dfcc7]
+00a3acf9  xor      rax, rsp
+00a3acfc  mov      qword ptr [rsp + 0x38], rax
+00a3ad01  mov      rbp, rdx
+00a3ad04  mov      rsi, rcx
+00a3ad07  mov      qword ptr [rsp + 0x28], rcx
+00a3ad0c  mov      qword ptr [rsp + 0x30], rdx
+00a3ad11  call     0x97d0c0
+00a3ad16  nop      
+00a3ad17  lea      rcx, [rsi + 0x90]
+00a3ad1e  call     0x99e000
+00a3ad23  nop      
+00a3ad24  xor      r14d, r14d
+00a3ad27  mov      qword ptr [rsi + 0x168], r14
+00a3ad2e  mov      qword ptr [rsi + 0x170], r14
+00a3ad35  lea      rax, [rip + 0xe727bc]
+00a3ad3c  mov      qword ptr [rsi], rax
+00a3ad3f  lea      rax, [rip + 0xe727da]
+00a3ad46  mov      qword ptr [rsi + 0x90], rax
+00a3ad4d  lea      rbx, [rsi + 0x178]
+00a3ad54  mov      qword ptr [rsp + 0x20], rbx
+00a3ad59  mov      rcx, rbx
+00a3ad5c  call     qword ptr [rip + 0xdcc6f6]
+00a3ad62  mov      dword ptr [rbx + 0x28], r14d
+00a3ad66  mov      qword ptr [rbx + 0x30], r14
+00a3ad6a  mov      qword ptr [rbx + 0x38], r14
+00a3ad6e  mov      qword ptr [rbx + 0x40], r14
+00a3ad72  lea      rbx, [rsi + 0x1c0]
+00a3ad79  mov      qword ptr [rsp + 0x20], rbx
+00a3ad7e  mov      rcx, rbx
+00a3ad81  call     qword ptr [rip + 0xdcc6d1]
+00a3ad87  mov      dword ptr [rbx + 0x28], r14d
+00a3ad8b  mov      qword ptr [rbx + 0x30], r14
+00a3ad8f  mov      qword ptr [rbx + 0x38], r14
+00a3ad93  mov      qword ptr [rbx + 0x40], r14
+00a3ad97  lea      rbx, [rsi + 0x208]
+00a3ad9e  mov      qword ptr [rsp + 0x20], rbx
+00a3ada3  mov      rcx, rbx
+00a3ada6  call     qword ptr [rip + 0xdcc6ac]
+00a3adac  mov      dword ptr [rbx + 0x28], r14d
+00a3adb0  mov      qword ptr [rbx + 0x30], r14
+00a3adb4  mov      qword ptr [rbx + 0x38], r14
+00a3adb8  mov      qword ptr [rbx + 0x40], r14
+00a3adbc  lea      rbx, [rsi + 0x250]
+00a3adc3  mov      qword ptr [rsp + 0x20], rbx
+00a3adc8  mov      rcx, rbx
+00a3adcb  call     qword ptr [rip + 0xdcc687]
+00a3add1  mov      dword ptr [rbx + 0x28], r14d
+00a3add5  mov      qword ptr [rbx + 0x30], r14
+00a3add9  mov      qword ptr [rbx + 0x38], r14
+00a3addd  mov      qword ptr [rbx + 0x40], r14
+00a3ade1  lea      rbx, [rsi + 0x298]
+00a3ade8  mov      qword ptr [rsp + 0x20], rbx
+00a3aded  mov      rcx, rbx
+00a3adf0  call     qword ptr [rip + 0xdcc662]
+00a3adf6  mov      dword ptr [rbx + 0x28], r14d
+00a3adfa  mov      qword ptr [rbx + 0x30], r14
+00a3adfe  mov      qword ptr [rbx + 0x38], r14
+00a3ae02  mov      qword ptr [rbx + 0x40], r14
+00a3ae06  lea      rbx, [rsi + 0x2e0]
+00a3ae0d  mov      qword ptr [rsp + 0x20], rbx
+00a3ae12  mov      rcx, rbx
+00a3ae15  call     qword ptr [rip + 0xdcc63d]
+00a3ae1b  mov      dword ptr [rbx + 0x28], r14d
+00a3ae1f  mov      qword ptr [rbx + 0x30], r14
+00a3ae23  mov      qword ptr [rbx + 0x38], r14
+00a3ae27  mov      qword ptr [rbx + 0x40], r14
+00a3ae2b  lea      rbx, [rsi + 0x328]
+00a3ae32  mov      qword ptr [rsp + 0x20], rbx
+00a3ae37  mov      rcx, rbx
+00a3ae3a  call     qword ptr [rip + 0xdcc618]
+00a3ae40  mov      dword ptr [rbx + 0x28], r14d
+00a3ae44  mov      qword ptr [rbx + 0x30], r14
+00a3ae48  mov      qword ptr [rbx + 0x38], r14
+00a3ae4c  mov      qword ptr [rbx + 0x40], r14
+00a3ae50  lea      rbx, [rsi + 0x370]
+00a3ae57  mov      qword ptr [rsp + 0x20], rbx
+00a3ae5c  mov      rcx, rbx
+00a3ae5f  call     qword ptr [rip + 0xdcc5f3]
+00a3ae65  mov      dword ptr [rbx + 0x28], r14d
+00a3ae69  mov      qword ptr [rbx + 0x30], r14
+00a3ae6d  mov      qword ptr [rbx + 0x38], r14
+00a3ae71  mov      qword ptr [rbx + 0x40], r14
+00a3ae75  lea      rbx, [rsi + 0x3b8]
+00a3ae7c  mov      qword ptr [rsp + 0x20], rbx
+00a3ae81  mov      rcx, rbx
+00a3ae84  call     qword ptr [rip + 0xdcc5ce]
+00a3ae8a  mov      dword ptr [rbx + 0x28], r14d
+00a3ae8e  mov      qword ptr [rbx + 0x30], r14
+00a3ae92  mov      qword ptr [rbx + 0x38], r14
+00a3ae96  mov      qword ptr [rbx + 0x40], r14
+00a3ae9a  lea      rbx, [rsi + 0x400]
+00a3aea1  mov      qword ptr [rsp + 0x20], rbx
+00a3aea6  mov      rcx, rbx
+00a3aea9  call     qword ptr [rip + 0xdcc5a9]
+00a3aeaf  mov      dword ptr [rbx + 0x28], r14d
+00a3aeb3  mov      qword ptr [rbx + 0x30], r14
+00a3aeb7  mov      qword ptr [rbx + 0x38], r14
+00a3aebb  mov      qword ptr [rbx + 0x40], r14
+00a3aebf  lea      rcx, [rsi + 0x448]
+00a3aec6  mov      dword ptr [rcx], r14d
+00a3aec9  mov      qword ptr [rcx + 8], r14
+00a3aecd  mov      qword ptr [rcx + 0x10], r14
+00a3aed1  xorps    xmm0, xmm0
+00a3aed4  movups   xmmword ptr [rcx + 0x18], xmm0
+00a3aed8  movups   xmmword ptr [rcx + 0x28], xmm0
+00a3aedc  movups   xmmword ptr [rcx + 0x38], xmm0
+00a3aee0  mov      qword ptr [rcx + 0x48], r14
+00a3aee4  mov      edx, 0x102
+00a3aee9  call     0x15af8dd
+00a3aeee  nop      
+00a3aeef  mov      qword ptr [rsi + 0x498], r14
+00a3aef6  lea      rbx, [rsi + 0x4a0]
+00a3aefd  mov      qword ptr [rsp + 0x20], rbx
+00a3af02  mov      dword ptr [rbx], r14d
+00a3af05  mov      qword ptr [rbx + 8], r14
+00a3af09  mov      qword ptr [rbx + 0x10], r14
+00a3af0d  lea      ecx, [r14 + 0x78]
+00a3af11  call     0x15afee4
+00a3af16  mov      qword ptr [rax], rax
+00a3af19  mov      qword ptr [rax + 8], rax
+00a3af1d  mov      qword ptr [rbx + 8], rax
+00a3af21  lea      rcx, [rbx + 0x18]
+00a3af25  mov      qword ptr [rcx], r14
+00a3af28  mov      qword ptr [rcx + 8], r14
+00a3af2c  mov      qword ptr [rcx + 0x10], r14
+00a3af30  mov      qword ptr [rbx + 0x30], 7
+00a3af38  mov      qword ptr [rbx + 0x38], 8
+00a3af40  mov      dword ptr [rbx], 0x3f800000
+00a3af46  mov      r8, qword ptr [rbx + 8]
+00a3af4a  lea      edx, [r14 + 0x10]
+00a3af4e  call     0x1858c0
+00a3af53  nop      
+00a3af54  mov      qword ptr [rsi + 0x4e0], r14
+00a3af5b  mov      qword ptr [rsi + 0x4e8], r14
+00a3af62  mov      dl, 1
+00a3af64  lea      rcx, [rsi + 0x90]
+00a3af6b  call     0xa11660
+00a3af70  nop      
+00a3af71  mov      rcx, rbp
+00a3af74  call     0x97d400
+00a3af79  mov      rax, rsi
+00a3af7c  mov      rcx, qword ptr [rsp + 0x38]
+00a3af81  xor      rcx, rsp
+00a3af84  call     0x15b03b0
+00a3af89  mov      rbx, qword ptr [rsp + 0x70]
+00a3af8e  mov      rbp, qword ptr [rsp + 0x78]
+00a3af93  add      rsp, 0x40
+00a3af97  pop      r14
+00a3af99  pop      rdi
+00a3af9a  pop      rsi
+00a3af9b  ret      

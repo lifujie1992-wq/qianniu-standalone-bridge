@@ -1,0 +1,56 @@
+function 0x1075150..0x1075266 size=278
+01075150  mov      qword ptr [rsp + 8], rbx
+01075155  mov      qword ptr [rsp + 0x10], rbp
+0107515a  mov      qword ptr [rsp + 0x18], rsi
+0107515f  mov      qword ptr [rsp + 0x20], rdi
+01075164  push     r14
+01075166  sub      rsp, 0x20
+0107516a  xor      r14d, r14d
+0107516d  mov      rsi, rcx
+01075170  cmp      qword ptr [rcx + 0x5f8], r14
+01075177  je       0x1075180
+01075179  mov      qword ptr [rcx + 0x5f8], r14
+01075180  cmp      qword ptr [rcx + 0x600], r14
+01075187  je       0x1075190
+01075189  mov      qword ptr [rcx + 0x600], r14
+01075190  mov      rbx, qword ptr [rcx + 0x608]
+01075197  lea      rdx, [rcx + 0x608]
+0107519e  add      rcx, 0x608
+010751a5  mov      r8, qword ptr [rbx + 8]
+010751a9  call     0x191130
+010751ae  mov      qword ptr [rbx + 8], rbx
+010751b2  lea      rdx, [rsi + 0x4a0]
+010751b9  mov      qword ptr [rbx], rbx
+010751bc  lea      rcx, [rsi + 0x4a0]
+010751c3  mov      qword ptr [rbx + 0x10], rbx
+010751c7  mov      qword ptr [rsi + 0x610], r14
+010751ce  mov      rbx, qword ptr [rsi + 0x4a0]
+010751d5  mov      r8, qword ptr [rbx + 8]
+010751d9  call     0x35a840
+010751de  mov      qword ptr [rbx + 8], rbx
+010751e2  mov      qword ptr [rbx], rbx
+010751e5  mov      qword ptr [rbx + 0x10], rbx
+010751e9  mov      qword ptr [rsi + 0x4a8], r14
+010751f0  mov      rbx, qword ptr [rsi + 0x4c8]
+010751f7  mov      rdi, qword ptr [rsi + 0x4d0]
+010751fe  cmp      rbx, rdi
+01075201  je       0x1075225
+01075203  mov      rcx, rbx
+01075206  call     0x1017d50
+0107520b  add      rbx, 0x110
+01075212  cmp      rbx, rdi
+01075215  jne      0x1075203
+01075217  mov      rax, qword ptr [rsi + 0x4c8]
+0107521e  mov      qword ptr [rsi + 0x4d0], rax
+01075225  lea      rcx, [rsi - 0xe0]
+0107522c  mov      word ptr [rsi + 0x5f0], r14w
+01075234  call     0x10815b0
+01075239  lea      rcx, [rsi - 0xd8]
+01075240  mov      qword ptr [rsi + 0x628], r14
+01075247  mov      rbx, qword ptr [rsp + 0x30]
+0107524c  mov      rbp, qword ptr [rsp + 0x38]
+01075251  mov      rsi, qword ptr [rsp + 0x40]
+01075256  mov      rdi, qword ptr [rsp + 0x48]
+0107525b  add      rsp, 0x20
+0107525f  pop      r14
+01075261  jmp      0x17fb50

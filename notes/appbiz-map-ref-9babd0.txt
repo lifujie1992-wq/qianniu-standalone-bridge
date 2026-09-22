@@ -1,0 +1,85 @@
+function 0x9babd0..0x9bad71 size=417
+009babd0  mov      qword ptr [rsp + 8], rbx
+009babd5  mov      qword ptr [rsp + 0x10], rbp
+009babda  mov      qword ptr [rsp + 0x18], rsi
+009babdf  mov      qword ptr [rsp + 0x20], rdi
+009babe4  push     r14
+009babe6  sub      rsp, 0x20
+009babea  mov      ebp, edx
+009babec  mov      rsi, rcx
+009babef  lea      rax, [rip + 0xeed38a]
+009babf6  mov      qword ptr [rcx], rax
+009babf9  lea      rax, [rip + 0xeed3d8]
+009bac00  mov      qword ptr [rcx + 0x320], rax
+009bac07  lea      rax, [rip + 0xeed3da]
+009bac0e  mov      qword ptr [rcx + 0x330], rax
+009bac15  add      rcx, 0x548
+009bac1c  call     qword ptr [rip + 0xe4d07e]
+009bac22  lea      rcx, [rsi + 0x530]
+009bac29  call     qword ptr [rip + 0xe4d071]
+009bac2f  lea      rcx, [rsi + 0x528]
+009bac36  call     qword ptr [rip + 0xe4c9ec]
+009bac3c  lea      rcx, [rsi + 0x518]
+009bac43  call     qword ptr [rip + 0xe4d057]
+009bac49  lea      rcx, [rsi + 0x510]
+009bac50  call     qword ptr [rip + 0xe4c9d2]
+009bac56  lea      rcx, [rsi + 0x500]
+009bac5d  call     qword ptr [rip + 0xe4d03d]
+009bac63  lea      rcx, [rsi + 0x4f8]
+009bac6a  call     qword ptr [rip + 0xe4c9b8]
+009bac70  mov      rcx, qword ptr [rsi + 0x4f0]
+009bac77  test     rcx, rcx
+009bac7a  je       0x9bac91
+009bac7c  mov      eax, 0xffffffff
+009bac81  lock xadd dword ptr [rcx + 0xc], eax
+009bac86  cmp      eax, 1
+009bac89  jne      0x9bac91
+009bac8b  mov      rax, qword ptr [rcx]
+009bac8e  call     qword ptr [rax + 8]
+009bac91  lea      rcx, [rsi + 0x4b0]
+009bac98  call     0x193c20
+009bac9d  mov      r8, qword ptr [rsi + 0x4a0]
+009baca4  mov      r8, qword ptr [r8 + 8]
+009baca8  lea      rdx, [rsi + 0x4a0]
+009bacaf  lea      rcx, [rsi + 0x4a0]
+009bacb6  call     0x17e8b0
+009bacbb  mov      edx, 0x38
+009bacc0  mov      rcx, qword ptr [rsi + 0x4a0]
+009bacc7  call     0x15aff28
+009baccc  lea      rcx, [rsi + 0x470]
+009bacd3  call     qword ptr [rip + 0xe4c797]
+009bacd9  lea      rdi, [rsi + 0x410]
+009bace0  mov      rcx, rdi
+009bace3  call     0x99f5d0
+009bace8  mov      r8, qword ptr [rdi + 0x50]
+009bacec  mov      r8, qword ptr [r8 + 8]
+009bacf0  lea      rdx, [rdi + 0x50]
+009bacf4  lea      rcx, [rdi + 0x50]
+009bacf8  call     0x99df10
+009bacfd  mov      edx, 0x38
+009bad02  mov      rcx, qword ptr [rdi + 0x50]
+009bad06  call     0x15aff28
+009bad0b  mov      rcx, rdi
+009bad0e  call     0x15af8e3
+009bad13  nop      
+009bad14  lea      rcx, [rsi + 0x330]
+009bad1b  call     0x9b8760
+009bad20  lea      rax, [rip + 0xeed1a9]
+009bad27  mov      qword ptr [rsi], rax
+009bad2a  lea      rax, [rip + 0xe82c07]
+009bad31  mov      qword ptr [rsi + 0x320], rax
+009bad38  mov      rcx, rsi
+009bad3b  call     0x9b87e0
+009bad40  test     bpl, 1
+009bad44  je       0x9bad53
+009bad46  mov      edx, 0x558
+009bad4b  mov      rcx, rsi
+009bad4e  call     0x15aff28
+009bad53  mov      rax, rsi
+009bad56  mov      rbx, qword ptr [rsp + 0x30]
+009bad5b  mov      rbp, qword ptr [rsp + 0x38]
+009bad60  mov      rsi, qword ptr [rsp + 0x40]
+009bad65  mov      rdi, qword ptr [rsp + 0x48]
+009bad6a  add      rsp, 0x20
+009bad6e  pop      r14
+009bad70  ret      

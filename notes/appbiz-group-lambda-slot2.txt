@@ -1,0 +1,41 @@
+function 0xa5f7d0..0xa5f850 size=128
+00a5f7d0  add      rcx, 8
+00a5f7d4  mov      rdx, r8
+00a5f7d7  jmp      0xa40b90
+00a5f7dc  int3     
+00a5f7dd  int3     
+00a5f7de  int3     
+00a5f7df  int3     
+00a5f7e0  mov      qword ptr [rsp + 0x20], rbx
+00a5f7e5  push     rbp
+00a5f7e6  push     rsi
+00a5f7e7  push     rdi
+00a5f7e8  push     r14
+00a5f7ea  push     r15
+00a5f7ec  sub      rsp, 0x50
+00a5f7f0  mov      r14, rdx
+00a5f7f3  mov      rbp, rcx
+00a5f7f6  xor      eax, eax
+00a5f7f8  mov      dil, 1
+00a5f7fb  xorps    xmm0, xmm0
+00a5f7fe  movdqu   xmmword ptr [rsp + 0x30], xmm0
+00a5f804  mov      qword ptr [rsp + 0x40], rax
+00a5f809  mov      rbx, qword ptr [r8]
+00a5f80c  mov      rsi, qword ptr [r8 + 8]
+00a5f810  cmp      rbx, rsi
+00a5f813  je       0xa5f861
+00a5f815  movabs   r15, 0x70381c0e070381c1
+00a5f81f  nop      
+00a5f820  cmp      dword ptr [rbx + 8], 3
+00a5f824  je       0xa5f861
+00a5f826  mov      r8, qword ptr [rbx + 0x10]
+00a5f82a  mov      rcx, qword ptr [rbx + 0x18]
+00a5f82e  sub      rcx, r8
+00a5f831  mov      rax, r15
+00a5f834  imul     rcx
+00a5f837  sar      rdx, 8
+00a5f83b  mov      r9, rdx
+00a5f83e  shr      r9, 0x3f
+00a5f842  add      r9, rdx
+00a5f845  mov      rdx, qword ptr [rsp + 0x38]
+00a5f84a  lea      rcx, [rsp + 0x30]

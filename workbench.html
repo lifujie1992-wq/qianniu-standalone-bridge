@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>千牛聚合接待</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f6f4;
+      --surface: #ffffff;
+      --elevated: #eaf0ed;
+      --text: #17221e;
+      --muted: #596861;
+      --subtle: #7b8983;
+      --border: #d5dfda;
+      --accent: #087a5b;
+      --success: #14765a;
+      --warning: #ad6200;
+      --danger: #bd3f50;
+      --info: #2868b7;
+      --topbar: 50px;
+      --composer: 108px;
+      font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--bg); color: var(--text); }
+    button, input, textarea { font: inherit; letter-spacing: 0; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 2px;
+    }
+    .topbar {
+      height: var(--topbar); display: flex; align-items: center; gap: 16px; padding: 0 14px;
+      background: var(--surface); border-bottom: 1px solid var(--border); position: relative; z-index: 30;
+    }
+    .brand { display: flex; align-items: baseline; gap: 8px; min-width: 205px; white-space: nowrap; }
+    .brand strong { font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif; font-size: 16px; font-weight: 600; }
+    .brand span { color: var(--subtle); font: 11px "Cascadia Mono", Consolas, monospace; }
+    .connection-strip { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+    .connection {
+      min-width: 0; height: 32px; display: inline-flex; align-items: center; gap: 7px; padding: 0 9px;
+      background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer;
+    }
+    .connection:hover { background: var(--elevated); border-color: var(--border); }
+    .connection-copy { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px; align-items: baseline; }
+    .connection-copy strong { font-size: 12px; }
+    .connection-copy span { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--subtle); box-shadow: 0 0 0 2px var(--surface); }
+    .dot.ok { background: var(--success); }
+    .dot.warn { background: var(--warning); }
+    .dot.bad { background: var(--danger); }
+    .top-actions { display: flex; align-items: center; gap: 6px; }
+    .button {
+      min-height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface); cursor: pointer; font-weight: 600;
+    }
+    .button:hover { border-color: var(--subtle); background: var(--elevated); }
+    .button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
+    .button.primary:hover { background: #066b50; }
+    .button:disabled { opacity: .45; cursor: not-allowed; }
+    .button.quiet { border-color: transparent; background: transparent; color: var(--muted); }
+    .mobile-only { display: none; }
+    .workspace { height: calc(100% - var(--topbar)); display: grid; grid-template-columns: 300px minmax(420px, 1fr) 350px; background: var(--surface); }
+    .pane { min-width: 0; min-height: 0; background: var(--surface); }
+    .sessions-pane { border-right: 1px solid var(--border); display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); }
+    .pane-heading { height: 47px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid var(--border); }
+    .pane-heading h2 { margin: 0; font: 600 13px Bahnschrift, "Microsoft YaHei UI", sans-serif; }
+    .count { color: var(--muted); font: 11px "Cascadia Mono", Consolas, monospace; }
+    .search-wrap { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    .search-wrap input, .field input {
+      width: 100%; min-height: 34px; border: 1px solid var(--border); border-radius: 4px;
+      padding: 0 10px; background: var(--surface); color: var(--text);
+    }
+    .search-wrap input::placeholder, .field input::placeholder, textarea::placeholder { color: var(--subtle); }
+    .session-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid var(--border); background: #fafcfb; }
+    .session-tab { min-height: 36px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); cursor: pointer; font-weight: 600; }
+    .session-tab:hover { color: var(--text); background: #f3f6f5; }
+    .session-tab.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--surface); }
+    .session-tab.handoff.active { color: #9a4f00; border-bottom-color: #d97706; }
+    .session-list { min-height: 0; overflow: auto; }
+    .session-row {
+      width: 100%; min-height: 64px; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto;
+      gap: 9px; align-items: center; padding: 8px 10px 8px 12px; border: 0; border-bottom: 1px solid #edf1ef;
+      background: var(--surface); text-align: left; cursor: pointer; position: relative;
+    }
+    .session-row:hover { background: #f7f9f8; }
+    .session-row.active { background: var(--elevated); }
+    .session-row.active::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); }
+    .session-row.opening { opacity: .6; }
+    .session-row.handoff { background: #fffaf0; }
+    .session-row.handoff:hover, .session-row.handoff.active { background: #fff4df; }
+    .avatar {
+      width: 34px; height: 34px; border-radius: 6px; display: grid; place-items: center;
+      color: var(--accent); background: #dcebe5; font-weight: 600;
+    }
+    .session-main { min-width: 0; display: grid; gap: 4px; }
+    .session-name-wrap { min-width: 0; display: flex; align-items: center; gap: 5px; }
+    .session-name { min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .handoff-tag { flex: 0 0 auto; padding: 1px 4px; border: 1px solid #e6a23c; border-radius: 3px; color: #9a4f00; background: #fff4df; font-size: 9px; line-height: 1.35; }
+    .session-preview { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .session-side { align-self: stretch; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; gap: 6px; }
+    .session-time { color: var(--subtle); font-size: 10px; white-space: nowrap; }
+    .open-glyph { color: var(--accent); font-size: 14px; }
+    .conversation-pane { min-width: 0; width: 100%; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 58px auto minmax(0, 1fr) var(--composer); }
+    .conversation-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+    .conversation-title { min-width: 0; }
+    .conversation-title h1 { margin: 0 0 4px; font: 600 16px Bahnschrift, "Microsoft YaHei UI", sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .conversation-title p { margin: 0; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .conversation-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+    .mode-switch { display: grid; grid-template-columns: repeat(2, 42px); height: 30px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; flex: 0 0 auto; }
+    .mode-switch button { border: 0; border-right: 1px solid var(--border); background: var(--surface); color: var(--muted); cursor: pointer; font: 600 11px "Microsoft YaHei UI", sans-serif; }
+    .mode-switch button:last-child { border-right: 0; }
+    .mode-switch button.active { background: var(--elevated); color: var(--accent); }
+    .mode-switch button.human.active { background: #fff4e5; color: #9a4f00; }
+    .mode-switch button:disabled { cursor: wait; opacity: .55; }
+    .mode-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .open-state { color: var(--muted); font-size: 11px; text-align: right; max-width: 240px; }
+    .open-state.error { color: var(--danger); }
+    .context-ledger { display: none; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--border); background: #fafcfb; }
+    .context-ledger.visible { display: grid; }
+    .context-item { min-width: 0; padding: 8px 12px; border-right: 1px solid var(--border); }
+    .context-item:last-child { border-right: 0; }
+    .context-item small { display: block; color: var(--subtle); font-size: 10px; margin-bottom: 3px; }
+    .context-item strong { display: block; font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .messages { min-height: 0; overflow: auto; padding: 16px max(16px, 4vw) 24px; background: var(--bg); }
+    .message { display: flex; margin: 0 0 12px; }
+    .message.seller { justify-content: flex-end; }
+    .message.draft { justify-content: flex-end; }
+    .bubble { max-width: min(76%, 660px); }
+    .bubble-body { padding: 9px 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .seller .bubble-body { color: #fff; background: var(--accent); border-color: var(--accent); }
+    .draft .bubble-body { color: #6f4b00; background: #fff8df; border-color: #d4a72c; }
+    .bubble-meta { margin-top: 4px; color: var(--subtle); font: 10px "Cascadia Mono", Consolas, monospace; }
+    .seller .bubble-meta { text-align: right; }
+    .draft .bubble-meta { color: #946600; text-align: right; }
+    .bubble-meta.error { color: var(--danger); }
+    .bubble-id { margin-top: 2px; color: var(--subtle); font: 9px/1.4 "Cascadia Mono", Consolas, monospace; overflow-wrap: anywhere; user-select: all; }
+    .seller .bubble-id, .draft .bubble-id { text-align: right; }
+    .composer { border-top: 1px solid var(--border); padding: 10px 12px; background: var(--surface); display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 6px; }
+    .composer textarea { width: 100%; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); line-height: 1.5; }
+    .composer textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+    .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; }
+    .send-state { min-width: 0; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .send-state.error { color: var(--danger); }
+    .evidence-pane { border-left: 1px solid var(--border); min-height: 0; overflow: auto; }
+    .evidence-section { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .section-title h2 { margin: 0; font: 600 12px Bahnschrift, "Microsoft YaHei UI", sans-serif; }
+    .state-label { color: var(--muted); font-size: 10px; }
+    .state-label.ok { color: var(--success); }
+    .state-label.warn { color: var(--warning); }
+    .state-label.bad { color: var(--danger); }
+    .facts { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; }
+    .facts dt { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .facts dd { margin: 0; text-align: right; max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 10px; }
+    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--border); border-radius: 4px; }
+    .metric { padding: 8px; border-right: 1px solid var(--border); }
+    .metric:last-child { border-right: 0; }
+    .metric strong { display: block; font: 600 16px Bahnschrift, sans-serif; }
+    .metric span { color: var(--muted); font-size: 10px; }
+    .signal-rail { position: relative; margin-left: 4px; padding-left: 18px; }
+    .signal-rail::before { content: ""; position: absolute; left: 3px; top: 4px; bottom: 6px; width: 1px; background: var(--border); }
+    .signal-item { position: relative; padding: 0 0 13px; }
+    .signal-dot { position: absolute; left: -18px; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--subtle); box-shadow: 0 0 0 3px var(--surface); }
+    .signal-dot.ok { background: var(--success); }
+    .signal-dot.error { background: var(--danger); }
+    .signal-dot.warn { background: var(--warning); }
+    .signal-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .signal-head strong { font-size: 11px; }
+    .signal-head time { color: var(--subtle); font: 9px "Cascadia Mono", Consolas, monospace; white-space: nowrap; }
+    .signal-detail { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+    details { margin-top: 5px; }
+    summary { color: var(--info); font-size: 10px; cursor: pointer; }
+    pre { margin: 6px 0 0; padding: 8px; max-height: 220px; overflow: auto; border-radius: 4px; background: var(--elevated); color: var(--text); font: 10px/1.5 "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .empty { min-height: 120px; display: grid; place-items: center; padding: 20px; color: var(--muted); text-align: center; }
+    .drawer-backdrop { display: none; position: fixed; inset: 0; z-index: 45; background: rgba(23, 34, 30, .28); }
+    .drawer-backdrop.visible { display: block; }
+    .drawer { position: absolute; top: 0; right: 0; width: min(460px, 100%); height: 100%; background: var(--surface); box-shadow: 0 16px 40px rgba(23,34,30,.16); display: grid; grid-template-rows: 56px minmax(0, 1fr) auto; }
+    .drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid var(--border); }
+    .drawer-header h2 { margin: 0; font: 600 16px Bahnschrift, "Microsoft YaHei UI", sans-serif; }
+    .drawer-body { overflow: auto; padding: 4px 18px 20px; }
+    .form-section { padding: 16px 0; border-bottom: 1px solid var(--border); }
+    .form-section:last-child { border-bottom: 0; }
+    .form-section h3 { margin: 0 0 12px; font-size: 12px; }
+    .field { display: grid; gap: 5px; margin-bottom: 12px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label { color: var(--muted); font-size: 11px; }
+    .field small { color: var(--muted); font-size: 10px; }
+    .field-error { min-height: 15px; color: var(--danger); font-size: 10px; }
+    .toggle-row { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .toggle-row span { min-width: 0; }
+    .toggle-row strong { display: block; font-size: 12px; }
+    .toggle-row small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .toggle-row input { width: 18px; height: 18px; accent-color: var(--accent); }
+    .drawer-footer { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--border); }
+    .form-state { min-width: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .form-state.error { color: var(--danger); }
+    .form-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    @media (max-width: 1180px) {
+      .workspace { grid-template-columns: 280px minmax(400px, 1fr); }
+      .evidence-pane { position: fixed; top: var(--topbar); right: 0; bottom: 0; width: 350px; z-index: 40; transform: translateX(100%); transition: transform 220ms cubic-bezier(.16,1,.3,1); box-shadow: 0 16px 40px rgba(23,34,30,.16); }
+      body.inspector-open .evidence-pane { transform: translateX(0); }
+    }
+    @media (max-width: 760px) {
+      .brand { min-width: auto; }
+      .brand span, .connection-copy span { display: none; }
+      .workspace { grid-template-columns: minmax(0, 1fr); }
+      .sessions-pane { display: none; }
+      body.show-sessions .sessions-pane { display: grid; }
+      body.show-sessions .conversation-pane { display: none; }
+      .context-ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .context-item:nth-child(2) { border-right: 0; }
+      .context-item:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+      .bubble { max-width: 88%; }
+      .open-state { display: none; }
+      .conversation-header { padding: 0 10px; }
+      .mobile-only { display: inline-block; }
+      #refreshButton { display: none; }
+      .drawer-footer { align-items: stretch; flex-direction: column; }
+      .form-actions { width: 100%; }
+      .form-actions .button { flex: 1; }
+    }
+    body.dock { --topbar: 42px; }
+    body.dock .topbar { padding: 0 10px; gap: 8px; }
+    body.dock .brand { min-width: 0; flex: 1; }
+    body.dock .brand strong { font-size: 13px; }
+    body.dock .brand span, body.dock .brain-connection, body.dock .top-actions { display: none; }
+    body.dock .connection-strip { flex: 0 0 auto; }
+    body.dock .connection { padding: 0; border: 0; width: 16px; }
+    body.dock .connection-copy { display: none; }
+    body.dock .workspace { grid-template-columns: 1fr; }
+    body.dock .sessions-pane { display: grid; border-right: 0; }
+    body.dock .conversation-pane, body.dock .evidence-pane { display: none; }
+    body.dock .pane-heading { height: 42px; }
+    body.dock .search-wrap { padding: 8px; }
+    body.dock .session-row { min-height: 58px; grid-template-columns: 32px minmax(0, 1fr) auto; padding-left: 8px; }
+    body.dock .avatar { width: 30px; height: 30px; }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><strong>千牛信号台</strong><span id="versionLabel">LOCAL</span></div>
+    <div class="connection-strip" aria-live="polite">
+      <button class="connection" id="qianniuConnection" type="button" title="查看千牛链路">
+        <span class="dot" id="qianniuDot"></span>
+        <span class="connection-copy"><strong>千牛</strong><span id="qianniuText">检查中</span></span>
+      </button>
+      <button class="connection brain-connection" id="brainConnection" type="button" title="查看大脑链路">
+        <span class="dot" id="brainDot"></span>
+        <span class="connection-copy"><strong>大脑</strong><span id="brainText">未配置</span></span>
+      </button>
+    </div>
+    <div class="top-actions">
+      <button class="button quiet mobile-only" id="sessionsButton" type="button">会话</button>
+      <button class="button quiet" id="refreshButton" type="button">刷新</button>
+      <button class="button" id="settingsButton" type="button">设置</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="pane sessions-pane" aria-label="会话列表">
+      <div class="pane-heading"><h2 id="sessionsTitle">实时会话</h2><span class="count" id="sessionCount">0</span></div>
+      <div class="session-tabs" role="tablist" aria-label="会话筛选">
+        <button class="session-tab active" id="allSessionsTab" type="button" role="tab" aria-selected="true">全部 0</button>
+        <button class="session-tab handoff" id="handoffSessionsTab" type="button" role="tab" aria-selected="false">待人工 0</button>
+      </div>
+      <div class="search-wrap"><label class="sr-only" for="conversationSearchInput">搜索会话</label><input id="conversationSearchInput" name="qianniu-conversation-search-v2" type="search" placeholder="搜索买家或消息" autocomplete="off" autocapitalize="none" spellcheck="false" data-form-type="other" data-lpignore="true"></div>
+      <div class="session-list" id="sessionList"></div>
+    </aside>
+
+    <section class="pane conversation-pane" aria-label="当前对话">
+      <header class="conversation-header">
+        <div class="conversation-title"><h1 id="buyerName">选择一个会话</h1><p id="conversationMeta">本地消息已就绪</p></div>
+        <div class="conversation-actions">
+          <div class="mode-switch" role="group" aria-label="会话接待模式">
+            <button id="aiModeButton" type="button" disabled>AI</button>
+            <button class="human" id="humanModeButton" type="button" disabled>人工</button>
+          </div>
+          <div class="open-state" id="openState" aria-live="polite"></div>
+        </div>
+      </header>
+      <div class="context-ledger" id="contextLedger"></div>
+      <div class="messages" id="messages"><div class="empty">请选择左侧会话</div></div>
+      <div class="composer">
+        <label class="sr-only" for="replyInput">回复内容</label>
+        <textarea id="replyInput" placeholder="输入回复内容" disabled></textarea>
+        <div class="composer-footer">
+          <span class="send-state" id="sendState" aria-live="polite"></span>
+          <button class="button primary" id="sendButton" type="button" disabled>发送</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="pane evidence-pane" id="evidencePane" aria-label="AI 白盒">
+      <div class="pane-heading"><h2>AI 白盒</h2><span class="count" id="evidenceUpdated">--:--</span></div>
+      <section class="evidence-section">
+        <div class="section-title"><h2>大脑连接</h2><span class="state-label" id="brainState">未配置</span></div>
+        <dl class="facts">
+          <dt>工位</dt><dd class="mono" id="brainAgent">-</dd>
+          <dt>地址</dt><dd class="mono" id="brainUrl">-</dd>
+          <dt>注册</dt><dd id="brainRegister">-</dd>
+          <dt>心跳</dt><dd id="brainHeartbeat">-</dd>
+          <dt>服务端模式</dt><dd id="brainServerMode">-</dd>
+          <dt>自动发送</dt><dd id="brainAutoSend">-</dd>
+          <dt>最近命令</dt><dd id="brainLastCommand">-</dd>
+          <dt>请求耗时</dt><dd class="mono" id="brainLatency">-</dd>
+          <dt>最近错误</dt><dd id="brainError">-</dd>
+        </dl>
+      </section>
+      <section class="evidence-section">
+        <div class="section-title"><h2>持久队列</h2><span class="state-label" id="queueState">本地优先</span></div>
+        <div class="metrics">
+          <div class="metric"><strong id="queuePending">0</strong><span>待上报</span></div>
+          <div class="metric"><strong id="queueDelivered">0</strong><span>已确认</span></div>
+          <div class="metric"><strong id="commandPending">0</strong><span>待回执</span></div>
+        </div>
+      </section>
+      <section class="evidence-section">
+        <div class="section-title"><h2>信号轨</h2><span class="state-label" id="detailCount">0 条会话消息</span></div>
+        <div class="signal-rail" id="signalRail"><div class="empty">暂无链路证据</div></div>
+      </section>
+      <section class="evidence-section">
+        <details><summary>完整运行状态</summary><pre id="rawStatus">{}</pre></details>
+      </section>
+    </aside>
+  </main>
+
+  <div class="drawer-backdrop" id="settingsBackdrop">
+    <section class="drawer" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <header class="drawer-header"><h2 id="settingsTitle">大脑连接设置</h2><button class="button quiet" id="closeSettings" type="button">关闭</button></header>
+      <div class="drawer-body">
+        <section class="form-section">
+          <h3>连接凭证</h3>
+          <div class="field"><label for="brainServerInput">大脑地址</label><input id="brainServerInput" name="brain-server-url" type="url" placeholder="http://127.0.0.1:18765" autocomplete="url"></div>
+          <div class="field"><label for="brainTokenInput">大脑工位令牌</label><input id="brainTokenInput" name="brain-agent-token" type="password" placeholder="输入大脑工位令牌" autocomplete="new-password"><small>与本机 127 工作台共用同一个令牌</small><span class="field-error" id="tokenHint"></span></div>
+        </section>
+        <section class="form-section">
+          <h3>工位身份</h3>
+          <div class="field"><label for="brainAgentInput">Agent ID</label><input id="brainAgentInput" name="brain-agent-id" autocomplete="off"></div>
+          <div class="field"><label for="brainNameInput">工位名称</label><input id="brainNameInput" name="brain-agent-name" autocomplete="off"></div>
+        </section>
+        <section class="form-section">
+          <h3>运行开关</h3>
+          <label class="toggle-row"><span><strong>连接大脑</strong><small>注册、心跳并上报启用后的新消息</small></span><input id="brainEnabledInput" type="checkbox"></label>
+          <label class="toggle-row"><span><strong>AI 自动回复</strong><small>允许大脑命令调用当前千牛发送链路</small></span><input id="aiReplyInput" type="checkbox"></label>
+          <label class="toggle-row"><span><strong>远程打开会话</strong><small>允许大脑主动切换千牛当前聊天</small></span><input id="remoteOpenInput" type="checkbox"></label>
+        </section>
+      </div>
+      <footer class="drawer-footer">
+        <span class="form-state" id="settingsState" aria-live="polite"></span>
+        <div class="form-actions"><button class="button" id="testBrainButton" type="button">测试连接</button><button class="button primary" id="saveBrainButton" type="button">保存</button></div>
+      </footer>
+    </section>
+  </div>
+
+  <script>
+    const TOKEN = '__WORKBENCH_TOKEN__';
+    const dockMode = new URLSearchParams(location.search).get('dock') === '1';
+    const el = id => document.getElementById(id);
+    if (dockMode) { document.body.classList.add('dock'); el('sessionsTitle').textContent = '聚合接待'; }
+    const state = {
+      sessions: [], current: null, messages: [], status: null, diagnostics: null,
+      busy: false, sending: false, canSend: false, openingKey: '', lastNewest: '',
+      lastMessageRevision: '', settingsOpen: false, tokenConfigured: false, controlBusy: false,
+      sessionFilter: 'all', sessionRevision: null,
+    };
+    const conversationSearch = el('conversationSearchInput');
+    conversationSearch.value = '';
+    conversationSearch.defaultValue = '';
+    let conversationSearchEdited = false;
+    for (const eventName of ['pointerdown', 'keydown', 'paste']) {
+      conversationSearch.addEventListener(eventName, () => { conversationSearchEdited = true; });
+    }
+    function rejectUnexpectedSearchAutofill() {
+      if (conversationSearchEdited || !/^agent-[a-z0-9-]{8,}$/i.test(conversationSearch.value.trim())) return false;
+      conversationSearch.value = '';
+      renderSessions();
+      return true;
+    }
+    const keyOf = row => `${row.account}\u0000${row.buyer_id}`;
+    const safeJson = value => JSON.stringify(value ?? {}, null, 2);
+    const shortTime = value => {
+      const date = new Date(Number(value || 0) * 1000);
+      return Number.isNaN(date.getTime()) ? '--:--' : date.toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false});
+    };
+    const relativeTime = value => {
+      const seconds = Math.max(0, Date.now() / 1000 - Number(value || 0));
+      if (!value) return '-';
+      if (seconds < 3) return '刚刚';
+      if (seconds < 60) return `${Math.floor(seconds)} 秒前`;
+      if (seconds < 3600) return `${Math.floor(seconds / 60)} 分前`;
+      return shortTime(value);
+    };
+    async function api(path, options = {}) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), options.timeout || 8000);
+      try {
+        const response = await fetch(path, {
+          ...options,
+          headers: {'X-Workbench-Token': TOKEN, ...(options.headers || {})},
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        let data = {};
+        try { data = await response.json(); } catch (_) {}
+        if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+        return data;
+      } catch (error) {
+        if (error.name === 'AbortError') throw new Error('本地服务响应超时');
+        throw error;
+      } finally { clearTimeout(timeout); }
+    }
+    function dotState(node, mode) { node.className = `dot ${mode || ''}`; }
+    function sendStatusText(status, role) {
+      const labels = {
+        in_flight: '调用中', submitted: '已提交，等待千牛确认', confirmed: '千牛已确认',
+        unknown: '结果未知，请勿重复发送', rejected: '发送失败',
+        ai_draft: 'AI 草稿 · 未发送',
+        delivered: role === 'seller' ? '千牛已确认' : '本地已持久化', sending: '持久化中', pending: '本地已接收',
+      };
+      return labels[status] || status || '本地已接收';
+    }
+    function renderSessions() {
+      const query = conversationSearch.value.trim().toLowerCase();
+      const handoffCount = state.sessions.filter(item => item.ai_mode === 'human').length;
+      el('allSessionsTab').textContent = `全部 ${state.sessions.length}`;
+      el('handoffSessionsTab').textContent = `待人工 ${handoffCount}`;
+      for (const [id, active] of [['allSessionsTab', state.sessionFilter === 'all'], ['handoffSessionsTab', state.sessionFilter === 'handoff']]) {
+        el(id).classList.toggle('active', active); el(id).setAttribute('aria-selected', String(active));
+      }
+      const rows = state.sessions.filter(item => {
+        if (state.sessionFilter === 'handoff' && item.ai_mode !== 'human') return false;
+        return !query || `${item.buyer_nick} ${item.buyer_id} ${item.last_message} ${item.handoff_reason || ''}`.toLowerCase().includes(query);
+      });
+      el('sessionCount').textContent = String(rows.length);
+      const list = el('sessionList'); list.replaceChildren();
+      if (!rows.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = state.sessionFilter === 'handoff' ? '暂无待人工会话' : '暂无接待消息'; list.append(empty); return; }
+      for (const session of rows) {
+        const sessionKey = keyOf(session);
+        const button = document.createElement('button');
+        button.className = `session-row${session.ai_mode === 'human' ? ' handoff' : ''}${state.current && keyOf(state.current) === sessionKey ? ' active' : ''}${state.openingKey === sessionKey ? ' opening' : ''}`;
+        button.type = 'button';
+        const avatar = document.createElement('span'); avatar.className = 'avatar'; avatar.textContent = (session.buyer_nick || '?').slice(0, 1);
+        const main = document.createElement('span'); main.className = 'session-main';
+        const nameWrap = document.createElement('span'); nameWrap.className = 'session-name-wrap';
+        const name = document.createElement('span'); name.className = 'session-name'; name.textContent = session.buyer_nick || session.buyer_id;
+        nameWrap.append(name);
+        if (session.ai_mode === 'human') { const tag = document.createElement('span'); tag.className = 'handoff-tag'; tag.textContent = '待人工'; tag.title = session.handoff_reason || '需要人工介入'; nameWrap.append(tag); }
+        const preview = document.createElement('span'); preview.className = 'session-preview'; preview.textContent = session.ai_mode === 'human' && session.handoff_reason ? `${session.handoff_reason} · ${session.last_message || '暂无消息内容'}` : (session.last_message || '暂无消息内容');
+        main.append(nameWrap, preview);
+        const side = document.createElement('span'); side.className = 'session-side';
+        const time = document.createElement('span'); time.className = 'session-time'; time.textContent = shortTime(session.last_ts);
+        const glyph = document.createElement('span'); glyph.className = 'open-glyph';
+        glyph.textContent = session.ai_mode === 'human' ? (dockMode ? '人↗' : '人工') : (dockMode ? '↗' : '›');
+        side.append(time, glyph); button.append(avatar, main, side);
+        button.addEventListener('click', () => selectSession(session, dockMode));
+        list.append(button);
+      }
+    }
+    function renderContext() {
+      const context = [...state.messages].reverse().find(item => item.context && Object.keys(item.context).length)?.context || {};
+      const ledger = el('contextLedger'); ledger.replaceChildren();
+      const facts = [
+        ['商品', context.goods_name || context.goods_id],
+        ['价格 / 规格', [context.goods_price, context.goods_spec].filter(Boolean).join(' / ')],
+        ['订单', context.order_id || (context.order_info && context.order_info.order_id)],
+        ['物流', context.express_order_number || (context.order_info && context.order_info.express_order_number)],
+      ].filter(row => row[1]);
+      ledger.classList.toggle('visible', facts.length > 0);
+      for (const [label, value] of facts) {
+        const item = document.createElement('div'); item.className = 'context-item';
+        const small = document.createElement('small'); small.textContent = label;
+        const strong = document.createElement('strong'); strong.textContent = String(value); strong.title = String(value);
+        item.append(small, strong); ledger.append(item);
+      }
+    }
+    function renderMessages(scroll = false) {
+      const box = el('messages'); box.replaceChildren();
+      if (!state.current || !state.messages.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = state.current ? '暂无消息' : '请选择左侧会话'; box.append(empty); renderContext(); return; }
+      for (const message of state.messages) {
+        const row = document.createElement('div'); row.className = `message ${message.role === 'seller' ? 'seller' : (message.role === 'draft' ? 'draft' : 'user')}`;
+        const bubble = document.createElement('div'); bubble.className = 'bubble';
+        const body = document.createElement('div'); body.className = 'bubble-body'; body.textContent = message.content;
+        const meta = document.createElement('div'); meta.className = `bubble-meta${['unknown', 'rejected'].includes(message.status) ? ' error' : ''}`;
+        meta.textContent = `${shortTime(message.ts)} · ${sendStatusText(message.status, message.role)}`;
+        const messageId = message.msg_id || message.event_id || '-';
+        const idLine = document.createElement('div'); idLine.className = 'bubble-id'; idLine.textContent = `ID ${messageId}`; idLine.title = messageId;
+        bubble.append(body, meta, idLine); row.append(bubble); box.append(row);
+      }
+      renderContext();
+      if (scroll) box.scrollTop = box.scrollHeight;
+      el('detailCount').textContent = `${state.messages.length} 条会话消息`;
+    }
+    async function loadMessages(forceScroll = false) {
+      if (!state.current || dockMode) return;
+      const query = new URLSearchParams({account: state.current.account, buyer_id: state.current.buyer_id});
+      const data = await api(`/api/v1/session?${query}`);
+      const newest = data.messages.length ? data.messages[data.messages.length - 1].event_id : '';
+      const revision = data.messages.map(item => `${item.event_id}\u0000${item.msg_id}\u0000${item.role}\u0000${item.status}\u0000${item.content}`).join('\u0001');
+      const changed = newest !== state.lastNewest || revision !== state.lastMessageRevision;
+      state.messages = data.messages; state.lastNewest = newest; state.lastMessageRevision = revision;
+      if (changed || forceScroll) renderMessages(forceScroll || changed);
+    }
+    async function openInQianniu(session) {
+      const sessionKey = keyOf(session); if (state.openingKey) return;
+      state.openingKey = sessionKey; el('openState').textContent = `正在打开 ${session.buyer_nick || session.buyer_id}`; renderSessions();
+      try {
+        await api('/api/v1/open-conversation', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(session)});
+        el('openState').textContent = `已在千牛打开 ${session.buyer_nick || session.buyer_id}`;
+      } catch (error) { el('openState').textContent = error.message; el('openState').className = 'open-state error'; }
+      finally { state.openingKey = ''; renderSessions(); }
+    }
+    async function selectSession(session, open = false) {
+      state.current = session; state.lastNewest = ''; state.lastMessageRevision = '';
+      el('buyerName').textContent = session.buyer_nick || session.buyer_id;
+      renderSessionMode();
+      el('replyInput').disabled = false;
+      renderSessions(); await loadMessages(true); updateSendButton(); renderEvidence();
+      if (open) await openInQianniu(session);
+      if (innerWidth <= 760) document.body.classList.remove('show-sessions');
+    }
+    function renderSessionMode() {
+      const current = state.current; const mode = current?.ai_mode || 'ai';
+      el('aiModeButton').classList.toggle('active', !!current && mode === 'ai');
+      el('humanModeButton').classList.toggle('active', !!current && mode === 'human');
+      el('aiModeButton').disabled = !current || state.controlBusy;
+      el('humanModeButton').disabled = !current || state.controlBusy;
+      if (!current) return;
+      const modeText = mode === 'human' ? `人工接管${current.handoff_reason ? ` · ${current.handoff_reason}` : ''}` : 'AI 可回复';
+      el('conversationMeta').textContent = `${current.account} · ${current.buyer_id} · ${modeText}`;
+    }
+    async function setSessionMode(mode) {
+      if (!state.current || state.controlBusy || state.current.ai_mode === mode) return;
+      state.controlBusy = true; renderSessionMode();
+      try {
+        const data = await api('/api/v1/session/control', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({account: state.current.account, buyer_id: state.current.buyer_id, mode}),
+        });
+        Object.assign(state.current, data.control);
+        const stored = state.sessions.find(item => keyOf(item) === keyOf(state.current));
+        if (stored) Object.assign(stored, data.control);
+        el('openState').className = 'open-state';
+        el('openState').textContent = mode === 'human' ? 'AI 已暂停' : 'AI 已恢复';
+        renderSessions();
+      } catch (error) {
+        el('openState').className = 'open-state error'; el('openState').textContent = error.message;
+      } finally { state.controlBusy = false; renderSessionMode(); }
+    }
+    function renderBridgeStatus() {
+      if (!state.status) return;
+      const bridge = state.status.bridge;
+      const connected = bridge.browser.connected > 0 && !bridge.browser.error;
+      const appbiz = bridge.appbiz_send || {};
+      const receiveReady = connected || !!appbiz.receive_ready;
+      const wasSendReady = state.canSend;
+      state.canSend = receiveReady && bridge.send_enabled && appbiz.ready;
+      if (!wasSendReady && state.canSend && el('sendState').textContent === '千牛发送链路尚未就绪') {
+        el('sendState').className = 'send-state';
+        el('sendState').textContent = '';
+      }
+      dotState(el('qianniuDot'), receiveReady ? (state.canSend ? 'ok' : 'warn') : 'bad');
+      el('qianniuText').textContent = !receiveReady ? '接收链路断开' : (state.canSend ? (connected ? '收发就绪' : '原生收发就绪') : '仅接收就绪');
+      const brain = bridge.brain || {};
+      const server = brain.server_status || {};
+      const serverKnown = !!brain.last_server_status_at;
+      const shadowOnly = serverKnown && !server.own_auto_send_enabled;
+      const brainMode = !brain.configured ? '' : (brain.state === 'online' ? (shadowOnly ? 'warn' : 'ok') : (brain.state === 'degraded' ? 'bad' : 'warn'));
+      dotState(el('brainDot'), brainMode);
+      el('brainText').textContent = !brain.configured ? '未配置' : (brain.state === 'online' ? (shadowOnly ? '影子模式' : '已连接') : (brain.last_error || '连接中'));
+      el('versionLabel').textContent = `v${state.status.version}`;
+      el('replyInput').disabled = !state.current || state.sending;
+      updateSendButton();
+    }
+    function signalEntry(stage, mode, detail, ts, evidence) {
+      const item = document.createElement('div'); item.className = 'signal-item';
+      const dot = document.createElement('span'); dot.className = `signal-dot ${mode || ''}`;
+      const head = document.createElement('div'); head.className = 'signal-head';
+      const strong = document.createElement('strong'); strong.textContent = stage;
+      const time = document.createElement('time'); time.textContent = shortTime(ts);
+      head.append(strong, time);
+      const copy = document.createElement('div'); copy.className = 'signal-detail'; copy.textContent = detail;
+      item.append(dot, head, copy);
+      if (evidence && Object.keys(evidence).length) {
+        const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = '查看证据';
+        const pre = document.createElement('pre'); pre.textContent = safeJson(evidence); details.append(summary, pre); item.append(details);
+      }
+      return item;
+    }
+    function renderEvidence() {
+      if (!state.status) return;
+      const bridge = state.status.bridge; const brain = bridge.brain || {};
+      const server = brain.server_status || {}; const serverKnown = !!brain.last_server_status_at;
+      const shadowOnly = serverKnown && !server.own_auto_send_enabled;
+      el('brainState').textContent = !brain.configured ? '未配置' : (brain.state === 'online' ? (shadowOnly ? '在线 · 仅影子' : '在线') : '降级');
+      el('brainState').className = `state-label ${brain.state === 'online' ? (shadowOnly ? 'warn' : 'ok') : (brain.last_error ? 'bad' : 'warn')}`;
+      el('brainAgent').textContent = brain.agent_id || '-'; el('brainUrl').textContent = brain.server_url || '-';
+      el('brainRegister').textContent = relativeTime(brain.last_register_at); el('brainHeartbeat').textContent = relativeTime(brain.last_heartbeat_at);
+      el('brainServerMode').textContent = serverKnown ? `${server.brain_mode || '未知'} / ${server.send_mode || '未知'}` : '-';
+      el('brainAutoSend').textContent = serverKnown ? (server.own_auto_send_enabled ? `已开启 · ${server.armed_shop_count || 0} 家店` : '未开启（只生成草稿）') : '-';
+      el('brainLastCommand').textContent = brain.last_command_at ? `${relativeTime(brain.last_command_at)} · ${brain.last_command_type || 'unknown'}` : '从未收到';
+      el('brainLatency').textContent = brain.last_request_ms ? `${brain.last_request_ms} ms` : '-';
+      el('brainError').textContent = brain.last_error || '-'; el('brainError').title = brain.last_error || '';
+      const events = brain.events || {}; const commands = brain.commands || {};
+      el('queuePending').textContent = String(events.pending || 0); el('queueDelivered').textContent = String(events.delivered || 0);
+      el('commandPending').textContent = String(commands.result_pending || 0);
+      el('queueState').textContent = events.oldest_pending_seconds ? `最老 ${Math.floor(events.oldest_pending_seconds)} 秒` : '本地优先';
+      const entries = [];
+      for (const message of state.messages.slice(-8)) {
+        entries.push({
+          ts: message.ts,
+          stage: message.role === 'seller' ? '千牛发送' : (message.role === 'draft' ? '大脑草稿' : '本地接收'),
+          mode: ['unknown', 'rejected'].includes(message.status) ? 'error' : (message.status === 'submitted' ? 'warn' : 'ok'),
+          detail: `${message.content.slice(0, 80)} · ${sendStatusText(message.status, message.role)}`,
+          evidence: {event_id: message.event_id, msg_id: message.msg_id, source: message.source, capture_mode: message.capture_mode, raw_type: message.raw_type, context: message.context, error: message.error || ''},
+        });
+      }
+      const diagnostics = state.diagnostics || {};
+      if (serverKnown) entries.push({
+        ts: brain.last_server_status_at,
+        stage: '大脑发送策略',
+        mode: server.own_auto_send_enabled ? 'ok' : 'warn',
+        detail: server.own_auto_send_enabled ? `自动发送已开启 · ${server.armed_shop_count || 0} 家店` : '当前仅生成影子草稿，不会下发发送命令',
+        evidence: server,
+      });
+      if (brain.last_event_upload_at && brain.last_event_response) entries.push({
+        ts: brain.last_event_upload_at,
+        stage: '大脑事件回执',
+        mode: (brain.last_event_response.scope_rejected || brain.last_event_response.shop_rejected) ? 'error' : 'ok',
+        detail: `入库 ${brain.last_event_response.ingested_local || 0} · AI 队列 ${brain.last_event_response.shadow_queued || 0}`,
+        evidence: brain.last_event_response,
+      });
+      for (const item of diagnostics.brain_activity || []) entries.push({ts: item.ts, stage: item.stage, mode: item.state === 'error' ? 'error' : 'ok', detail: item.detail, evidence: item.evidence});
+      for (const command of diagnostics.recent_commands || []) entries.push({
+        ts: command.created_at, stage: `AI 命令 · ${command.type || 'unknown'}`,
+        mode: command.status === 'acknowledged' ? 'ok' : (command.last_error ? 'error' : 'warn'),
+        detail: `${command.command_id} · ${command.status}`,
+        evidence: {buyer_id: command.buyer_id, result: command.result, attempts: command.attempts, last_error: command.last_error},
+      });
+      entries.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
+      const rail = el('signalRail'); rail.replaceChildren();
+      if (!entries.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = '暂无链路证据'; rail.append(empty); }
+      else for (const item of entries.slice(0, 30)) rail.append(signalEntry(item.stage, item.mode, item.detail, item.ts, item.evidence));
+      el('rawStatus').textContent = safeJson(bridge); el('evidenceUpdated').textContent = shortTime(Date.now() / 1000);
+    }
+    async function refresh() {
+      if (state.busy) return; state.busy = true;
+      try {
+        const requests = [api('/api/v1/status'), api('/api/v1/sessions')];
+        if (!dockMode) requests.push(api('/api/v1/diagnostics'));
+        const [status, sessions, diagnostics] = await Promise.all(requests);
+        const nextSessions = sessions.sessions;
+        const nextSessionRevision = nextSessions.map(item => [
+          item.account, item.buyer_id, item.buyer_nick, item.last_message, item.last_ts,
+          item.message_count, item.last_status, item.ai_mode, item.handoff_reason,
+        ].join('\u0000')).join('\u0001');
+        const sessionsChanged = state.sessionRevision !== nextSessionRevision;
+        state.status = status; state.sessions = nextSessions; state.sessionRevision = nextSessionRevision;
+        if (diagnostics) state.diagnostics = diagnostics;
+        if (state.current) { const latest = state.sessions.find(item => keyOf(item) === keyOf(state.current)); if (latest) state.current = latest; }
+        renderSessionMode();
+        renderBridgeStatus(); if (sessionsChanged) renderSessions();
+        if (!state.current && state.sessions.length) await selectSession(state.sessions[0], false);
+        else if (state.current) await loadMessages(false);
+        renderEvidence();
+      } catch (error) {
+        dotState(el('qianniuDot'), 'bad'); el('qianniuText').textContent = error.message;
+      } finally { state.busy = false; }
+    }
+    function updateSendButton() { el('sendButton').disabled = !state.current || !el('replyInput').value.trim() || state.sending; }
+    async function sendReply() {
+      const content = el('replyInput').value.trim(); if (!state.current || !content) return;
+      if (!state.canSend) { el('sendState').className = 'send-state error'; el('sendState').textContent = '千牛发送链路尚未就绪'; return; }
+      state.sending = true; updateSendButton(); el('replyInput').disabled = true; el('sendState').className = 'send-state'; el('sendState').textContent = '正在提交给千牛';
+      try {
+        const result = await api('/api/v1/reply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({request_id: `workbench-${crypto.randomUUID()}`, buyer_cid: state.current.buyer_id, content})});
+        el('replyInput').value = ''; el('sendState').textContent = result.confirmed ? '千牛已确认' : '已提交，等待千牛确认'; await loadMessages(true);
+      } catch (error) { el('sendState').className = 'send-state error'; el('sendState').textContent = error.message; }
+      finally { state.sending = false; el('replyInput').disabled = !state.current; updateSendButton(); el('replyInput').focus(); }
+    }
+    async function openSettings() {
+      state.settingsOpen = true; el('settingsBackdrop').classList.add('visible'); el('settingsState').textContent = '读取配置';
+      try {
+        const data = await api('/api/v1/brain/config'); const config = data.config;
+        el('brainServerInput').value = config.server_url || ''; el('brainTokenInput').value = '';
+        el('brainAgentInput').value = config.agent_id || ''; el('brainNameInput').value = config.agent_name || '';
+        el('brainEnabledInput').checked = !!config.enabled; el('aiReplyInput').checked = !!config.ai_reply_enabled;
+        el('remoteOpenInput').checked = !!config.remote_open_chat_enabled; state.tokenConfigured = !!config.token_configured;
+        el('tokenHint').textContent = state.tokenConfigured ? '令牌已保存；留空不会修改' : '';
+        el('settingsState').textContent = ''; el('brainServerInput').focus();
+      } catch (error) { el('settingsState').className = 'form-state error'; el('settingsState').textContent = error.message; }
+    }
+    function closeSettings() { state.settingsOpen = false; el('settingsBackdrop').classList.remove('visible'); el('settingsButton').focus(); }
+    function brainSettingsBody() {
+      return {
+        server_url: el('brainServerInput').value.trim(), agent_token: el('brainTokenInput').value.trim(),
+        agent_id: el('brainAgentInput').value.trim(), agent_name: el('brainNameInput').value.trim(),
+        enabled: el('brainEnabledInput').checked, ai_reply_enabled: el('aiReplyInput').checked,
+        remote_open_chat_enabled: el('remoteOpenInput').checked,
+      };
+    }
+    async function saveBrainSettings(closeAfter = true) {
+      el('settingsState').className = 'form-state'; el('settingsState').textContent = '正在保存';
+      try {
+        const data = await api('/api/v1/brain/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(brainSettingsBody())});
+        state.tokenConfigured = data.config.token_configured; el('brainTokenInput').value = '';
+        el('tokenHint').textContent = state.tokenConfigured ? '令牌已保存；留空不会修改' : '';
+        el('settingsState').textContent = '已保存，连接器正在重新加载'; await refresh();
+        if (closeAfter) setTimeout(closeSettings, 450);
+        return true;
+      } catch (error) { el('settingsState').className = 'form-state error'; el('settingsState').textContent = error.message; return false; }
+    }
+    async function testBrain() {
+      if (!await saveBrainSettings(false)) return;
+      el('settingsState').className = 'form-state'; el('settingsState').textContent = '正在验证地址和令牌';
+      try { const data = await api('/api/v1/brain/test', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}', timeout: 12000}); el('settingsState').textContent = data.message; await refresh(); }
+      catch (error) { el('settingsState').className = 'form-state error'; el('settingsState').textContent = error.message; }
+    }
+    el('refreshButton').addEventListener('click', refresh);
+    el('sessionsButton').addEventListener('click', () => document.body.classList.toggle('show-sessions'));
+    el('allSessionsTab').addEventListener('click', () => { state.sessionFilter = 'all'; renderSessions(); });
+    el('handoffSessionsTab').addEventListener('click', () => { state.sessionFilter = 'handoff'; renderSessions(); });
+    conversationSearch.addEventListener('input', () => { if (!rejectUnexpectedSearchAutofill()) renderSessions(); });
+    for (const delay of [0, 250, 1000, 2500]) setTimeout(rejectUnexpectedSearchAutofill, delay);
+    el('replyInput').addEventListener('input', updateSendButton);
+    el('replyInput').addEventListener('keydown', event => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); sendReply(); } });
+    el('sendButton').addEventListener('click', sendReply);
+    el('aiModeButton').addEventListener('click', () => setSessionMode('ai'));
+    el('humanModeButton').addEventListener('click', () => setSessionMode('human'));
+    el('settingsButton').addEventListener('click', openSettings);
+    el('closeSettings').addEventListener('click', closeSettings);
+    el('saveBrainButton').addEventListener('click', () => saveBrainSettings(true));
+    el('testBrainButton').addEventListener('click', testBrain);
+    el('settingsBackdrop').addEventListener('click', event => { if (event.target === el('settingsBackdrop')) closeSettings(); });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape' && state.settingsOpen) closeSettings(); });
+    for (const id of ['qianniuConnection', 'brainConnection']) el(id).addEventListener('click', () => document.body.classList.toggle('inspector-open'));
+    if (new URLSearchParams(location.search).get('settings') === '1') openSettings();
+    refresh(); setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

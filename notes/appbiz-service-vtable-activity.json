@@ -1,0 +1,137 @@
+{
+  "pid": 15816,
+  "module_base": "0x7fff661c0000",
+  "candidate_count": 3,
+  "candidates": [
+    "0x1e726b47fe0",
+    "0x1e726b485b0",
+    "0x1e726b49150"
+  ],
+  "hook_count": 44,
+  "activity": {
+    "0x1e726b47fe0": {
+      "total": 0,
+      "slots": {},
+      "samples": []
+    },
+    "0x1e726b485b0": {
+      "total": 6,
+      "slots": {
+        "3": 3,
+        "4": 3
+      },
+      "samples": [
+        {
+          "function": "0x7fff66c2c080",
+          "rva": "0xa6c080",
+          "slots": [
+            3
+          ],
+          "strings": [
+            {
+              "arg": 1,
+              "value": "2217298756354.1-11789284.1#11001@cntaobao"
+            },
+            {
+              "arg": 6,
+              "value": "GetNewMsg|1569939981"
+            }
+          ]
+        },
+        {
+          "function": "0x7fff66c33c30",
+          "rva": "0xa73c30",
+          "slots": [
+            4
+          ],
+          "strings": [
+            {
+              "arg": 1,
+              "value": "2217298756354.1-11789284.1#11001@cntaobao"
+            }
+          ]
+        },
+        {
+          "function": "0x7fff66c2c080",
+          "rva": "0xa6c080",
+          "slots": [
+            3
+          ],
+          "strings": [
+            {
+              "arg": 1,
+              "value": "2217298756354.1-11789284.1#11001@cntaobao"
+            },
+            {
+              "arg": 6,
+              "value": "GetNewMsg|1569944989"
+            }
+          ]
+        },
+        {
+          "function": "0x7fff66c33c30",
+          "rva": "0xa73c30",
+          "slots": [
+            4
+          ],
+          "strings": [
+            {
+              "arg": 1,
+              "value": "2217298756354.1-11789284.1#11001@cntaobao"
+            }
+          ]
+        },
+        {
+          "function": "0x7fff66c2c080",
+          "rva": "0xa6c080",
+          "slots": [
+            3
+          ],
+          "strings": [
+            {
+              "arg": 1,
+              "value": "2217298756354.1-11789284.1#11001@cntaobao"
+            },
+            {
+              "arg": 6,
+              "value": "GetNewMsg|1569949984"
+            }
+          ]
+        },
+        {
+          "function": "0x7fff66c33c30",
+          "rva": "0xa73c30",
+          "slots": [
+            4
+          ],
+          "strings": [
+            {
+              "arg": 1,
+              "value": "2217298756354.1-11789284.1#11001@cntaobao"
+            }
+          ]
+        }
+      ]
+    },
+    "0x1e726b49150": {
+      "total": 0,
+      "slots": {},
+      "samples": []
+    }
+  },
+  "messages": [
+    {
+      "type": "send",
+      "payload": {
+        "event": "ready",
+        "pid": 15816,
+        "candidates": [
+          "0x1e726b47fe0",
+          "0x1e726b485b0",
+          "0x1e726b49150"
+        ],
+        "hook_count": 44
+      }
+    }
+  ]
+}

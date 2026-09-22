@@ -1,0 +1,91 @@
+function 0xa7b030..0xa7b130 size=256
+00a7b030  mov      qword ptr [rsp + 0x10], rbx
+00a7b035  mov      qword ptr [rsp + 0x20], rsi
+00a7b03a  push     rdi
+00a7b03b  sub      rsp, 0x20
+00a7b03f  mov      rdi, rcx
+00a7b042  mov      ecx, 0x20
+00a7b047  call     0x15afee4
+00a7b04c  mov      rsi, rax
+00a7b04f  mov      qword ptr [rsp + 0x30], rax
+00a7b054  lea      rax, [rip + 0xe34c75]
+00a7b05b  mov      qword ptr [rsi], rax
+00a7b05e  lea      rbx, [rsi + 8]
+00a7b062  mov      qword ptr [rsp + 0x40], rbx
+00a7b067  mov      rax, qword ptr [rdi + 8]
+00a7b06b  mov      qword ptr [rbx], rax
+00a7b06e  lea      rcx, [rbx + 8]
+00a7b072  lea      rdx, [rdi + 0x10]
+00a7b076  call     qword ptr [rip + 0xd8cc7c]
+00a7b07c  nop      
+00a7b07d  mov      rcx, qword ptr [rdi + 0x18]
+00a7b081  mov      qword ptr [rbx + 0x10], rcx
+00a7b085  test     rcx, rcx
+00a7b088  je       0xa7b090
+00a7b08a  mov      rdx, qword ptr [rcx]
+00a7b08d  call     qword ptr [rdx]
+00a7b08f  nop      
+00a7b090  mov      rax, rsi
+00a7b093  mov      rbx, qword ptr [rsp + 0x38]
+00a7b098  mov      rsi, qword ptr [rsp + 0x48]
+00a7b09d  add      rsp, 0x20
+00a7b0a1  pop      rdi
+00a7b0a2  ret      
+00a7b0a3  int3     
+00a7b0a4  int3     
+00a7b0a5  int3     
+00a7b0a6  int3     
+00a7b0a7  int3     
+00a7b0a8  int3     
+00a7b0a9  int3     
+00a7b0aa  int3     
+00a7b0ab  int3     
+00a7b0ac  int3     
+00a7b0ad  int3     
+00a7b0ae  int3     
+00a7b0af  int3     
+00a7b0b0  mov      qword ptr [rsp + 0x10], rbx
+00a7b0b5  mov      qword ptr [rsp + 0x20], rsi
+00a7b0ba  push     rdi
+00a7b0bb  sub      rsp, 0x20
+00a7b0bf  mov      rdi, rcx
+00a7b0c2  mov      ecx, 0x20
+00a7b0c7  call     0x15afee4
+00a7b0cc  mov      rsi, rax
+00a7b0cf  mov      qword ptr [rsp + 0x30], rax
+00a7b0d4  lea      rax, [rip + 0xe34bbd]
+00a7b0db  mov      qword ptr [rsi], rax
+00a7b0de  lea      rbx, [rsi + 8]
+00a7b0e2  mov      qword ptr [rsp + 0x40], rbx
+00a7b0e7  mov      rax, qword ptr [rdi + 8]
+00a7b0eb  mov      qword ptr [rbx], rax
+00a7b0ee  lea      rcx, [rbx + 8]
+00a7b0f2  lea      rdx, [rdi + 0x10]
+00a7b0f6  call     qword ptr [rip + 0xd8cbfc]
+00a7b0fc  nop      
+00a7b0fd  mov      rcx, qword ptr [rdi + 0x18]
+00a7b101  mov      qword ptr [rbx + 0x10], rcx
+00a7b105  test     rcx, rcx
+00a7b108  je       0xa7b110
+00a7b10a  mov      rdx, qword ptr [rcx]
+00a7b10d  call     qword ptr [rdx]
+00a7b10f  nop      
+00a7b110  mov      rax, rsi
+00a7b113  mov      rbx, qword ptr [rsp + 0x38]
+00a7b118  mov      rsi, qword ptr [rsp + 0x48]
+00a7b11d  add      rsp, 0x20
+00a7b121  pop      rdi
+00a7b122  ret      
+00a7b123  int3     
+00a7b124  int3     
+00a7b125  int3     
+00a7b126  int3     
+00a7b127  int3     
+00a7b128  int3     
+00a7b129  int3     
+00a7b12a  int3     
+00a7b12b  int3     
+00a7b12c  int3     
+00a7b12d  int3     
+00a7b12e  int3     
+00a7b12f  int3     

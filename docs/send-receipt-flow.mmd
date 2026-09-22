@@ -1,0 +1,31 @@
+sequenceDiagram
+  actor Operator as 操作员
+  participant UI as 本地工作台
+  participant Bridge as Bridge 1.4
+  database DB as SQLite
+  participant Frida as AppBiz Agent
+  participant Adapter as Native Adapter
+  participant Qianniu as 千牛 AppBiz
+
+  Operator->>UI: 发送一条回复
+  UI->>Bridge: POST /api/v1/send/text
+  Bridge->>DB: 原子写入 in_flight
+  Bridge->>Frida: sendtext(receipt_token)
+  Frida->>Adapter: appbiz_send_text_v2
+  Adapter->>Qianniu: 调用文本发送入口
+  Qianniu-->>Adapter: 异步 MessageSDK 回调
+  alt result_code = 0
+    Adapter-->>Bridge: callback success
+    Bridge->>DB: confirmed
+  else result_code != 0
+    Adapter-->>Bridge: callback rejected
+    Bridge->>DB: rejected
+  else 回调暂未到达
+    Bridge->>DB: submitted
+    alt 捕获到相同会话和内容的卖家回显
+      Bridge->>DB: confirmed
+    else 超过确认窗口
+      Bridge->>DB: unknown，禁止自动重发
+    end
+  end
+  Bridge-->>UI: 返回并展示持久化状态

@@ -1,0 +1,36 @@
+flowchart LR
+  subgraph qn[Official Qianniu 9.97.59N]
+    login[Normal operator login]
+    page[Chat page and IMSDK]
+    appbiz[CAppMessageService slot 18]
+    page --> login
+    appbiz --> login
+  end
+
+  subgraph bridge[QianniuStandaloneBridge]
+    zip[Packaged WebUI injection]
+    ws[Loopback WebSocket]
+    normalize[Canonical message ID]
+    queue[(SQLite state machine)]
+    delivery[Durable ACK delivery]
+    workbench[Full local workbench 18767]
+    dock[Docked aggregation list]
+    open[Official QNAbilityCenter openChat]
+    observe[Read-only AppBiz observer]
+    api[Token-protected send API]
+    helper[MSVC ABI adapter]
+    updater[Updater guard]
+    zip --> page
+    page --> ws --> normalize --> queue --> delivery --> workbench --> dock
+    dock --> open --> page
+    observe --> appbiz
+    api --> helper --> appbiz
+    updater --> zip
+  end
+
+  delivery --> seat[Optional legacy 127.0.0.1:18766 workbench]
+
+  gates{Send enabled and ABI validated and service selected?}
+  api --> gates
+  gates -- yes --> helper
+  gates -- no --> reject[Reject before native call]

@@ -1,0 +1,101 @@
+function 0x29af00..0x29b000 size=256
+0029af00  lea      rax, [rcx + 8]
+0029af04  ret      
+0029af05  int3     
+0029af06  int3     
+0029af07  int3     
+0029af08  int3     
+0029af09  int3     
+0029af0a  int3     
+0029af0b  int3     
+0029af0c  int3     
+0029af0d  int3     
+0029af0e  int3     
+0029af0f  int3     
+0029af10  lea      rax, [rip + 0x15ae789]
+0029af17  xorps    xmm0, xmm0
+0029af1a  mov      qword ptr [rdx], rax
+0029af1d  mov      rax, qword ptr [rcx + 8]
+0029af21  mov      qword ptr [rdx + 8], rax
+0029af25  xor      eax, eax
+0029af27  movups   xmmword ptr [rdx + 0x10], xmm0
+0029af2b  mov      qword ptr [rdx + 0x20], rax
+0029af2f  mov      qword ptr [rdx + 0x28], rax
+0029af33  movups   xmm0, xmmword ptr [rcx + 0x10]
+0029af37  movups   xmmword ptr [rdx + 0x10], xmm0
+0029af3b  movups   xmm1, xmmword ptr [rcx + 0x20]
+0029af3f  movups   xmmword ptr [rdx + 0x20], xmm1
+0029af43  mov      qword ptr [rcx + 0x20], rax
+0029af47  mov      qword ptr [rcx + 0x28], 0xf
+0029af4f  mov      byte ptr [rcx + 0x10], al
+0029af52  mov      rax, rdx
+0029af55  ret      
+0029af56  int3     
+0029af57  int3     
+0029af58  int3     
+0029af59  int3     
+0029af5a  int3     
+0029af5b  int3     
+0029af5c  int3     
+0029af5d  int3     
+0029af5e  int3     
+0029af5f  int3     
+0029af60  lea      rax, [rip + 0x1a7fbd9]
+0029af67  ret      
+0029af68  int3     
+0029af69  int3     
+0029af6a  int3     
+0029af6b  int3     
+0029af6c  int3     
+0029af6d  int3     
+0029af6e  int3     
+0029af6f  int3     
+0029af70  sub      rsp, 0x28
+0029af74  mov      rax, rdx
+0029af77  imul     rdx, r8, 0x640
+0029af7e  cmp      rdx, 0x1000
+0029af85  jb       0x29af9f
+0029af87  mov      rcx, qword ptr [rax - 8]
+0029af8b  add      rdx, 0x27
+0029af8f  sub      rax, rcx
+0029af92  add      rax, -8
+0029af96  cmp      rax, 0x1f
+0029af9a  ja       0x29afab
+0029af9c  mov      rax, rcx
+0029af9f  mov      rcx, rax
+0029afa2  add      rsp, 0x28
+0029afa6  jmp      0x15aff28
+0029afab  call     qword ptr [rip + 0x156c107]
+0029afb1  int3     
+0029afb2  int3     
+0029afb3  int3     
+0029afb4  int3     
+0029afb5  int3     
+0029afb6  int3     
+0029afb7  int3     
+0029afb8  int3     
+0029afb9  int3     
+0029afba  int3     
+0029afbb  int3     
+0029afbc  int3     
+0029afbd  int3     
+0029afbe  int3     
+0029afbf  int3     
+0029afc0  sub      rsp, 0x28
+0029afc4  mov      rax, rdx
+0029afc7  imul     rdx, r8, 0x38
+0029afcb  cmp      rdx, 0x1000
+0029afd2  jb       0x29afec
+0029afd4  mov      rcx, qword ptr [rax - 8]
+0029afd8  add      rdx, 0x27
+0029afdc  sub      rax, rcx
+0029afdf  add      rax, -8
+0029afe3  cmp      rax, 0x1f
+0029afe7  ja       0x29aff8
+0029afe9  mov      rax, rcx
+0029afec  mov      rcx, rax
+0029afef  add      rsp, 0x28
+0029aff3  jmp      0x15aff28
+0029aff8  call     qword ptr [rip + 0x156c0ba]
+0029affe  int3     
+0029afff  int3     

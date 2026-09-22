@@ -1,0 +1,81 @@
+function 0xa60a40..0xa60ac0 size=128
+00a60a40  lea      rax, [rip + 0x12c9c79]
+00a60a47  ret      
+00a60a48  int3     
+00a60a49  int3     
+00a60a4a  int3     
+00a60a4b  int3     
+00a60a4c  int3     
+00a60a4d  int3     
+00a60a4e  int3     
+00a60a4f  int3     
+00a60a50  lea      rax, [rip + 0x12cde99]
+00a60a57  ret      
+00a60a58  int3     
+00a60a59  int3     
+00a60a5a  int3     
+00a60a5b  int3     
+00a60a5c  int3     
+00a60a5d  int3     
+00a60a5e  int3     
+00a60a5f  int3     
+00a60a60  lea      rax, [rip + 0x12ce9c9]
+00a60a67  ret      
+00a60a68  int3     
+00a60a69  int3     
+00a60a6a  int3     
+00a60a6b  int3     
+00a60a6c  int3     
+00a60a6d  int3     
+00a60a6e  int3     
+00a60a6f  int3     
+00a60a70  lea      rax, [rip + 0x12ce3f9]
+00a60a77  ret      
+00a60a78  int3     
+00a60a79  int3     
+00a60a7a  int3     
+00a60a7b  int3     
+00a60a7c  int3     
+00a60a7d  int3     
+00a60a7e  int3     
+00a60a7f  int3     
+00a60a80  lea      rax, [rip + 0x12cdc69]
+00a60a87  ret      
+00a60a88  int3     
+00a60a89  int3     
+00a60a8a  int3     
+00a60a8b  int3     
+00a60a8c  int3     
+00a60a8d  int3     
+00a60a8e  int3     
+00a60a8f  int3     
+00a60a90  lea      rax, [rip + 0x12cd9f9]
+00a60a97  ret      
+00a60a98  int3     
+00a60a99  int3     
+00a60a9a  int3     
+00a60a9b  int3     
+00a60a9c  int3     
+00a60a9d  int3     
+00a60a9e  int3     
+00a60a9f  int3     
+00a60aa0  lea      rax, [rip + 0x12cf0b9]
+00a60aa7  ret      
+00a60aa8  int3     
+00a60aa9  int3     
+00a60aaa  int3     
+00a60aab  int3     
+00a60aac  int3     
+00a60aad  int3     
+00a60aae  int3     
+00a60aaf  int3     
+00a60ab0  lea      rax, [rip + 0x12cabe9]
+00a60ab7  ret      
+00a60ab8  int3     
+00a60ab9  int3     
+00a60aba  int3     
+00a60abb  int3     
+00a60abc  int3     
+00a60abd  int3     
+00a60abe  int3     
+00a60abf  int3     

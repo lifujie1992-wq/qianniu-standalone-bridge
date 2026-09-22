@@ -1,0 +1,95 @@
+function 0x9f64b0..0x9f65b0 size=256
+009f64b0  mov      qword ptr [rsp + 8], rbx
+009f64b5  push     rdi
+009f64b6  sub      rsp, 0x20
+009f64ba  movzx    edi, dl
+009f64bd  mov      rbx, rcx
+009f64c0  mov      rcx, qword ptr [rcx + 0x18]
+009f64c4  test     rcx, rcx
+009f64c7  je       0x9f64d0
+009f64c9  mov      rax, qword ptr [rcx]
+009f64cc  call     qword ptr [rax + 8]
+009f64cf  nop      
+009f64d0  lea      rcx, [rbx + 0x10]
+009f64d4  call     qword ptr [rip + 0xe1114e]
+009f64da  test     dil, dil
+009f64dd  je       0x9f64ed
+009f64df  mov      edx, 0x20
+009f64e4  mov      rcx, rbx
+009f64e7  call     0x15aff28
+009f64ec  nop      
+009f64ed  mov      rbx, qword ptr [rsp + 0x30]
+009f64f2  add      rsp, 0x20
+009f64f6  pop      rdi
+009f64f7  ret      
+009f64f8  int3     
+009f64f9  int3     
+009f64fa  int3     
+009f64fb  int3     
+009f64fc  int3     
+009f64fd  int3     
+009f64fe  int3     
+009f64ff  int3     
+009f6500  mov      qword ptr [rsp + 8], rbx
+009f6505  push     rdi
+009f6506  sub      rsp, 0x20
+009f650a  movzx    edi, dl
+009f650d  mov      rbx, rcx
+009f6510  add      rcx, 0x20
+009f6514  call     0x776640
+009f6519  nop      
+009f651a  mov      rcx, qword ptr [rbx + 0x18]
+009f651e  test     rcx, rcx
+009f6521  je       0x9f652a
+009f6523  mov      rax, qword ptr [rcx]
+009f6526  call     qword ptr [rax + 8]
+009f6529  nop      
+009f652a  lea      rcx, [rbx + 0x10]
+009f652e  call     qword ptr [rip + 0xe110f4]
+009f6534  test     dil, dil
+009f6537  je       0x9f6547
+009f6539  mov      edx, 0x38
+009f653e  mov      rcx, rbx
+009f6541  call     0x15aff28
+009f6546  nop      
+009f6547  mov      rbx, qword ptr [rsp + 0x30]
+009f654c  add      rsp, 0x20
+009f6550  pop      rdi
+009f6551  ret      
+009f6552  int3     
+009f6553  int3     
+009f6554  int3     
+009f6555  int3     
+009f6556  int3     
+009f6557  int3     
+009f6558  int3     
+009f6559  int3     
+009f655a  int3     
+009f655b  int3     
+009f655c  int3     
+009f655d  int3     
+009f655e  int3     
+009f655f  int3     
+009f6560  mov      qword ptr [rsp + 8], rbx
+009f6565  mov      qword ptr [rsp + 0x10], rsi
+009f656a  push     rdi
+009f656b  sub      rsp, 0x20
+009f656f  movzx    esi, dl
+009f6572  mov      rbx, rcx
+009f6575  mov      rcx, qword ptr [rcx + 0x18]
+009f6579  test     rcx, rcx
+009f657c  je       0x9f6585
+009f657e  mov      rax, qword ptr [rcx]
+009f6581  call     qword ptr [rax + 8]
+009f6584  nop      
+009f6585  lea      rcx, [rbx + 8]
+009f6589  call     qword ptr [rip + 0xe11099]
+009f658f  test     sil, sil
+009f6592  je       0x9f65a2
+009f6594  mov      edx, 0x20
+009f6599  mov      rcx, rbx
+009f659c  call     0x15aff28
+009f65a1  nop      
+009f65a2  mov      rbx, qword ptr [rsp + 0x30]
+009f65a7  mov      rsi, qword ptr [rsp + 0x38]
+009f65ac  add      rsp, 0x20

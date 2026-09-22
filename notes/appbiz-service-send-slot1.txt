@@ -1,0 +1,65 @@
+function 0x1df8e0..0x1df9e0 size=256
+001df8e0  xor      eax, eax
+001df8e2  ret      
+001df8e3  int3     
+001df8e4  int3     
+001df8e5  int3     
+001df8e6  int3     
+001df8e7  int3     
+001df8e8  int3     
+001df8e9  int3     
+001df8ea  int3     
+001df8eb  int3     
+001df8ec  int3     
+001df8ed  int3     
+001df8ee  int3     
+001df8ef  int3     
+001df8f0  mov      qword ptr [rsp + 0x10], rbx
+001df8f5  mov      qword ptr [rsp + 0x18], rsi
+001df8fa  mov      qword ptr [rsp + 0x20], rdi
+001df8ff  push     rbp
+001df900  push     r12
+001df902  push     r13
+001df904  push     r14
+001df906  push     r15
+001df908  lea      rbp, [rsp - 0x760]
+001df910  sub      rsp, 0x860
+001df917  mov      rax, qword ptr [rip + 0x1b3b0a2]
+001df91e  xor      rax, rsp
+001df921  mov      qword ptr [rbp + 0x750], rax
+001df928  mov      r15, rcx
+001df92b  xor      r13d, r13d
+001df92e  mov      dword ptr [rsp + 0x30], r13d
+001df933  mov      rax, qword ptr [rip + 0x1c1e3e6]
+001df93a  lea      r12, [rip + 0x1c1e3e7]
+001df941  test     rax, -2
+001df947  jne      0x1df9c6
+001df949  lea      rcx, [rip + 0x1c1e3d0]
+001df950  call     qword ptr [rip + 0x1628322]
+001df956  test     al, al
+001df958  je       0x1df9c6
+001df95a  mov      eax, 1
+001df95f  xchg     dword ptr [rip + 0x1c1e41b], eax
+001df965  test     eax, eax
+001df967  je       0x1df96e
+001df969  mov      edx, r13d
+001df96c  jmp      0x1df9af
+001df96e  xorps    xmm0, xmm0
+001df971  movups   xmmword ptr [rip + 0x1c1e3b0], xmm0
+001df978  movups   xmmword ptr [rip + 0x1c1e3b9], xmm0
+001df97f  movups   xmmword ptr [rip + 0x1c1e3c2], xmm0
+001df986  movups   xmmword ptr [rip + 0x1c1e3cb], xmm0
+001df98d  movups   xmmword ptr [rip + 0x1c1e3d4], xmm0
+001df994  mov      qword ptr [rip + 0x1c1e3dd], r13
+001df99b  mov      edx, 0x102
+001df9a0  lea      rcx, [rip + 0x1c1e389]
+001df9a7  call     0x15af8dd
+001df9ac  mov      rdx, r12
+001df9af  xor      r9d, r9d
+001df9b2  lea      r8, [rip - 0x5cb99]
+001df9b9  lea      rcx, [rip + 0x1c1e360]
+001df9c0  call     qword ptr [rip + 0x16282aa]
+001df9c6  mov      r14, qword ptr [rip + 0x1c1e353]
+001df9cd  mov      dword ptr [rsp + 0x48], 2
+001df9d5  lea      rdx, [rbp - 0x80]
+001df9d9  mov      rcx, r14
