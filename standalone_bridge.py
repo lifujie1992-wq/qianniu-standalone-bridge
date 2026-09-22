@@ -4401,6 +4401,7 @@ class AppBizSendAdapter:
             float(self.app.config.get("appbiz_callback_wait_seconds", 2.0)),
         )
         deadline = time.monotonic() + wait_seconds
+        started = time.monotonic()
         while self.script is not None and time.monotonic() <= deadline:
             receipt = self.script.exports_sync.pollsend(str(token))
             state = int(receipt.get("state") or 0)
@@ -4412,7 +4413,12 @@ class AppBizSendAdapter:
                 break
             if state < 0:
                 break
-            time.sleep(0.025)
+            # Each poll is a Frida RPC into the client process, and the send pool
+            # can have several senders waiting at once: poll tightly only for the
+            # first half second, then back off so the adapter never becomes a
+            # cross-process busy loop.
+            elapsed = time.monotonic() - started
+            time.sleep(0.025 if elapsed < 0.5 else 0.1)
         if not callback_received and self.script is not None:
             try:
                 self.script.exports_sync.cancelsend(str(token))

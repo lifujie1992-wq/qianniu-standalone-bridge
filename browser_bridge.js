@@ -40,6 +40,7 @@
   ];
   var DISCOVERY_INTERVAL_MS = 4000;
   var INVOKE_TIMEOUT_MS = 1200;
+  var MIRROR_ACTION_DENY = /^(?:ping|pong|heartbeat|hb|ack|ackack|sync|syncack|kick|logout|keepalive)$/i;
   var MAX_POLL_TARGETS = 6;
   var POLL_INTERVAL_MS = 5000;
   var WS_URL = String(window.__qn_standalone_ws_url || "ws://127.0.0.1:42110/");
@@ -138,6 +139,7 @@
     ws_mirror_frames: 0,
     ws_mirror_sent: 0,
     ws_mirror_parse_failures: 0,
+    ws_mirror_skipped: 0,
     ws_mirror_last_action: "",
     ws_mirror_last_frame_at_ms: 0,
     ws_mirror_last_error: "",
@@ -335,6 +337,7 @@
         ws_mirror_frames: diagnostics.ws_mirror_frames,
         ws_mirror_sent: diagnostics.ws_mirror_sent,
         ws_mirror_parse_failures: diagnostics.ws_mirror_parse_failures,
+        ws_mirror_skipped: diagnostics.ws_mirror_skipped,
         ws_mirror_last_action: diagnostics.ws_mirror_last_action,
         ws_mirror_last_frame_at_ms: diagnostics.ws_mirror_last_frame_at_ms,
         ws_mirror_last_error: diagnostics.ws_mirror_last_error,
@@ -1464,6 +1467,13 @@
       diagnostics.ws_mirror_last_frame_at_ms = Date.now();
       diagnostics.ws_mirror_last_action = textOf(frame.req_action || frame.action || frame.method || "");
       diagnostics.ws_mirror_last_error = "";
+      // Control frames never carry a message. Skipping them keeps the mirror
+      // from paying the normaliser cost on every heartbeat and ack, which is
+      // what would otherwise show up as renderer CPU creep.
+      if (MIRROR_ACTION_DENY.test(diagnostics.ws_mirror_last_action)) {
+        diagnostics.ws_mirror_skipped += 1;
+        return { details: 0, sent: 0 };
+      }
       var payload = Object.prototype.hasOwnProperty.call(frame, "data")
         ? decodeFrameJson(frame.data)
         : frame;
