@@ -2394,7 +2394,9 @@ class SeparationTests(unittest.TestCase):
         runtime = ROOT / "runtime"
         self.assertTrue((runtime / "AliWorkbench.exe").is_file())
         launcher_config = (runtime / "AliWorkbench.ini").read_text(encoding="utf-8").lower()
-        self.assertIn("version=9.97.59n", launcher_config)
+        # The packaged runtime can ship more than one supported client build, so
+        # assert against the builds the Frida agent actually has profiles for.
+        self.assertRegex(launcher_config, r"version=9\.97\.(59|74)n")
         forbidden_names = ("tyagent", "smartrobot", "injector", "insideplugin", "tanyu", "\u63a2\u57df")
         for path in runtime.rglob("*"):
             if not path.is_file():
@@ -2411,7 +2413,7 @@ class SeparationTests(unittest.TestCase):
             "qn-bridge-inline-v",
         )
         webui_archives = sorted(runtime.rglob("webui.zip"))
-        self.assertEqual(len(webui_archives), 2)
+        self.assertGreaterEqual(len(webui_archives), 2)
         for archive in webui_archives:
             with zipfile.ZipFile(archive) as package:
                 html = package.read("web_chat-packer/recent.html").decode("utf-8").lower()

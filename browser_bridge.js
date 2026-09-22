@@ -19,6 +19,11 @@
   var MAX_KNOWN_CONVERSATIONS = 80;
   var MAX_SEEN = 1200;
   var MAX_OUTBOX = 500;
+  // 被动轮询只是安全网，不是主链路。原先每个 watchdog 周期（5 秒）都会跑一次
+  // 完整的 DOM 扫描加本地缓存扫描，会话与消息越积越多时，千牛每个渲染进程都会
+  // 跟着变重。现在两类扫描各自独立降频，watchdog 只保留 5 秒一次的健康检查。
+  var PASSIVE_DOM_INTERVAL_MS = 10000;
+  var PASSIVE_CACHE_INTERVAL_MS = 30000;
   var OUTBOX_PERSIST_DELAY_MS = 800;
   var outboxPersistTimer = null;
   var socket = null;
@@ -36,6 +41,9 @@
   var conversationOrder = [];
   var passiveCacheCursor = 0;
   var passiveCacheFingerprints = {};
+  var passiveKeysCache = { signature: "", keys: [] };
+  var lastPassiveDomAt = 0;
+  var lastPassiveCacheAt = 0;
   var lastSellerNick = "";
   var lastDomScanAt = 0;
   var localRetryTimers = {};
@@ -878,11 +886,22 @@
     try {
       var mdm = window._db && window._db.msgDataMap;
       if (!mdm) return [];
-      var allKeys = mdm instanceof Map ? Array.from(mdm.keys())
-        : (typeof mdm === "object" ? Object.keys(mdm) : []);
-      allKeys = allKeys.map(function (key) { return String(key || ""); }).filter(function (key) {
-        return key.length <= 300 && key.indexOf("#") >= 0 && key.indexOf("@") >= 0;
-      });
+      var isMap = mdm instanceof Map;
+      var size = isMap ? mdm.size : (typeof mdm === "object" ? Object.keys(mdm).length : 0);
+      var signature = (isMap ? "m:" : "o:") + size;
+      // Rebuilding and filtering the key list is the expensive half of this
+      // scan, while the conversation set changes far slower than the poll
+      // cadence. Keep the filtered list until the map size actually moves.
+      if (signature !== passiveKeysCache.signature) {
+        var rawKeys = isMap ? Array.from(mdm.keys()) : Object.keys(mdm);
+        passiveKeysCache = {
+          signature: signature,
+          keys: rawKeys.map(function (key) { return String(key || ""); }).filter(function (key) {
+            return key.length <= 300 && key.indexOf("#") >= 0 && key.indexOf("@") >= 0;
+          }),
+        };
+      }
+      var allKeys = passiveKeysCache.keys;
       if (!allKeys.length) {
         passiveCacheCursor = 0;
         return [];
@@ -1290,12 +1309,22 @@
     diagnostics.dom_observer_running = true;
   }
 
-  function passiveRefresh() {
+  function passiveRefresh(force) {
     var startedAt = Date.now();
-    diagnostics.last_poll_at_ms = Date.now();
-    scanConversationDom(false);
-    probeLocalMsgDb();
-    scanPassiveLocalCache();
+    var now = startedAt;
+    diagnostics.last_poll_at_ms = now;
+    // Two independent cadences: the DOM walk stays at 10s, the local message map
+    // walk moves to 30s. A cold start or a self-heal passes force=true so the
+    // recovery path is never throttled.
+    if (force || now - lastPassiveDomAt >= PASSIVE_DOM_INTERVAL_MS) {
+      lastPassiveDomAt = now;
+      scanConversationDom(false);
+      probeLocalMsgDb();
+    }
+    if (force || now - lastPassiveCacheAt >= PASSIVE_CACHE_INTERVAL_MS) {
+      lastPassiveCacheAt = now;
+      scanPassiveLocalCache();
+    }
     diagnostics.last_poll_success_at_ms = Date.now();
     diagnostics.last_poll_duration_ms = Date.now() - startedAt;
   }
@@ -1312,7 +1341,7 @@
     domObserverRoot = null;
     diagnostics.dom_observer_running = false;
     startDomObserver();
-    passiveRefresh();
+    passiveRefresh(true);
     setup();
   }
 
@@ -1325,7 +1354,7 @@
     if (disconnected || sdkChanged || domChanged || !diagnostics.dom_observer_running) {
       selfHeal(disconnected ? "websocket" : (sdkChanged ? "imsdk" : "dom"));
     } else {
-      passiveRefresh();
+      passiveRefresh(false);
       flushOutbox();
     }
   }
@@ -1416,7 +1445,7 @@
     }, 1000);
     if (invokeNotifyTimer) clearInterval(invokeNotifyTimer);
     invokeNotifyTimer = setInterval(installInvokeNotifyHook, 30000);
-    passiveRefresh();
+    passiveRefresh(true);
     startDomObserver();
     startWatchdog();
   }

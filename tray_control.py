@@ -410,7 +410,7 @@ class TrayControlCenter:
         callbacks: TrayCallbacks,
         status_provider: Callable[[], AppStatus | Mapping[str, object] | None],
         *,
-        poll_ms: int = 2000,
+        poll_ms: int = 5000,
         state_dir: Path | None = None,
     ) -> None:
         self.callbacks = callbacks

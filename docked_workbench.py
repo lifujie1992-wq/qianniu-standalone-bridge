@@ -323,7 +323,7 @@ class DockedWorkbench:
 
     def run(self) -> int:
         width = max(240, min(420, int(self.config.get("dock_width", 286))))
-        poll_delay = max(0.25, min(2.0, float(self.config.get("dock_poll_interval_seconds", 0.5))))
+        poll_delay = max(0.25, min(2.0, float(self.config.get("dock_poll_interval_seconds", 1.0))))
         self.wait_for_workbench()
         while not self.stop_event.is_set():
             windows = Win32.windows()

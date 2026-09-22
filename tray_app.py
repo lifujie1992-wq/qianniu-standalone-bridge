@@ -6,6 +6,7 @@ import ctypes
 import hashlib
 import os
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -57,8 +58,19 @@ def _pid_file_running(path: Path) -> bool:
         return False
 
 
+_QIANNIU_COUNT_TTL_SECONDS = 10.0
+_QIANNIU_COUNT_CACHE: dict[str, tuple[float, int]] = {}
+
+
 def _managed_qianniu_count(root: Path) -> int:
+    # Enumerating every process is the most expensive part of the tray status
+    # refresh, and the count moves slowly, so reuse it for a few seconds.
     runtime = root / "runtime"
+    key = str(runtime).lower()
+    now = time.monotonic()
+    cached = _QIANNIU_COUNT_CACHE.get(key)
+    if cached is not None and now - cached[0] < _QIANNIU_COUNT_TTL_SECONDS:
+        return cached[1]
     count = 0
     for process in psutil.process_iter(["exe"]):
         try:
@@ -66,6 +78,7 @@ def _managed_qianniu_count(root: Path) -> int:
                 count += 1
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+    _QIANNIU_COUNT_CACHE[key] = (now, count)
     return count
 
 
