@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -2405,7 +2406,16 @@ class SeparationTests(unittest.TestCase):
         launcher_config = (runtime / "AliWorkbench.ini").read_text(encoding="utf-8").lower()
         # The packaged runtime can ship more than one supported client build, so
         # assert against the builds the Frida agent actually has profiles for.
-        self.assertRegex(launcher_config, r"version=9\.97\.(59|74)n")
+        # The active build must be one the Frida agent actually has a profile
+        # for. Read the table instead of hardcoding versions, so a client
+        # upgrade only needs the profile added.
+        agent_source = (ROOT / "appbiz_agent.js").read_text(encoding="utf-8")
+        supported = {match.lower() for match in re.findall(r"version:\s*'([^']+)'", agent_source)}
+        active = ""
+        if "version=" in launcher_config:
+            active = launcher_config.split("version=", 1)[1].split()[0].strip()
+        self.assertTrue(supported, "appbiz_agent.js exposes no hook profiles")
+        self.assertIn(active, supported, f"active build {active} has no AppBiz profile")
         forbidden_names = ("tyagent", "smartrobot", "injector", "insideplugin", "tanyu", "\u63a2\u57df")
         for path in runtime.rglob("*"):
             if not path.is_file():
@@ -2432,13 +2442,14 @@ class SeparationTests(unittest.TestCase):
             self.assertEqual(html.count("__qn_standalone_bridge_v1_installed"), 2)
             self.assertIn("qn-standalone-browser-v6-stable-identity", html)
             for unsafe in (
-                "im.singlemsg.getnewmsg",
-                "im.singlemsg.peeknewmsg",
-                "im.singlemsg.getremotehismsg",
                 "window.imsdk.invoke =",
                 "window.imsdk.off(",
             ):
                 self.assertNotIn(unsafe, html, f"unsafe bridge code survived in {archive}")
+            # The cursor-advancing fetch call sites now exist but must be shipped
+            # disabled: the injected options block is the gate.
+            self.assertIn('"history_poll": false', html, f"history polling must default to off in {archive}")
+            self.assertNotIn("im.singlemsg.getremotehismsg", html, f"remote history fetch survived in {archive}")
 
         version_config = (runtime / "version.ini").read_text(encoding="utf-8").lower()
         for marker in ("kefuagent", "tanyu", "insideplugin", "qnmsgplugin"):

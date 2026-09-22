@@ -221,11 +221,20 @@ class ClientSupportWatcher(threading.Thread):
             LOG.error("client support: re-injection failed: %s", error)
 
     def status(self) -> dict[str, Any]:
+        # Read the launcher ini live: a client upgrade can flip the active build
+        # between two watcher passes, and a stale active build would delay the
+        # very warning this guard exists to raise.
+        active = launcher_version(self.root / "runtime") or self.report.get("launcher_version", "")
+        supported = {
+            build["name"]: bool(build["send_supported"])
+            for build in self.report.get("builds", [])
+        }
         return {
             "last_checked_at": self.last_checked_at,
             "reinjections": self.reinjections,
             "last_error": self.last_error,
-            "active_build": self.report.get("launcher_version", ""),
+            "active_build": active,
+            "active_build_supported": supported.get(active, None),
             "profiles": self.report.get("profiles", {}),
             "builds": [
                 {
