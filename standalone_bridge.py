@@ -1438,23 +1438,38 @@ class StateDB:
             )
             return True
 
-    def enqueue_untracked_brain_events_since(
-        self, since: float, limit: int = WORKBENCH_EVENT_LIMIT
+    def max_event_rowid(self) -> int:
+        """Row watermark of the newest locally stored event."""
+        with self.lock, self.connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(rowid), 0) FROM events"
+            ).fetchone()
+        return int(row[0] or 0)
+
+    def enqueue_untracked_brain_events_after_rowid(
+        self, after_rowid: int, limit: int = WORKBENCH_EVENT_LIMIT
     ) -> int:
-        """Queue local captures missed while brain configuration was not active."""
+        """Queue local captures made after a session watermark.
+
+        Row ids are strictly increasing, so this stays correct even when the
+        clock is coarser than the gap between two captures. On Windows
+        ``time.time()`` only ticks about every 15ms, and comparing timestamps
+        with ``>=`` let a capture made just before a reconnect be queued again,
+        which would upload an old buyer message a second time.
+        """
         now = time.time()
         queued = 0
         with self.lock, self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT e.event_id,e.revision,e.payload,e.created_at
+                SELECT e.event_id,e.revision,e.payload
                 FROM events e
                 LEFT JOIN brain_events b ON b.event_id=e.event_id
-                WHERE b.event_id IS NULL AND e.created_at>=?
-                ORDER BY e.created_at,e.event_id
+                WHERE b.event_id IS NULL AND e.rowid>?
+                ORDER BY e.rowid
                 LIMIT ?
                 """,
-                (max(0.0, float(since)), max(1, min(int(limit), WORKBENCH_EVENT_LIMIT))),
+                (max(0, int(after_rowid)), max(1, min(int(limit), WORKBENCH_EVENT_LIMIT))),
             ).fetchall()
             for row in rows:
                 try:
@@ -1840,6 +1855,10 @@ class BrainConnector:
     def __init__(self, app: "StandaloneBridge"):
         self.app = app
         self.session_started_at = time.time()
+        # Row watermark, not the clock: captures made in the same clock tick as
+        # the reconnect must not be backfilled as if they were new.
+        db = getattr(app, "db", None)
+        self.session_start_rowid = int(db.max_event_rowid()) if db is not None else 0
         self.wakeup = threading.Event()
         self.control_thread = threading.Thread(
             target=self.run_control, name="brain-control", daemon=True
@@ -2072,8 +2091,8 @@ class BrainConnector:
         self.record("register", "ok", "工位注册成功", {
             "agent_id": self.agent_id(), "request_ms": self.last_request_ms,
         })
-        backfilled = self.app.db.enqueue_untracked_brain_events_since(
-            self.session_started_at
+        backfilled = self.app.db.enqueue_untracked_brain_events_after_rowid(
+            self.session_start_rowid
         )
         if backfilled:
             self.record("events", "ok", f"queued {backfilled} local events after brain reconnect")

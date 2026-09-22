@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -19,6 +20,9 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+# Tests must never reach the shipped brain deployment.
+os.environ.setdefault("QN_BRAIN_SERVER_URL", "http://127.0.0.1:1")
 
 from standalone_bridge import (  # noqa: E402
     AppBizSendAdapter,
@@ -1073,6 +1077,49 @@ class BrainConnectorTests(unittest.TestCase):
         self.assertEqual(queued_ids, {new_id})
         self.assertNotIn(old_id, queued_ids)
         self.assertNotIn(projection_id, queued_ids)
+
+    def test_register_backfill_ignores_captures_from_the_same_clock_tick(self):
+        # Windows time.time() only ticks about every 15ms, so a capture made
+        # just before the reconnect can carry the very same timestamp as the
+        # session start. Freezing the clock reproduces that tie deterministically;
+        # the backfill must still leave the old capture alone.
+        with tempfile.TemporaryDirectory() as directory:
+            db = StateDB(Path(directory) / "state.sqlite3")
+            frozen = time.time() - 60.0
+            with patch("standalone_bridge.time.time", return_value=frozen):
+                old_id, _changed = db.upsert_event({
+                    "platform": "taobao", "msg_id": "old", "content": "old message",
+                })
+                config = self.make_config(Path(directory) / "config.json")
+                app = SimpleNamespace(config=config, db=db, stop_event=threading.Event())
+                brain = BrainConnector(app)
+                self.assertEqual(brain.session_started_at, frozen)
+                new_id, _changed = db.upsert_event({
+                    "platform": "taobao", "msg_id": "new", "content": "new message",
+                })
+                brain.request = Mock(return_value={"ok": True, "agent_id": "assigned-agent"})
+                brain.register()
+            rows = db.claim_brain_events(0)
+            queued_ids = {row["event_id"] for row in rows}
+        self.assertEqual(queued_ids, {new_id})
+        self.assertNotIn(old_id, queued_ids)
+
+    def test_event_rowid_watermark_gates_the_backfill(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = StateDB(Path(directory) / "state.sqlite3")
+            self.assertEqual(db.max_event_rowid(), 0)
+            old_id, _changed = db.upsert_event({
+                "platform": "taobao", "msg_id": "old", "content": "old message",
+            })
+            watermark = db.max_event_rowid()
+            self.assertGreater(watermark, 0)
+            new_id, _changed = db.upsert_event({
+                "platform": "taobao", "msg_id": "new", "content": "new message",
+            })
+            self.assertEqual(db.enqueue_untracked_brain_events_after_rowid(watermark), 1)
+            queued_ids = {row["event_id"] for row in db.claim_brain_events(0)}
+        self.assertEqual(queued_ids, {new_id})
+        self.assertNotIn(old_id, queued_ids)
 
     def test_non_retryable_brain_rejection_is_a_terminal_ack(self):
         with tempfile.TemporaryDirectory() as directory:
