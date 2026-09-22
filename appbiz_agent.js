@@ -20,6 +20,15 @@ const HOOK_PROFILES = {
     serviceOnMessageArrive: 0xa7b470,
     serviceSendText: 0xa83af0,
   },
+  0x1f20000: {
+    version: '9.97.81N',
+    serviceVtable: 0x18c4c78,
+    secondaryVtable1: 0x18c4de0,
+    secondaryVtable2: 0x18c4df0,
+    serviceGetNewMsg: 0xa798a0,
+    serviceOnMessageArrive: 0xa7d1c0,
+    serviceSendText: 0xa85840,
+  },
 };
 const hookProfile = HOOK_PROFILES[appBiz.size];
 if (!hookProfile) {

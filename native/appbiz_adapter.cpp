@@ -1,4 +1,21 @@
+// A normal build pulls in the Windows SDK for the SEH macros, the Win32 scalar
+// types and the DllMain signature. When only the cached MSVC compiler bits are
+// available (no Windows SDK installed), APPBIZ_ADAPTER_NO_SDK_HEADERS lets this
+// file build from a minimal declaration set instead: __try/__except and
+// GetExceptionCode are compiler intrinsics, and nothing else from the SDK is
+// used here.
+#if defined(APPBIZ_ADAPTER_NO_SDK_HEADERS)
+using BOOL = int;
+using DWORD = unsigned long;
+using LPVOID = void*;
+using HINSTANCE = void*;
+#define WINAPI __stdcall
+#define EXCEPTION_EXECUTE_HANDLER 1
+#define TRUE 1
+#define FALSE 0
+#else
 #include <Windows.h>
+#endif
 
 #include <array>
 #include <cstdint>
@@ -18,9 +35,10 @@ struct AppBizProfile {
     std::uintptr_t message_biz_send_text_rva;
 };
 
-constexpr std::array<AppBizProfile, 2> kAppBizProfiles{{
+constexpr std::array<AppBizProfile, 3> kAppBizProfiles{{
     {0x18AF478, 0x18AD4F8, 0xA59120},  // 9.97.59N
     {0x18BDEE8, 0x18BBF68, 0xA64BF0},  // 9.97.74N
+    {0x18C4C78, 0x18C2CF8, 0xA66940},  // 9.97.81N
 }};
 
 struct DummyJsonValue {

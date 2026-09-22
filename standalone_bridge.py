@@ -29,6 +29,7 @@ import psutil
 import websocket
 
 from app_version import VERSION
+from client_support import ClientSupportWatcher
 from config_defaults import apply_operational_defaults
 from device_identity import (
     DeviceIdentityError,
@@ -4849,6 +4850,14 @@ class StandaloneBridge:
         self.updater = UpdaterGuard(self)
         self.appbiz = AppBizSendAdapter(self)
         self.native = NativeAdapter(self)
+        # Qianniu upgrades itself in place; this watch keeps a re-injected
+        # webui.zip and surfaces builds the agent has no profile for.
+        self.client_support = ClientSupportWatcher(
+            ROOT,
+            config,
+            self.stop_event,
+            interval_seconds=float(config.get("client_support_interval_seconds", 600.0)),
+        )
         self.api_thread = threading.Thread(target=self.run_api, name="local-api", daemon=True)
         self.workbench_thread = threading.Thread(
             target=self.run_workbench, name="local-workbench", daemon=True
@@ -5081,6 +5090,7 @@ class StandaloneBridge:
         self.updater.start()
         self.appbiz.start()
         self.native.start()
+        self.client_support.start()
         self.api_thread.start()
 
     def stop(self) -> None:
@@ -5128,6 +5138,7 @@ class StandaloneBridge:
                 "last_success_at": self.updater.last_success_at,
                 "last_error": self.updater.last_error,
             },
+            "client_support": self.client_support.status(),
             "appbiz_send": {
                 "enabled": bool(self.config.get("appbiz_send_adapter_enabled", True)),
                 "abi_validated": bool(self.config.get("appbiz_send_abi_validated", False)),
