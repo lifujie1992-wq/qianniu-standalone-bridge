@@ -98,6 +98,16 @@ class ConfigDefaultsTests(unittest.TestCase):
         self.assertFalse(apply_operational_defaults(config))
         self.assertIs(config["send_enabled"], False)
 
+    def test_migration_shortens_legacy_event_delay(self):
+        config = {"brain_event_delay_seconds": 2.5}
+        self.assertTrue(apply_operational_defaults(config))
+        self.assertEqual(config["brain_event_delay_seconds"], 0.2)
+
+    def test_migration_keeps_custom_event_delay(self):
+        config = {"brain_event_delay_seconds": 1.0}
+        self.assertTrue(apply_operational_defaults(config))
+        self.assertEqual(config["brain_event_delay_seconds"], 1.0)
+
     def test_direct_bridge_load_persists_operational_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

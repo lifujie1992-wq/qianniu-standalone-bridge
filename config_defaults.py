@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 
-CONFIG_DEFAULTS_REVISION = 2
+CONFIG_DEFAULTS_REVISION = 3
 CONFIG_DEFAULTS_REVISION_KEY = "config_defaults_revision"
 LEGACY_WORKBENCH_PORT = 18767
 DEFAULT_WORKBENCH_PORT = 18776
+LEGACY_EVENT_DELAY_SECONDS = 2.5
+DEFAULT_EVENT_DELAY_SECONDS = 0.2
 
 # These are customer-facing capabilities that are expected to work out of the box.
 OPERATIONAL_DEFAULTS: dict[str, bool] = {
@@ -61,5 +63,18 @@ def apply_operational_defaults(config: dict[str, Any]) -> bool:
             f"http://127.0.0.1:{LEGACY_WORKBENCH_PORT}"
         ):
             config["gateway_url"] = f"http://127.0.0.1:{DEFAULT_WORKBENCH_PORT}"
+
+    # Revision 3 shortens the legacy 2.5s brain event delay. Customers who
+    # tuned the value themselves keep their own number.
+    if revision < 3:
+        try:
+            legacy_delay = float(config.get("brain_event_delay_seconds")) == (
+                LEGACY_EVENT_DELAY_SECONDS
+            )
+        except (TypeError, ValueError):
+            legacy_delay = False
+        if legacy_delay:
+            config["brain_event_delay_seconds"] = DEFAULT_EVENT_DELAY_SECONDS
+
     config[CONFIG_DEFAULTS_REVISION_KEY] = CONFIG_DEFAULTS_REVISION
     return True
