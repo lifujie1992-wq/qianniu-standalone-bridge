@@ -36,6 +36,9 @@ INTERNAL_SAFETY_DEFAULTS: dict[str, bool] = {
     "native_adapter_enabled": False,
     "cdp_injection_enabled": False,
     "allow_existing_foreign_plugin": False,
+    # 打开会话时不再抢千牛窗口前台（多店铺工位会被抢错店铺窗口）。默认关闭，
+    # 只靠千牛自身 openChat 顶起会话；显式打开时也只激活能对上 account 的窗口。
+    "focus_on_open": False,
 }
 
 

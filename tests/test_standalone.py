@@ -41,6 +41,7 @@ from standalone_bridge import (  # noqa: E402
     BUILD_HASH,
     VERSION,
     WORKBENCH_SESSION_LIMIT,
+    account_window_title_tokens,
     brain_event_suppression_reason,
     canonical_event_id,
     json_text,
@@ -423,7 +424,7 @@ class BrowserReceiveCompatibilityTests(unittest.TestCase):
 
     def test_workbench_open_conversation_is_purely_local_and_has_no_fixed_wait(self):
         source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
-        focus = source.index("focused = self.app.focus_qianniu()")
+        focus = source.index("focused = self.app.focus_qianniu(account)")
         opened = source.index("response = self.app.browser.open_conversation(", focus)
         endpoint = source[source.index('if path == "/api/v1/open-conversation":'):opened]
         self.assertLess(focus, opened)
@@ -434,6 +435,65 @@ class BrowserReceiveCompatibilityTests(unittest.TestCase):
         source = (ROOT / "workbench.html").read_text(encoding="utf-8")
         self.assertIn("body: JSON.stringify(session)}", source)
         self.assertNotIn("timeout: 20000", source)
+
+    def test_focus_qianniu_never_guesses_a_window_by_area(self):
+        """多店铺工位"窗口乱激活"回归：不许再按面积猜窗口、不许默认抢前台。"""
+        source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
+        self.assertNotIn("max(preferred or candidates", source)
+        self.assertNotIn('"接待中心" in item[1]', source)
+        self.assertIn('if not bool(self.config.get("focus_on_open", False)):', source)
+        self.assertIn("account_window_title_tokens(account)", source)
+        self.assertIn("_FOCUS_LAST_ACTIVATED", source)
+
+    def test_account_window_title_tokens_only_trust_explicit_matches(self):
+        self.assertEqual(
+            account_window_title_tokens("联想官方旗舰店:燕燕"),
+            ["联想官方旗舰店:燕燕", "联想官方旗舰店"],
+        )
+        self.assertEqual(
+            account_window_title_tokens(" 联想官方旗舰店 "), ["联想官方旗舰店"]
+        )
+        self.assertEqual(account_window_title_tokens(""), [])
+        self.assertEqual(account_window_title_tokens("   "), [])
+
+    def test_focus_on_open_defaults_to_false(self):
+        self.assertIs(INTERNAL_SAFETY_DEFAULTS["focus_on_open"], False)
+        config = config_dialog.build_default_config()
+        self.assertIs(config["focus_on_open"], False)
+        self.assertIs(config["focus_cooldown_seconds"], 3.0)
+
+    def test_execute_with_account_never_broadcasts_to_other_shops(self):
+        """多店铺工位回归：带 account 的命令只发给绑定了该账号的千牛窗口。"""
+        server = BrowserServer(SimpleNamespace())
+        conn_a, conn_b = object(), object()
+        server.connections[conn_a] = threading.Lock()
+        server.connections[conn_b] = threading.Lock()
+        server.bind_connection_account(conn_a, "联想官方旗舰店:燕燕")
+        server.bind_connection_account(conn_b, "另一个店铺:客服")
+        sent = []
+        server.send = lambda connection, payload: sent.append(connection)
+        with self.assertRaises(RuntimeError):
+            server.execute("1+1", timeout=0.05, account="未绑定的店铺:客服")
+        self.assertEqual(sent, [], "命令不允许广播给所有千牛窗口")
+        self.assertEqual(
+            server.connections_for_account("联想官方旗舰店:燕燕"), [conn_a]
+        )
+        self.assertEqual(server.connections_for_account(""), [])
+
+    def test_open_conversation_is_account_scoped_end_to_end(self):
+        source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
+        self.assertIn("no qianniu window is bound to account", source)
+        self.assertIn("scoped = self.connections_for_account(account)", source)
+        self.assertIn(
+            'self.bind_connection_account(connection, message["payload"].get("account"))',
+            source,
+        )
+        self.assertIn(
+            "def execute(self, expression: str, timeout: float = 3.0, account: str = \"\") -> Any:",
+            source,
+        )
+        # open_chat 命令路径与工作台 HTTP 路径都必须传 account
+        self.assertGreaterEqual(source.count("account=account,"), 2)
 
     def test_conversation_eviction_also_drops_its_passive_fingerprint(self):
         source = (ROOT / "browser_bridge.js").read_text(encoding="utf-8")

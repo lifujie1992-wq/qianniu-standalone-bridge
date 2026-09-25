@@ -58,4 +58,6 @@
     ,"config_defaults_revision": 3
     ,"dock_width": 286
     ,"dock_edge_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+    ,"focus_on_open": false
+    ,"focus_cooldown_seconds": 3.0
 }

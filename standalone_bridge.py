@@ -2584,6 +2584,7 @@ class BrainConnector:
                 nick,
                 expected_ccode=buyer_id,
                 security_uid=security_uid,
+                account=account,
             )
             return {
                 **base_result,
@@ -3040,6 +3041,7 @@ class BrowserServer:
         self.connection_lock = threading.Lock()
         self.connection_ready = threading.Event()
         self.connections: dict[Any, threading.Lock] = {}
+        self.connection_accounts: dict[Any, set[str]] = {}
         self.pending: dict[str, queue.Queue[dict[str, Any]]] = {}
 
     def start(self) -> None:
@@ -3082,12 +3084,49 @@ class BrowserServer:
         with send_lock:
             connection.send(json.dumps(payload, ensure_ascii=False))
 
-    def execute(self, expression: str, timeout: float = 3.0) -> Any:
+    def bind_connection_account(self, connection: Any, account: str) -> None:
+        """记住"这个千牛窗口连接属于哪个账号"，用于把命令只发给对应店铺窗口。
+
+        历史问题（2026-09 千牛工位"不同店铺窗口乱激活"）：openChat 等命令原本广播给
+        所有已连接的千牛窗口，于是别家店铺窗口也被一起切走。绑定后即可精确投递。
+        """
+        name = str(account or "").strip()
+        if not name:
+            return
+        with self.connection_lock:
+            self.connection_accounts.setdefault(connection, set()).add(name)
+
+    def connections_for_account(self, account: str) -> list[Any]:
+        name = str(account or "").strip()
+        if not name:
+            return []
+        with self.connection_lock:
+            return [
+                connection
+                for connection, accounts in self.connection_accounts.items()
+                if name in accounts and connection in self.connections
+            ]
+
+    def execute(self, expression: str, timeout: float = 3.0, account: str = "") -> Any:
+        """执行页内脚本；带 account 时只发给绑定了该账号的窗口，绝不广播。
+
+        不带 account 的调用保持原行为（诊断/快照类只读操作）；凡是"切会话/改页面"
+        这类有副作用的操作都必须带 account，否则多店铺工位的窗口会一起动。
+        """
         request_id = uuid.uuid4().hex
         response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         with self.connection_lock:
             connections = list(self.connections)
             self.pending[request_id] = response_queue
+        if account:
+            scoped = self.connections_for_account(account)
+            if not scoped:
+                with self.connection_lock:
+                    self.pending.pop(request_id, None)
+                raise RuntimeError(
+                    f"no qianniu window is bound to account {str(account).strip()}"
+                )
+            connections = scoped
         if not connections:
             with self.connection_lock:
                 self.pending.pop(request_id, None)
@@ -3160,10 +3199,11 @@ class BrowserServer:
         value = self.execute(expression, timeout=5.0)
         return value if isinstance(value, dict) else {"value": value}
 
-    def current_conversation(self) -> dict[str, Any]:
+    def current_conversation(self, account: str = "") -> dict[str, Any]:
         value = self.execute(
             "(() => window._conversationId || window.__conversationId || null)()",
             timeout=3.0,
+            account=account,
         )
         return value if isinstance(value, dict) else {}
 
@@ -3173,6 +3213,7 @@ class BrowserServer:
         expected_ccode: str = "",
         security_uid: str = "",
         timeout: float = 8.0,
+        account: str = "",
     ) -> dict[str, Any]:
         nick = buyer_nick.strip()
         if not nick:
@@ -3243,7 +3284,7 @@ class BrowserServer:
   document.head.appendChild(script);
 }))()
 """.replace("__PARAM__", json.dumps(ability_param, ensure_ascii=False))
-        result = self.execute(expression, timeout=timeout)
+        result = self.execute(expression, timeout=timeout, account=account)
         if not isinstance(result, dict) or not result.get("ok"):
             detail = result.get("err") if isinstance(result, dict) else "invalid openChat response"
             raise RuntimeError(str(detail or "Qianniu openChat failed"))
@@ -3252,7 +3293,7 @@ class BrowserServer:
             deadline = time.time() + 3.5
             while time.time() < deadline:
                 try:
-                    current = self.current_conversation()
+                    current = self.current_conversation(account)
                 except RuntimeError:
                     current = {}
                 if str(current.get("ccode") or "") == expected_ccode:
@@ -3320,6 +3361,8 @@ class BrowserServer:
                     if any(not is_nonempty(message["payload"].get(key)) for key in required):
                         self.error = "browser event missing account, buyer_id or content"
                         continue
+                    # 记住"这个窗口=这个账号"，供后续按 account 精确投递命令。
+                    self.bind_connection_account(connection, message["payload"].get("account"))
                     event_id, _changed = self.app.ingest_event(message["payload"])
                     self.total_events += 1
                     self.send(connection, {
@@ -4856,13 +4899,14 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 buyer_nick = str(session.get("buyer_nick") or requested_nick or "").strip()
                 if not buyer_nick:
                     raise ValueError("conversation has no buyer nickname")
-                focused = self.app.focus_qianniu()
+                focused = self.app.focus_qianniu(account)
                 if self.app.browser.connected:
                     security_uid = ContextEnricher.buyer_encrypt_id({"buyer_id": buyer_id})
                     response = self.app.browser.open_conversation(
                         buyer_nick,
                         buyer_id,
                         security_uid=security_uid,
+                        account=account,
                     )
                 else:
                     response = self.app.open_conversation_protocol(account, buyer_nick)
@@ -4948,6 +4992,28 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"ok": False, "error": str(error)})
 
 
+# 千牛窗口抢前台的冷却记录：hwnd -> 上次激活时间（同一窗口不反复抢到前台）。
+_FOCUS_LAST_ACTIVATED: dict[int, float] = {}
+_FOCUS_ACTIVATE_LOCK = threading.Lock()
+DEFAULT_FOCUS_COOLDOWN_SECONDS = 3.0
+
+
+def account_window_title_tokens(account: str) -> list[str]:
+    """千牛窗口标题必须包含这些子串之一，才认为该窗口属于这个 account。
+
+    只认能明确对上的窗口；对不上就一个窗口都不动——绝不按"谁大就抢谁"去猜，
+    否则多店铺工位会把别的店铺窗口抢到前台（用户看到"不同店铺窗口乱激活"）。
+    """
+    compact = re.sub(r"\s+", "", str(account or ""))
+    if not compact:
+        return []
+    tokens = [compact]
+    shop = compact.split(":", 1)[0].strip()
+    if shop and shop != compact:
+        tokens.append(shop)
+    return [token for token in dict.fromkeys(tokens) if token]
+
+
 class StandaloneBridge:
     def __init__(self, config: Config):
         self.config = config
@@ -5011,8 +5077,26 @@ class StandaloneBridge:
             "verified": False,
         }
 
-    def focus_qianniu(self) -> bool:
+    def focus_qianniu(self, account: str = "") -> bool:
+        """把千牛窗口切到前台——只认明确属于该 account 的窗口，绝不按面积猜。
+
+        历史问题（2026-09 千牛工位"不同店铺窗口乱激活"）：旧实现遍历同 exe 的
+        所有千牛窗口、按面积挑最大的"接待中心"窗口强制前台，多店铺工位会把别的
+        店铺窗口抢到前台。现在的规则（全部 fail closed）：
+
+        1. ``focus_on_open`` 默认 False：默认完全不抢前台，只靠千牛自身 openChat
+           把会话顶上来；
+        2. 打开时必须带 account，且只激活标题能明确对上该 account 的窗口，
+           对不上就一个窗口都不动；
+        3. 目标窗口已经在前台 → 直接返回，不重复抢；
+        4. 同一窗口在 ``focus_cooldown_seconds``（默认 3s）内不重复抢。
+        """
         if os.name != "nt":
+            return False
+        if not bool(self.config.get("focus_on_open", False)):
+            return False
+        tokens = account_window_title_tokens(account)
+        if not tokens:
             return False
         from ctypes import wintypes
 
@@ -5040,19 +5124,36 @@ class StandaloneBridge:
             length = user32.GetWindowTextLengthW(hwnd)
             title_buffer = ctypes.create_unicode_buffer(max(1, length + 1))
             user32.GetWindowTextW(hwnd, title_buffer, len(title_buffer))
+            title = title_buffer.value
+            # 只收能明确对上 account 的窗口；对不上不参与，绝不"谁大抢谁"。
+            if not any(token in title for token in tokens):
+                return True
             rect = wintypes.RECT()
             user32.GetWindowRect(hwnd, ctypes.byref(rect))
             area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
             if area >= 350_000:
-                candidates.append((int(hwnd), title_buffer.value, area))
+                candidates.append((int(hwnd), title, area))
             return True
 
         user32.EnumWindows(visit, 0)
         if not candidates:
             return False
-        preferred = [item for item in candidates if "接待中心" in item[1]]
-        target = max(preferred or candidates, key=lambda item: item[2])
-        hwnd = target[0]
+        hwnd = max(candidates, key=lambda item: item[2])[0]
+        if int(user32.GetForegroundWindow() or 0) == hwnd:
+            # 已经在前台：不重复抢，直接算成功。
+            return True
+        now = time.monotonic()
+        try:
+            cooldown = float(
+                self.config.get("focus_cooldown_seconds", DEFAULT_FOCUS_COOLDOWN_SECONDS)
+            )
+        except (TypeError, ValueError):
+            cooldown = DEFAULT_FOCUS_COOLDOWN_SECONDS
+        with _FOCUS_ACTIVATE_LOCK:
+            last = float(_FOCUS_LAST_ACTIVATED.get(hwnd) or 0.0)
+            if cooldown > 0 and now - last < cooldown:
+                return False
+            _FOCUS_LAST_ACTIVATED[hwnd] = now
         user32.ShowWindow(hwnd, 9)
         user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
         user32.BringWindowToTop(hwnd)
