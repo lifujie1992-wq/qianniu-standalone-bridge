@@ -1,4 +1,4 @@
-"""Latency P0 regressions: ingress gate and outbound send pool.
+﻿"""Latency P0 regressions: ingress gate and outbound send pool.
 
 These are the two knobs that mirror the latency patches validated on the PDD
 bridge (immediate ingress + concurrent command sender):
@@ -183,6 +183,101 @@ class SenderPoolTests(unittest.TestCase):
         source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
         self.assertIn('"command_sender_pool_enabled", True', source)
         self.assertIn('"command_sender_workers", 6', source)
+
+
+class EventUploadPoolTests(unittest.TestCase):
+    """Ingress fan-out: batches upload concurrently instead of one round-trip
+    at a time, and the command loop polls before retrying results."""
+
+    def _connector(self, **config):
+        return bridge.BrainConnector(_app(**config))
+
+    def test_default_concurrency_is_four(self) -> None:
+        self.assertEqual(self._connector().event_upload_worker_count(), 4)
+
+    def test_concurrency_is_clamped(self) -> None:
+        self.assertEqual(
+            self._connector(event_upload_concurrency=99).event_upload_worker_count(), 8
+        )
+        # 0 是假值，按默认处理（与 command_sender_workers 的 `or N` 一致）；
+        # 要串行请显式写 1。
+        self.assertEqual(
+            self._connector(event_upload_concurrency=0).event_upload_worker_count(), 4
+        )
+        self.assertEqual(
+            self._connector(event_upload_concurrency=1).event_upload_worker_count(), 1
+        )
+        self.assertEqual(
+            self._connector(event_upload_concurrency="bad").event_upload_worker_count(), 4
+        )
+
+    def test_batch_size_is_clamped_to_claim_limit(self) -> None:
+        self.assertEqual(self._connector().event_upload_batch_size(), 100)
+        self.assertEqual(
+            self._connector(event_upload_batch_size=500).event_upload_batch_size(), 100
+        )
+        self.assertEqual(
+            self._connector(event_upload_batch_size=7).event_upload_batch_size(), 7
+        )
+
+    def test_concurrent_claims_never_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = bridge.StateDB(Path(tmp) / "latency.sqlite3")
+            seeded: list[str] = []
+            for index in range(60):
+                event_id, _changed = db.upsert_event({
+                    "platform": "taobao",
+                    "role": "user",
+                    "content": f"burst {index}",
+                    "account": "seller",
+                    "buyer_id": "buyer#1@cntaobao",
+                    "buyer_nick": "buyer",
+                    "msg_id": f"m-burst-{index}",
+                    "ts": time.time(),
+                    "source": "test",
+                })
+                self.assertTrue(db.enqueue_brain_event(event_id))
+                seeded.append(event_id)
+
+            claimed: list[str] = []
+            guard = threading.Lock()
+
+            def worker() -> None:
+                while True:
+                    rows = db.claim_brain_events(0.0, 10)
+                    if not rows:
+                        return
+                    with guard:
+                        claimed.extend(str(row["event_id"]) for row in rows)
+                    db.finish_brain_events(
+                        rows, {str(row["event_id"]) for row in rows}
+                    )
+
+            threads = [threading.Thread(target=worker) for _ in range(5)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual(len(claimed), len(set(claimed)), "no event claimed twice")
+            self.assertEqual(sorted(claimed), sorted(seeded), "every event claimed once")
+            self.assertEqual(db.brain_event_counts()["pending"], 0)
+
+    def test_event_wakeup_is_dedicated(self) -> None:
+        connector = self._connector()
+        self.assertIsNot(connector.event_wakeup, connector.wakeup)
+
+    def test_source_starts_pool_and_polls_commands_first(self) -> None:
+        source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
+        self.assertIn("event_upload_concurrency", source)
+        self.assertIn("event_upload_loop", source)
+        commands = source[source.index("def run_commands"):]
+        commands = commands[: commands.index("def run_events")]
+        self.assertLess(
+            commands.index("self.pull_commands()"),
+            commands.index("self.retry_command_results()"),
+            "command polling must run before result retries",
+        )
 
 
 if __name__ == "__main__":

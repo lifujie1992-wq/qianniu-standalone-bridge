@@ -1,4 +1,4 @@
-"""One-time operational defaults for unattended customer installations."""
+﻿"""One-time operational defaults for unattended customer installations."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 from brain_endpoint import enforce as enforce_brain_endpoint
 
 
-CONFIG_DEFAULTS_REVISION = 3
+CONFIG_DEFAULTS_REVISION = 4
 CONFIG_DEFAULTS_REVISION_KEY = "config_defaults_revision"
 LEGACY_WORKBENCH_PORT = 18767
 DEFAULT_WORKBENCH_PORT = 18776
@@ -80,6 +80,13 @@ def apply_operational_defaults(config: dict[str, Any]) -> bool:
             legacy_delay = False
         if legacy_delay:
             config["brain_event_delay_seconds"] = DEFAULT_EVENT_DELAY_SECONDS
+
+    # Revision 4 turns on the concurrent brain-event upload pool. A burst used
+    # to be drained one HTTP round-trip at a time (tail latency 10-40s); the
+    # pool claims batches atomically so several requests are in flight at once.
+    # setdefault keeps any value a customer tuned on purpose.
+    if revision < 4:
+        config.setdefault("event_upload_concurrency", 4)
 
     config[CONFIG_DEFAULTS_REVISION_KEY] = CONFIG_DEFAULTS_REVISION
     return True

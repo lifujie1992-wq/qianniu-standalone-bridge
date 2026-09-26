@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import ctypes
@@ -1860,6 +1860,9 @@ class BrainConnector:
         db = getattr(app, "db", None)
         self.session_start_rowid = int(db.max_event_rowid()) if db is not None else 0
         self.wakeup = threading.Event()
+        # 事件上报专用唤醒：control/commands 与 events 原本共用一个事件，事件
+        # worker 一多会互相 clear，导致别的循环空等。拆开互不打扰。
+        self.event_wakeup = threading.Event()
         self.control_thread = threading.Thread(
             target=self.run_control, name="brain-control", daemon=True
         )
@@ -2009,6 +2012,7 @@ class BrainConnector:
             self.last_handoff_poll_at = 0.0
         self.record("config", "ok", "大脑配置已保存，连接器正在重新加载")
         self.wakeup.set()
+        self.event_wakeup.set()
         self.draft_wakeup.set()
 
     def _headers(self) -> dict[str, str]:
@@ -2097,6 +2101,7 @@ class BrainConnector:
         if backfilled:
             self.record("events", "ok", f"queued {backfilled} local events after brain reconnect")
         self.wakeup.set()
+        self.event_wakeup.set()
         return payload
 
     def heartbeat_status(self) -> dict[str, Any]:
@@ -2925,7 +2930,9 @@ class BrainConnector:
                 self.wakeup.clear()
                 continue
             try:
-                self.retry_command_results()
+                # 取指令是时延关键路径，必须排在补报结果之前：一条结果 POST 最多
+                # 等 brain_request_timeout_seconds，原来它跑在 pull_commands 前面，
+                # 一挂住就把本轮取指令一起推迟（表现为"中心派发到桥接收差好几秒"）。
                 for command in self.pull_commands():
                     self.dispatch_command(command)
                 with self.lock:
@@ -2939,21 +2946,55 @@ class BrainConnector:
                 self.record("command_poll", "error", self.last_error)
                 self.app.stop_event.wait(backoff)
                 backoff = min(15.0, backoff * 2.0)
+                continue
+            # 补报独立隔离：失败只记一条，绝不拖慢取指令循环。
+            try:
+                self.retry_command_results()
+            except Exception as error:
+                self.record("command_ack", "error", str(error)[:500])
 
-    def run_events(self) -> None:
+    # ------------------------------------------------------------------ 事件上报并发池
+    # 单线程上报时，一批要等一次完整 HTTP 往返（认领→上传→落库）才开始下一批，
+    # 突发进线时尾条要等十几到几十秒。claim_brain_events 的 BEGIN IMMEDIATE +
+    # status='sending' 本身就是原子认领，多个 worker 不会领到同一行；
+    # finish_brain_events 按 event_id+revision+status 幂等更新，因此并发是安全的。
+    def event_upload_worker_count(self) -> int:
+        """事件上报并发度。默认 4，收敛到 1..8；=1 时与旧单线程实现等价。"""
+        try:
+            workers = int(self.app.config.get("event_upload_concurrency", 4) or 4)
+        except (TypeError, ValueError):
+            workers = 4
+        return max(1, min(workers, 8))
+
+    def event_upload_batch_size(self) -> int:
+        """单批上送条数。claim_brain_events 内部上限是 100。"""
+        try:
+            size = int(self.app.config.get("event_upload_batch_size", 100) or 100)
+        except (TypeError, ValueError):
+            size = 100
+        return max(1, min(size, 100))
+
+    def event_upload_loop(self, index: int) -> None:
+        """单个上传 worker：原子认领一批 → 上传 → 落库。
+
+        排空语义：只要领到过事件就立刻再领一次，不再等下一次唤醒，突发时多个
+        worker 把头批排空；只有队列空（或大脑未就绪）时才短暂挂起。
+        """
+        wakeup = getattr(self, "event_wakeup", None) or self.wakeup
         backoff = 0.5
         while not self.app.stop_event.is_set():
-            ready = self.event_upload_ready()
-            if not self.configured() or not ready:
-                self.wakeup.wait(1.0)
-                self.wakeup.clear()
+            if not self.configured() or not self.event_upload_ready():
+                wakeup.wait(1.0)
+                wakeup.clear()
                 continue
             rows = self.app.db.claim_brain_events(
-                float(self.app.config.get("brain_event_delay_seconds", 0.2)), 100
+                float(self.app.config.get("brain_event_delay_seconds", 0.2)),
+                self.event_upload_batch_size(),
             )
             if not rows:
-                self.wakeup.wait(0.5)
-                self.wakeup.clear()
+                # 空转：短暂挂起，enqueue_brain_event 会 set(event_wakeup)。
+                wakeup.wait(0.2)
+                wakeup.clear()
                 continue
             try:
                 committed = self.upload_events(rows)
@@ -2977,6 +3018,24 @@ class BrainConnector:
                 })
                 self.app.stop_event.wait(backoff)
                 backoff = min(15.0, backoff * 2.0)
+
+    def run_events(self) -> None:
+        """事件上报总入口：并发度=1 走旧单线程；>1 起 worker 池，本线程只做监督。"""
+        workers = self.event_upload_worker_count()
+        if workers <= 1:
+            self.event_upload_loop(0)
+            return
+        for index in range(workers):
+            thread = threading.Thread(
+                target=self.event_upload_loop,
+                args=(index + 1,),
+                name=f"brain-event-upload-{index + 1}",
+                daemon=True,
+            )
+            thread.start()
+        LOG.info("event upload pool started workers=%s", workers)
+        while not self.app.stop_event.is_set():
+            self.app.stop_event.wait(1.0)
 
     def status(self) -> dict[str, Any]:
         with self.lock:
@@ -3867,6 +3926,7 @@ class ContextEnricher:
                 brain = getattr(self.app, "brain", None)
                 if brain is not None:
                     brain.wakeup.set()
+                    getattr(brain, "event_wakeup", brain.wakeup).set()
                     brain.record(
                         "context",
                         "ok" if status != "error_unknown" else "error",
@@ -5110,6 +5170,7 @@ class StandaloneBridge:
                     })
                 elif self.db.enqueue_brain_event(event_id):
                     brain.wakeup.set()
+                    getattr(brain, "event_wakeup", brain.wakeup).set()
         return event_id, changed
 
     def ingest_native_raw(self, raw: str) -> None:

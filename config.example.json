@@ -1,4 +1,4 @@
-{
+﻿{
   "ws_host": "127.0.0.1",
   "ws_port": 42110,
   "api_host": "127.0.0.1",
@@ -25,6 +25,8 @@
   "brain_draft_sync_enabled": true,
   "brain_draft_poll_seconds": 1.5,
   "brain_event_delay_seconds": 0.2,
+  "event_upload_concurrency": 4,
+  "event_upload_batch_size": 100,
   "brain_request_timeout_seconds": 8.0,
   "update_manifest_url": "",
   "auto_update_check_enabled": true,
@@ -55,7 +57,7 @@
   "poll_interval_seconds": 2.0,
   "delivery_timeout_seconds": 1.5
     ,"dock_enabled": true
-    ,"config_defaults_revision": 3
+    ,"config_defaults_revision": 4
     ,"dock_width": 286
     ,"dock_edge_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
 }
