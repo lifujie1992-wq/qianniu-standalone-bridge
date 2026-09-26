@@ -159,6 +159,13 @@ def ensure_edge(config: dict, config_path: Path) -> bool:
     return False
 
 
+def int_config_value(config: dict, key: str, default: int) -> int:
+    try:
+        return int(config.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def build_injection(config: dict, bridge_source: str) -> str:
     host = str(config.get("ws_host") or "")
     port = int(config.get("ws_port") or 0)
@@ -174,6 +181,11 @@ def build_injection(config: dict, bridge_source: str) -> str:
         "ws_mirror": bool(config.get("bridge_ws_mirror", True)),
         "history_poll": bool(config.get("bridge_history_poll", False)),
         "discovery_poll": bool(config.get("bridge_discovery_poll", True)),
+        # Passive scan cadence for the in-page bridge (milliseconds). Lower =
+        # faster recovery for messages the SDK event did not carry, at the cost
+        # of more scanning in every Qianniu render process.
+        "dom_scan_interval_ms": int_config_value(config, "bridge_passive_dom_ms", 5000),
+        "cache_scan_interval_ms": int_config_value(config, "bridge_passive_cache_ms", 10000),
     }
     return (
         f'<script {INJECTION_TAG}="v1">\n'

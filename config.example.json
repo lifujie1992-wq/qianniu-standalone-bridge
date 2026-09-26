@@ -1,4 +1,4 @@
-﻿{
+{
   "ws_host": "127.0.0.1",
   "ws_port": 42110,
   "api_host": "127.0.0.1",
@@ -41,6 +41,8 @@
   "bridge_ws_mirror": true,
   "bridge_discovery_poll": true,
   "bridge_history_poll": false,
+  "bridge_passive_dom_ms": 5000,
+  "bridge_passive_cache_ms": 10000,
   "command_sender_pool_enabled": true,
   "command_sender_workers": 6,
   "appbiz_callback_wait_seconds": 2.0,
@@ -57,7 +59,7 @@
   "poll_interval_seconds": 2.0,
   "delivery_timeout_seconds": 1.5
     ,"dock_enabled": true
-    ,"config_defaults_revision": 4
+    ,"config_defaults_revision": 5
     ,"dock_width": 286
     ,"dock_edge_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
 }

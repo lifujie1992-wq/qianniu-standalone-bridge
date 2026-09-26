@@ -23,6 +23,13 @@
   var WS_MIRROR = OPTIONS.ws_mirror !== false;
   var HISTORY_POLL = OPTIONS.history_poll === true;
   var DISCOVERY_POLL = OPTIONS.discovery_poll !== false;
+  // 被动扫描间隔可在注入时通过 bridge_passive_dom_ms / bridge_passive_cache_ms
+  // 调整；缺失或非法值回落到默认。
+  function clampIntervalMs(value, fallback, minimum, maximum) {
+    var number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return fallback;
+    return Math.max(minimum, Math.min(maximum, Math.round(number)));
+  }
   var MIRROR_CLIENT_PATHS = [
     "_qn_ws_client",
     "_wsClient",
@@ -49,11 +56,12 @@
   var MAX_KNOWN_CONVERSATIONS = 80;
   var MAX_SEEN = 1200;
   var MAX_OUTBOX = 500;
-  // 被动轮询只是安全网，不是主链路。原先每个 watchdog 周期（5 秒）都会跑一次
-  // 完整的 DOM 扫描加本地缓存扫描，会话与消息越积越多时，千牛每个渲染进程都会
-  // 跟着变重。现在两类扫描各自独立降频，watchdog 只保留 5 秒一次的健康检查。
-  var PASSIVE_DOM_INTERVAL_MS = 10000;
-  var PASSIVE_CACHE_INTERVAL_MS = 30000;
+  // 被动扫描只是安全网，不是主链路。原先写死 DOM 10s / 本地缓存 30s，没走主
+  // 链路的会话要等下一轮才被捞到，实测入库延迟常有 10-40s。现在节奏可由注入的
+  // 选项调，并且收到消息却取不到内容时（重试链走完）会触发一次去抖的恢复扫描，
+  // 见 scheduleRecoveryScan。watchdog 仍是 5 秒一次的健康检查。
+  var PASSIVE_DOM_INTERVAL_MS = clampIntervalMs(OPTIONS.dom_scan_interval_ms, 5000, 1000, 60000);
+  var PASSIVE_CACHE_INTERVAL_MS = clampIntervalMs(OPTIONS.cache_scan_interval_ms, 10000, 1000, 120000);
   var OUTBOX_PERSIST_DELAY_MS = 800;
   var outboxPersistTimer = null;
   var socket = null;
@@ -74,6 +82,9 @@
   var passiveKeysCache = { signature: "", keys: [] };
   var lastPassiveDomAt = 0;
   var lastPassiveCacheAt = 0;
+  var recoveryScanTimer = null;
+  var lastRecoveryScanAt = 0;
+  var RECOVERY_SCAN_DEBOUNCE_MS = 800;
   var pollCursor = 0;
   var pollRunning = false;
   var discoveryCursor = 0;
@@ -128,6 +139,11 @@
     local_lookup_hits: 0,
     local_lookup_misses: 0,
     passive_cache_scans: 0,
+    recovery_scan_requests: 0,
+    recovery_scan_runs: 0,
+    recovery_scan_last_reason: "",
+    passive_dom_interval_ms: PASSIVE_DOM_INTERVAL_MS,
+    passive_cache_interval_ms: PASSIVE_CACHE_INTERVAL_MS,
     invoke_observer_enabled: INVOKE_OBSERVER,
     invoke_observer_active: false,
     invoke_observer_calls: 0,
@@ -326,6 +342,11 @@
         passive_cache_scans: diagnostics.passive_cache_scans,
         passive_cache_changes: diagnostics.passive_cache_changes,
         passive_cache_last_at_ms: diagnostics.passive_cache_last_at_ms,
+        passive_dom_interval_ms: diagnostics.passive_dom_interval_ms,
+        passive_cache_interval_ms: diagnostics.passive_cache_interval_ms,
+        recovery_scan_requests: diagnostics.recovery_scan_requests,
+        recovery_scan_runs: diagnostics.recovery_scan_runs,
+        recovery_scan_last_reason: diagnostics.recovery_scan_last_reason,
         invoke_observer_enabled: diagnostics.invoke_observer_enabled,
         invoke_observer_active: diagnostics.invoke_observer_active,
         invoke_observer_calls: diagnostics.invoke_observer_calls,
@@ -1088,8 +1109,14 @@
     localRetryTimers[ccode] = setTimeout(function () {
       delete localRetryTimers[ccode];
       var local = emitLocalConversation(ccode);
-      if ((!local || !local.sent) && attempt + 1 < LOCAL_RETRY_DELAYS_MS.length) {
-        retryLocalConversation(ccode, attempt + 1);
+      if (!local || !local.sent) {
+        if (attempt + 1 < LOCAL_RETRY_DELAYS_MS.length) {
+          retryLocalConversation(ccode, attempt + 1);
+        } else {
+          // 重试链走完还是取不到内容：立刻安排一次去抖的被动恢复扫描，而不是
+          // 干等下一轮定时扫描（DOM 5s / 本地缓存 10s）。
+          scheduleRecoveryScan("local_retry_exhausted");
+        }
       }
     }, LOCAL_RETRY_DELAYS_MS[attempt]);
   }
@@ -1655,12 +1682,27 @@
     diagnostics.dom_observer_running = true;
   }
 
+  function scheduleRecoveryScan(reason) {
+    diagnostics.recovery_scan_requests += 1;
+    if (recoveryScanTimer) return;
+    var now = Date.now();
+    var wait = Math.max(0, lastRecoveryScanAt + RECOVERY_SCAN_DEBOUNCE_MS - now);
+    recoveryScanTimer = setTimeout(function () {
+      recoveryScanTimer = null;
+      lastRecoveryScanAt = Date.now();
+      diagnostics.recovery_scan_runs += 1;
+      diagnostics.recovery_scan_last_reason = reason || "";
+      passiveRefresh(true);
+    }, wait);
+  }
+
   function passiveRefresh(force) {
     var startedAt = Date.now();
     var now = startedAt;
     diagnostics.last_poll_at_ms = now;
-    // Two independent cadences: the DOM walk stays at 10s, the local message map
-    // walk moves to 30s. A cold start or a self-heal passes force=true so the
+    // Two independent cadences: the DOM walk stays at PASSIVE_DOM_INTERVAL_MS,
+    // the local message map walk at PASSIVE_CACHE_INTERVAL_MS (both injected).
+    // A cold start, a self-heal, or a capture miss passes force=true so the
     // recovery path is never throttled.
     if (force || now - lastPassiveDomAt >= PASSIVE_DOM_INTERVAL_MS) {
       lastPassiveDomAt = now;

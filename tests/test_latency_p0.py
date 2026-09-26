@@ -1,4 +1,4 @@
-﻿"""Latency P0 regressions: ingress gate and outbound send pool.
+"""Latency P0 regressions: ingress gate and outbound send pool.
 
 These are the two knobs that mirror the latency patches validated on the PDD
 bridge (immediate ingress + concurrent command sender):
@@ -278,6 +278,64 @@ class EventUploadPoolTests(unittest.TestCase):
             commands.index("self.retry_command_results()"),
             "command polling must run before result retries",
         )
+
+
+class CaptureCadenceTests(unittest.TestCase):
+    """Ingress cadence: passive scans are configurable and a capture miss
+    schedules a debounced recovery scan instead of waiting for the next tick."""
+
+    def test_bridge_intervals_are_configurable(self) -> None:
+        source = (ROOT / "browser_bridge.js").read_text(encoding="utf-8")
+        self.assertIn("dom_scan_interval_ms", source)
+        self.assertIn("cache_scan_interval_ms", source)
+        self.assertIn("function clampIntervalMs(", source)
+        self.assertIn("function scheduleRecoveryScan(", source)
+        self.assertIn('scheduleRecoveryScan("local_retry_exhausted")', source)
+        self.assertNotIn("var PASSIVE_DOM_INTERVAL_MS = 10000;", source)
+        self.assertNotIn("var PASSIVE_CACHE_INTERVAL_MS = 30000;", source)
+
+    def test_launcher_injects_cadence_options(self) -> None:
+        source = (ROOT / "launcher.py").read_text(encoding="utf-8")
+        self.assertIn("def int_config_value(", source)
+        self.assertIn('"dom_scan_interval_ms": int_config_value(', source)
+        self.assertIn('"cache_scan_interval_ms": int_config_value(', source)
+        self.assertIn("bridge_passive_dom_ms", source)
+        self.assertIn("bridge_passive_cache_ms", source)
+
+    def test_injector_tool_keeps_the_same_options(self) -> None:
+        source = (ROOT / "tools" / "inject_runtime_webui.py").read_text(encoding="utf-8")
+        self.assertIn('"dom_scan_interval_ms": _int_option(', source)
+        self.assertIn('"cache_scan_interval_ms": _int_option(', source)
+
+    def test_config_revision_backfills_cadence(self) -> None:
+        source = (ROOT / "config_defaults.py").read_text(encoding="utf-8")
+        self.assertIn("CONFIG_DEFAULTS_REVISION = 5", source)
+        self.assertIn('setdefault("bridge_passive_dom_ms", 5000)', source)
+        self.assertIn('setdefault("bridge_passive_cache_ms", 10000)', source)
+
+    def test_diagnostics_forward_recovery_counters(self) -> None:
+        source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
+        for key in (
+            "passive_dom_interval_ms",
+            "passive_cache_interval_ms",
+            "recovery_scan_requests",
+            "recovery_scan_runs",
+            "recovery_scan_last_reason",
+        ):
+            self.assertIn(f'"{key}"', source, f"{key} must be in the diagnostics whitelist")
+
+    def test_heartbeat_snapshot_carries_recovery_counters(self) -> None:
+        # The heartbeat rebuilds a curated snapshot every few seconds and overwrites
+        # the full hi diagnostics, so the new counters must be listed there too.
+        source = (ROOT / "browser_bridge.js").read_text(encoding="utf-8")
+        for key in (
+            "passive_dom_interval_ms",
+            "passive_cache_interval_ms",
+            "recovery_scan_requests",
+            "recovery_scan_runs",
+            "recovery_scan_last_reason",
+        ):
+            self.assertIn(f"{key}: diagnostics.{key},", source, f"{key} missing from heartbeat snapshot")
 
 
 if __name__ == "__main__":

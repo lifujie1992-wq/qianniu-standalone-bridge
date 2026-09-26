@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import ctypes
@@ -3118,6 +3118,9 @@ class BrowserServer:
             "background_notifications", "has_db", "has_msgDataMap",
             "msgDataMap_size", "msgDataMap_error", "msgdb_last_arrlen",
             "msgdb_last_normalized", "msgdb_last_reason", "msgdb_dump",
+            "passive_dom_interval_ms", "passive_cache_interval_ms",
+            "recovery_scan_requests", "recovery_scan_runs",
+            "recovery_scan_last_reason",
         )
         snapshot = {key: diagnostics.get(key) for key in allowed if key in diagnostics}
         with self.connection_lock:

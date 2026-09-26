@@ -1,4 +1,4 @@
-﻿"""One-time operational defaults for unattended customer installations."""
+"""One-time operational defaults for unattended customer installations."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 from brain_endpoint import enforce as enforce_brain_endpoint
 
 
-CONFIG_DEFAULTS_REVISION = 4
+CONFIG_DEFAULTS_REVISION = 5
 CONFIG_DEFAULTS_REVISION_KEY = "config_defaults_revision"
 LEGACY_WORKBENCH_PORT = 18767
 DEFAULT_WORKBENCH_PORT = 18776
@@ -87,6 +87,14 @@ def apply_operational_defaults(config: dict[str, Any]) -> bool:
     # setdefault keeps any value a customer tuned on purpose.
     if revision < 4:
         config.setdefault("event_upload_concurrency", 4)
+
+    # Revision 5 exposes the passive scan cadence. The in-page bridge defaults to
+    # DOM 5s / local cache 10s (was a hard-coded 10s/30s) plus a miss-triggered
+    # recovery scan, cutting inbound capture latency for sessions that the SDK
+    # event does not cover.
+    if revision < 5:
+        config.setdefault("bridge_passive_dom_ms", 5000)
+        config.setdefault("bridge_passive_cache_ms", 10000)
 
     config[CONFIG_DEFAULTS_REVISION_KEY] = CONFIG_DEFAULTS_REVISION
     return True
