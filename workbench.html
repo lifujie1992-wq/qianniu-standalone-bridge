@@ -80,6 +80,8 @@
     .session-tab:hover { color: var(--text); background: #f3f6f5; }
     .session-tab.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--surface); }
     .session-tab.handoff.active { color: #9a4f00; border-bottom-color: #d97706; }
+    @keyframes handoffPulse { 0%,100% { background:#fff4df; } 50% { background:#ffd8d3; } }
+    .session-tab.handoff.alert { animation: handoffPulse 1.1s ease-in-out infinite; font-weight: 700; }
     .session-list { min-height: 0; overflow: auto; }
     .session-row {
       width: 100%; min-height: 64px; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto;
@@ -369,6 +371,7 @@
       busy: false, sending: false, canSend: false, openingKey: '', lastNewest: '',
       lastMessageRevision: '', settingsOpen: false, tokenConfigured: false, controlBusy: false,
       sessionFilter: 'all', sessionRevision: null,
+      handoffKeysSeen: new Set(), lastHandoffTitle: '',
     };
     const conversationSearch = el('conversationSearchInput');
     conversationSearch.value = '';
@@ -426,11 +429,48 @@
       };
       return labels[status] || status || '本地已接收';
     }
+    function playHandoffAlert() {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        if (!playHandoffAlert._ctx) playHandoffAlert._ctx = new Ctx();
+        const ctx = playHandoffAlert._ctx;
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+        const base = ctx.currentTime;
+        [0, 0.28, 0.56].forEach(offset => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine'; osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0.0001, base + offset);
+          gain.gain.exponentialRampToValueAtTime(0.22, base + offset + 0.03);
+          gain.gain.exponentialRampToValueAtTime(0.0001, base + offset + 0.22);
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.start(base + offset); osc.stop(base + offset + 0.24);
+        });
+      } catch (error) { /* 提示音失败不影响功能 */ }
+    }
     function renderSessions() {
       const query = conversationSearch.value.trim().toLowerCase();
-      const handoffCount = state.sessions.filter(item => item.ai_mode === 'human').length;
+      const handoffSessions = state.sessions.filter(item => item.ai_mode === 'human');
+      const handoffCount = handoffSessions.length;
+      let oldestWaitSeconds = 0;
+      const seenKeys = new Set();
+      for (const item of handoffSessions) {
+        seenKeys.add(keyOf(item));
+        const since = Number(item.control_updated_at || 0);
+        if (since > 0) oldestWaitSeconds = Math.max(oldestWaitSeconds, (Date.now() - since) / 1000);
+      }
+      const staleBadge = oldestWaitSeconds >= 600 ? ' ⚠超10分钟' : '';
       el('allSessionsTab').textContent = `全部 ${state.sessions.length}`;
-      el('handoffSessionsTab').textContent = `待人工 ${handoffCount}`;
+      el('handoffSessionsTab').textContent = `待人工 ${handoffCount}${staleBadge}`;
+      el('handoffSessionsTab').classList.toggle('alert', handoffCount > 0 && oldestWaitSeconds >= 600);
+      document.title = handoffCount > 0 ? `(${handoffCount} 待人工) 千牛聚合接待` : '千牛聚合接待';
+      const freshKeys = handoffSessions.map(keyOf).filter(key => !state.handoffKeysSeen.has(key));
+      if (freshKeys.length) {
+        for (const key of freshKeys) state.handoffKeysSeen.add(key);
+        playHandoffAlert();
+      }
+      if (!handoffCount) state.handoffKeysSeen.clear();
       for (const [id, active] of [['allSessionsTab', state.sessionFilter === 'all'], ['handoffSessionsTab', state.sessionFilter === 'handoff']]) {
         el(id).classList.toggle('active', active); el(id).setAttribute('aria-selected', String(active));
       }
