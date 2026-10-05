@@ -49,3 +49,17 @@ def blocked_reason(meta, latest, now=None):
     if latest_id != parent:
         return "tmall_local_parent_mismatch"
     return ""
+
+
+def projection_status(event):
+    delivery = str(event.get("delivery_status") or "")
+    auto = str(event.get("auto_send_status") or "")
+    if delivery in {"confirmed", "delivered"}:
+        return "confirmed"
+    if delivery in {"failed", "rejected", "blocked"} or auto in {"failed", "blocked", "suppressed", "shadow_only", "stale_context", "already_handed_off", "duplicate_buyer_turn"}:
+        return "not_sent"
+    if delivery == "unknown":
+        return "unknown"
+    if delivery in {"accepted", "submitted", "in_flight"} or auto in {"accepted", "queued", "submitted"}:
+        return "submitted"
+    return "ai_draft"

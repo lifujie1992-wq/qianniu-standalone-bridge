@@ -30,7 +30,7 @@ import psutil
 import websocket
 
 from app_version import VERSION
-from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, timestamp as tmall_timestamp
+from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, timestamp as tmall_timestamp, projection_status as tmall_projection_status
 from brain_ws import (
     BrainEventChannel,
     BrainWsError,
@@ -922,13 +922,14 @@ class StateDB:
         with self.lock, self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT account,buyer_id,reason FROM session_controls
-                WHERE mode='human' AND source='brain'
+                SELECT account,buyer_id,reason,source FROM session_controls
+                WHERE mode='human' AND (source='brain' OR source='automatic')
                 """
             ).fetchall()
         return {
             (str(row["account"]), str(row["buyer_id"])): str(row["reason"])
             for row in rows
+            if str(row["source"]) == "brain" or tmall_guard_scope(row["account"])
         }
 
     def workbench_sessions(self) -> list[dict[str, Any]]:
@@ -1192,7 +1193,8 @@ class StateDB:
                 ),
                 "content": content,
                 "ts": event_timestamp(event),
-                "status": "ai_draft" if role == "assistant_simulated" else str(row["status"]),
+                "status": (tmall_projection_status(event) if tmall_guard_scope(account) else "ai_draft") if role == "assistant_simulated" else str(row["status"]),
+                "error": str(event.get("error") or ""),
                 "source": str(event.get("source") or ""),
                 "capture_mode": str(event.get("capture_mode") or ""),
                 "raw_type": str(event.get("raw_type") or ""),
@@ -2439,7 +2441,9 @@ class BrainConnector:
                 "captured_at_ms": captured_at_ms,
                 "source": "brain_shadow",
                 "capture_mode": "brain_projection",
-                "delivery_status": "simulated",
+                "delivery_status": str(message.get("delivery_status") or "simulated") if tmall_guard_scope(account) else "simulated",
+                "auto_send_status": str((message.get("whitebox") or {}).get("auto_send_status") or ""),
+                "error": str(message.get("error") or (message.get("whitebox") or {}).get("auto_send_error") or "")[:500],
                 "shadow_status": str(message.get("shadow_status") or ""),
                 "parent_msg_id": parent_msg_id,
                 "brain_agent_id": self.agent_id(),
@@ -2462,7 +2466,8 @@ class BrainConnector:
         current = self.app.db.session_control(account, buyer_id)
         if handoff:
             normalized_reason = str(reason or "大脑判断需要人工介入")[:200]
-            if current["ai_mode"] == "human" and current["handoff_source"] != "brain":
+            if (current["ai_mode"] == "human" and current["handoff_source"] != "brain"
+                    and not (tmall_guard_scope(account) and current["handoff_source"] in {"automatic", "brain_pause"})):
                 return False
             if (
                 current["ai_mode"] == "human"
@@ -2474,7 +2479,8 @@ class BrainConnector:
                 account, buyer_id, "human", normalized_reason, "brain"
             )
             return True
-        if current["ai_mode"] == "human" and current["handoff_source"] == "brain":
+        if (current["ai_mode"] == "human" and (current["handoff_source"] == "brain"
+                or (tmall_guard_scope(account) and current["handoff_source"] == "automatic"))):
             self.app.db.set_session_control(account, buyer_id, "ai", "", "brain")
             return True
         return False
@@ -2658,6 +2664,24 @@ class BrainConnector:
                 "via": "client_shop_scope_guard",
                 "real_send": False,
             }
+        if command_type == "session_state" and tmall_guard_scope(account):
+            handoff = command.get("handoff", meta.get("handoff"))
+            ai_enabled = command.get("ai_takeover_enabled", meta.get("ai_takeover_enabled"))
+            if not account or not buyer_id or (not isinstance(handoff, bool) and not isinstance(ai_enabled, bool)):
+                return {**base_result, "ok": False, "status": "blocked", "error": "invalid_session_state", "real_send": False}
+            paused = handoff is True or ai_enabled is False
+            reason = str(command.get("handoff_reason") or meta.get("handoff_reason") or ("服务端暂停 AI" if paused else ""))
+            control = self.app.db.session_control(account, buyer_id)
+            if control["handoff_source"] == "brain_pause" and not paused:
+                self.app.db.set_session_control(account, buyer_id, "ai", "", "brain")
+                changed = True
+            else:
+                changed = self.apply_brain_handoff(account, buyer_id, paused, reason)
+            if paused and handoff is not True:
+                control = self.app.db.session_control(account, buyer_id)
+                if control["handoff_source"] in {"brain", "brain_pause"}:
+                    self.app.db.set_session_control(account, buyer_id, "human", reason, "brain_pause")
+            return {**base_result, "ok": True, "status": "applied", "changed": changed, "real_send": False}
         if command_type == "send_text":
             if not self.app.config.get("brain_ai_reply_enabled", True):
                 return {
@@ -2672,7 +2696,9 @@ class BrainConnector:
             if safety:
                 return {**base_result, **safety}
             control = self.app.db.session_control(account, buyer_id)
-            if control["ai_mode"] == "human":
+            handoff_notice = (tmall_guard_scope(account) and meta.get("handoff_notice") is True
+                              and control["handoff_source"] in {"brain", "automatic"})
+            if control["ai_mode"] == "human" and not handoff_notice:
                 return {
                     **base_result,
                     "ok": False,
@@ -5560,7 +5586,9 @@ class StandaloneBridge:
                 "brain_suppression_reason": brain_suppression,
             })
         if role in {"user", "buyer", "customer"} and account and buyer_id:
-            reason = suggested_handoff_reason(normalized)
+            # Tmall automatic handoff is authoritative at the center. A local
+            # keyword match must not pause the seat independently of the brain.
+            reason = "" if tmall_guard_scope(account) else suggested_handoff_reason(normalized)
             control = self.db.session_control(account, buyer_id)
             if reason and control["ai_mode"] == "ai":
                 self.db.set_session_control(

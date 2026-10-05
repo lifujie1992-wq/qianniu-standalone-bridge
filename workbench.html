@@ -442,7 +442,7 @@
       const labels = {
         in_flight: '调用中', submitted: '已提交，等待千牛确认', confirmed: '千牛已确认',
         unknown: '结果未知，请勿重复发送', rejected: '发送失败',
-        ai_draft: 'AI 草稿 · 未发送',
+        ai_draft: 'AI 草稿 · 未发送', not_sent: '未发送 · 需要处理',
         delivered: role === 'seller' ? '千牛已确认' : '本地已持久化', sending: '持久化中', pending: '本地已接收',
       };
       return labels[status] || status || '本地已接收';
@@ -545,8 +545,8 @@
         const row = document.createElement('div'); row.className = `message ${message.role === 'seller' ? 'seller' : (message.role === 'draft' ? 'draft' : 'user')}`;
         const bubble = document.createElement('div'); bubble.className = 'bubble';
         const body = document.createElement('div'); body.className = 'bubble-body'; body.textContent = message.content;
-        const meta = document.createElement('div'); meta.className = `bubble-meta${['unknown', 'rejected'].includes(message.status) ? ' error' : ''}`;
-        meta.textContent = `${shortTime(message.ts)} · ${sendStatusText(message.status, message.role)}`;
+        const meta = document.createElement('div'); meta.className = `bubble-meta${['unknown', 'rejected', 'not_sent'].includes(message.status) ? ' error' : ''}`;
+        meta.textContent = `${shortTime(message.ts)} · ${sendStatusText(message.status, message.role)}${message.error ? " · " + message.error : ""}`;
         const messageId = message.msg_id || message.event_id || '-';
         const idLine = document.createElement('div'); idLine.className = 'bubble-id'; idLine.textContent = `ID ${messageId}`; idLine.title = messageId;
         bubble.append(body, meta, idLine); row.append(bubble); box.append(row);
@@ -674,7 +674,7 @@
         entries.push({
           ts: message.ts,
           stage: message.role === 'seller' ? '千牛发送' : (message.role === 'draft' ? '大脑草稿' : '本地接收'),
-          mode: ['unknown', 'rejected'].includes(message.status) ? 'error' : (message.status === 'submitted' ? 'warn' : 'ok'),
+          mode: ['unknown', 'rejected', 'not_sent'].includes(message.status) ? 'error' : (message.status === 'submitted' ? 'warn' : 'ok'),
           detail: `${message.content.slice(0, 80)} · ${sendStatusText(message.status, message.role)}`,
           evidence: {event_id: message.event_id, msg_id: message.msg_id, source: message.source, capture_mode: message.capture_mode, raw_type: message.raw_type, context: message.context, error: message.error || ''},
         });
