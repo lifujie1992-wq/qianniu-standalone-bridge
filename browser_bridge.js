@@ -12,7 +12,7 @@
   }
   window.__qn_standalone_bridge_v1_installed = true;
 
-  var BRIDGE_VERSION = "qn-standalone-browser-v7-nicknames";
+  var BRIDGE_VERSION = "qn-standalone-browser-v8-tmall-guards";
   // Message-source switches, written by the injector from config.json. The
   // three extra sources mirror what the commercial agent does inside the page:
   // observing imsdk.invoke (conversation discovery only), mirroring the client's
@@ -463,6 +463,20 @@
     return textOf(node.nick || node.display || node.targetId || node.uid || node.userId || "");
   }
 
+  function tmallGuardScope(account) {
+    return textOf(account).replace(/^tb_nick_/, "").split(/[:：]/)[0] === "联想官方旗舰店";
+  }
+
+  function partyUid(party) {
+    return party && typeof party === "object" ? textOf(party.uid || party.userId || party.targetId) : "";
+  }
+
+  function sameStoreStaff(nick, seller) {
+    var name = textOf(nick).replace(/^tb_nick_/, "");
+    var store = textOf(seller).replace(/^tb_nick_/, "").split(/[:：]/)[0];
+    return name === store || name.indexOf(store + ":") === 0 || name.indexOf(store + "：") === 0;
+  }
+
   function firstText() {
     for (var i = 0; i < arguments.length; i++) {
       var t = textOf(arguments[i]);
@@ -816,6 +830,7 @@
 
   function cachedNickname(account, buyerId) {
     var item = nickCache[nickKey(account, buyerId)];
+    if (item && tmallGuardScope(account) && sameStoreStaff(item.nick, account)) return "";
     return item && Date.now() - item.at < NICK_CACHE_TTL_MS ? validNickname(item.nick, buyerId) : "";
   }
 
@@ -1014,17 +1029,45 @@
       buyer = fromNick || ccode || toNick;
       if (!seller) seller = toNick || fromNick;
     }
+    if (tmallGuardScope(seller)) {
+      var ownUid = partyUid(loginid);
+      var fromUid = partyUid(fromid);
+      var toUid = partyUid(toid);
+      var expectedBuyerUid = buyerUid(null, ccode);
+      if ((ownUid && fromUid === ownUid) || sameStoreStaff(fromNick, seller)) {
+        role = "mall_cs";
+        buyer = toNick || ccode;
+      } else if ((ownUid && toUid === ownUid) || sameStoreStaff(toNick, seller)
+          || (expectedBuyerUid && fromUid === expectedBuyerUid)) {
+        role = "user";
+        buyer = fromNick || ccode;
+      } else {
+        // An authenticated, timestamped transfer notice has its own server
+        // path. Unidentified ordinary senders are context only.
+        role = /^由\s*.+?\s*转交给\s*.+$/.test(content) ? "user" : "unknown";
+        buyer = ccode || toNick || fromNick;
+      }
+    }
     if (!buyer) return null;
+    var transferNotice = tmallGuardScope(seller) && /^由\s*.+?\s*转交给\s*.+$/.test(content);
+    if (transferNotice) {
+      // Dedicated platform notice: the server sends the deterministic first
+      // response, and the local parent guard must retain the same identity.
+      role = "user";
+      buyer = ccode || buyer;
+    }
     var buyerId = ccode || buyer;
     var previousNickname = cachedNickname(seller, buyerId);
     var buyerParty = role === "mall_cs" ? toid : fromid;
     var nickname = role === "mall_cs"
       ? firstNickname([detail.receiverNick, detail.recipientNick, partyNickname(buyerParty, buyerId)], buyerId)
       : firstNickname([detail.senderNick, detail.nick, detail.senderName, partyNickname(buyerParty, buyerId)], buyerId);
+    if (role === "unknown" || transferNotice || (tmallGuardScope(seller) && sameStoreStaff(nickname, seller))) nickname = "";
     if (nickname) rememberNickname(seller, buyerId, nickname, !!nickPending[nickKey(seller, buyerId)]);
-    nickname = nickname || cachedNickname(seller, buyerId) || localNickname(buyerId, buyerUid(buyerParty, buyerId));
+    nickname = nickname || cachedNickname(seller, buyerId) || (role === "unknown" ? "" : localNickname(buyerId, transferNotice ? buyerUid(null, buyerId) : buyerUid(buyerParty, buyerId)));
+    if (tmallGuardScope(seller) && sameStoreStaff(nickname, seller)) nickname = "";
     if (nickname) rememberNickname(seller, buyerId, nickname, false);
-    else if (seller) resolveNickname(seller, buyerId, buyerUid(buyerParty, buyerId));
+    else if (seller && role !== "unknown") resolveNickname(seller, buyerId, transferNotice ? buyerUid(null, buyerId) : buyerUid(buyerParty, buyerId));
     var mcode = detail.mcode && typeof detail.mcode === "object" ? detail.mcode : {};
     var msgId = textOf(mcode.messageId || mcode.clientId || detail.messageId || detail.msg_id || detail.clientId || "");
     var originalMsgId = msgId;
@@ -1037,6 +1080,7 @@
       return null;
     }
     var incomplete = !msgId || !hasOriginalTimestamp;
+    if (incomplete && tmallGuardScope(seller)) captureMode = "history_snapshot";
     if (!msgId) {
       msgId = "tb-history-incomplete-" + String(seller) + "|" + String(buyerId) + "|" + content.slice(0, 80);
       captureMode = "history_snapshot";
@@ -1058,6 +1102,7 @@
       source: "qianniu_standalone_browser",
       capture_mode: captureMode || "unknown",
       incomplete: incomplete,
+      identity_uncertain: role === "unknown",
       original_msg_id: originalMsgId,
       original_timestamp: hasOriginalTimestamp ? timestampSeconds(tsRaw) : 0,
       qn_bridge_js_version: BRIDGE_VERSION,
@@ -1149,7 +1194,8 @@
       details.forEach(function (detail) {
         var row = normalizeDetail(detail, sellerHint, captureMode);
         if (!row) return;
-        var queuedId = queueEnvelope(row, !row.nickname && !!row.account);
+        var immediate = tmallGuardScope(row.account);
+        var queuedId = queueEnvelope(row, !immediate && !row.nickname && !!row.account);
         rememberSeen(row.msg_id);
         result.captured += 1;
         var capturedCcode = String(row.buyer_id || "");
@@ -1175,7 +1221,16 @@
             console.warn("[qn-bridge] queued while disconnected", eventId);
           }
         }
-        if (row.nickname || !row.account) enqueueResolved(row.nickname);
+        if (immediate) {
+          enqueueResolved(row.nickname);
+          if (!row.nickname && row.role !== "unknown") {
+            resolveNickname(row.account, row.buyer_id, buyerUid(
+              /^由\s*.+?\s*转交给\s*.+$/.test(row.content) ? null : (row.role === "mall_cs" ? (detail.toid || detail.toId) : (detail.fromid || detail.fromId)), row.buyer_id
+            )).then(function (nick) {
+              if (nick) rememberNickname(row.account, row.buyer_id, nick, true);
+            });
+          }
+        } else if (row.nickname || !row.account) enqueueResolved(row.nickname);
         else resolveNickname(row.account, row.buyer_id, buyerUid(
           row.role === "mall_cs" ? (detail.toid || detail.toId) : (detail.fromid || detail.fromId), row.buyer_id
         )).then(enqueueResolved);

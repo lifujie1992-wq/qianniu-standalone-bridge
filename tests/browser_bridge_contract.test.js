@@ -405,3 +405,75 @@ test('pending nickname capture survives reload and uses the same message id', as
   assert.equal(rows[0].msg_id, 'reload-pending');
   assert.equal(rows[0].event_id, 'qn-msg-v1|taobao|reload-pending');
 });
+
+test('Tmall UID-only own outbound remains staff', () => {
+  const b = loadBridge();
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')({data: {messages: [{
+    cid: {ccode: 'buyer.1-seller.1#11001@cntaobao'},
+    fromid: {uid: 'seller.1'}, toid: {uid: 'buyer.1'},
+    loginid: {nick: '联想官方旗舰店:燕燕', uid: 'seller.1'},
+    summary: '客服已经处理', mcode: {messageId: 'review-own-uid'}, sendTime: Date.now(),
+    receiverNick: '买家昵称', senderNick: '联想官方旗舰店:燕燕',
+  }]}});
+  const row = captured(b)[0];
+  assert.equal(row.role, 'mall_cs');
+  assert.notEqual(row.buyer_nick, 'seller.1');
+});
+
+test('Tmall other staff seat preserves buyer nickname', () => {
+  const b = loadBridge();
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')({data: {messages: [{
+    cid: {ccode: 'buyer.1-seller.1#11001@cntaobao'},
+    fromid: {nick: '联想官方旗舰店:雪晴'}, toid: {nick: '真实买家'},
+    loginid: {nick: '联想官方旗舰店:燕燕'},
+    summary: '已处理', mcode: {messageId: 'review-other-seat'}, sendTime: Date.now(),
+  }]}});
+  const row = captured(b)[0];
+  assert.equal(row.role, 'mall_cs');
+  assert.equal(row.nickname, '真实买家');
+});
+
+test('Tmall missing original timestamp is context only', () => {
+  const b=loadBridge();
+  const raw=message('buyer#1@cntaobao','买家昵称','review-missing-ts','由 雪晴 转交给 燕燕');
+  raw.loginid={nick:'联想官方旗舰店:燕燕'}; raw.toid={nick:'联想官方旗舰店:燕燕'};
+  delete raw.sendTime;
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')({data:{messages:[raw]}});
+  const row=captured(b)[0];
+  assert.equal(row.incomplete,true);
+  assert.equal(row.original_timestamp,0);
+  assert.equal(row.capture_mode, "history_snapshot");
+});
+
+
+test('Tmall unresolved nickname cannot hold a live transfer notification', async () => {
+  const b=loadBridge({asyncRpc:true,invoke(){return new Promise(()=>{});}});
+  const raw=uidMessage('tmall-live-notice',{loginid:{nick:'联想官方旗舰店:燕燕',uid:'126446588.1'},toid:{uid:'126446588.1'},summary:'由雪晴转交给燕燕'});
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(raw);
+  assert.equal(captured(b)[0].msg_id,'tmall-live-notice');
+  assert.equal(captured(b)[0].nickname,'');
+  assert.equal(captured(b)[0].capture_mode,'event:im.singlemsg.onReceiveNewMsg');
+});
+
+test('Tmall unresolved ordinary sender is context only without staff nickname', () => {
+  const b=loadBridge();
+  const raw=message('buyer.1-seller.1#11001@cntaobao','unresolved sender','tmall-unknown','收到');
+  raw.loginid={nick:'联想官方旗舰店:燕燕'}; raw.toid={uid:'unresolved'};
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(raw);
+  const row=captured(b)[0];
+  assert.equal(row.role,'unknown');
+  assert.equal(row.identity_uncertain,true);
+  assert.equal(row.nickname,'');
+});
+
+
+test('Tmall transfer emitted by a staff seat keeps a buyer-eligible parent without staff nickname', () => {
+  const b=loadBridge();
+  const raw=message('buyer.1-seller.1#11001@cntaobao','联想官方旗舰店:雪晴','tmall-staff-transfer','由雪晴转交给燕燕');
+  raw.loginid={nick:'联想官方旗舰店:燕燕'}; raw.toid={nick:'真实买家'};
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(raw);
+  const row=captured(b)[0];
+  assert.equal(row.role,'user');
+  assert.notEqual(row.nickname,'联想官方旗舰店:雪晴');
+  assert.equal(row.original_msg_id,'tmall-staff-transfer');
+});

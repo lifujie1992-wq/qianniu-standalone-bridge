@@ -162,3 +162,17 @@ py -3.10 tools\inject_runtime_webui.py runtime config.json browser_bridge.js
 首次运行请复制 `config.example.json` 为 `config.json`，填入自己的 `api_token`、`browser_token` 与大脑地址。`cutover.ps1` / `rollback.ps1` 中原先硬编码的旧环境路径与大脑地址已改为参数传入（见脚本参数）。
 
 `tests/test_standalone.py` 中依赖打包运行时的用例在缺少 `runtime/` 与 `vendor/` 时会自动跳过，其余用例描述源码在本机可直接执行。
+
+## 1.6.3 天猫消息与发送修复
+
+本次行为修复仅针对已确认的天猫店铺「联想官方旗舰店」，其他店铺保持原流程。
+
+- 使用 UID 和同店坐席身份区分买家、当前客服和其他客服；不能确认身份的普通记录只进入上下文。
+- 买家消息立即上传，昵称异步补全，避免昵称 RPC 拖延转接首响应。
+- 实时「由雪晴转交给燕燕」类通知保留父消息身份，由服务端去重并发送首响应；缺少原始消息时间的通知不触发自动回复。
+- AI 发送命令执行时以及调用 AppBiz 前检查父消息、有效期和最新买家消息；过期、被追问替代、缺少父消息的自动命令回报 blocked。明确的人工主动发送沿用原流程。
+- 新增 `tmall_delivery_guard.py`，打包时须包含该模块（由 Python 静态导入，PyInstaller 通常自动收集）。
+
+服务端必须同步支持天猫命令的 `takeover_parent_ts` / `expires_at_ms`，以及独立 `nickname_update` 的持久化与 ACK；旧服务端不能直接搭配本版自动发送。阿里云对应修复单独发布，不包含在客户端安装包中。
+
+验证：浏览器契约测试包含客服 UID、其他坐席、缺时间通知、无昵称即时上传、坐席转接通知；Python 新增发送守卫回归测试。macOS 上的 Win32 调用只能模拟，实际 Windows 注入与 EXE 运行应在打包主机验证。

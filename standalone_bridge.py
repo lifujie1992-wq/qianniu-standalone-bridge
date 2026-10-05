@@ -30,6 +30,7 @@ import psutil
 import websocket
 
 from app_version import VERSION
+from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, timestamp as tmall_timestamp
 from brain_ws import (
     BrainEventChannel,
     BrainWsError,
@@ -764,6 +765,28 @@ class StateDB:
             )
             self._invalidate_session_cache()
             return event_id, True
+
+    def latest_tmall_buyer_event(self, account: str, buyer_id: str) -> dict[str, Any] | None:
+        # Scope by exact seat and conversation; another shop must never
+        # replace the parent we need to validate.
+        with self.lock, self.connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM events WHERE json_extract(payload,'$.account')=? "
+                "AND json_extract(payload,'$.buyer_id')=? "
+                "AND json_extract(payload,'$.role')='user' ORDER BY created_at DESC",
+                (account, buyer_id),
+            ).fetchall()
+        candidates = []
+        for row in rows:
+            event = json.loads(row["payload"])
+            if (event.get("type") == "nickname_update" or event.get("incomplete")
+                    or event.get("identity_uncertain") or event.get("brain_suppressed")
+                    or event.get("capture_mode") == "brain_projection"):
+                continue
+            ts = tmall_timestamp(event.get("original_timestamp") or event.get("ts"))
+            if ts and (event.get("original_msg_id") or event.get("msg_id")):
+                candidates.append((ts, event))
+        return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
     def upsert_local_projection(self, event: dict[str, Any]) -> tuple[str, bool]:
         """Persist a center-side draft for local display without any delivery queue."""
@@ -2660,6 +2683,12 @@ class BrainConnector:
                     "real_send": False,
                     "handoff_reason": control["handoff_reason"],
                 }
+            guard_tmall_auto = tmall_guard_scope(account) and meta.get("manual_direct") is not True
+            if guard_tmall_auto:
+                reason = tmall_command_blocked(meta, self.app.db.latest_tmall_buyer_event(account, buyer_id))
+                if reason:
+                    return {**base_result, "ok": False, "status": "blocked", "error": reason,
+                            "via": "tmall_parent_guard", "real_send": False}
             request_id = "brain-command-" + hashlib.sha256(
                 command_id.encode("utf-8", "surrogatepass")
             ).hexdigest()
@@ -2667,6 +2696,7 @@ class BrainConnector:
                 "request_id": request_id,
                 "buyer_cid": buyer_id,
                 "content": content,
+                **({"tmall_account": account, "tmall_command_meta": meta} if guard_tmall_auto else {}),
             }, brain_authorized=True)
             status = str(response.get("status") or "unknown")
             return {
@@ -2674,7 +2704,7 @@ class BrainConnector:
                 **response,
                 "ok": status in {"in_flight", "submitted", "confirmed"},
                 "via": "qianniu_appbiz",
-                "real_send": True,
+                "real_send": response.get("real_send", True),
                 "command_wall_ms": round((time.perf_counter() - started) * 1000.0, 2),
             }
         if command_type == "open_chat":
@@ -5607,6 +5637,15 @@ class StandaloneBridge:
             # Never fetch new messages to prepare a send: GetNewMsg can advance
             # Qianniu's UI cursor. The passive AppBiz observation must already
             # have a route, otherwise sending fails safely.
+            if tmall_guard_scope(body.get("tmall_account")):
+                reason = tmall_command_blocked(
+                    body.get("tmall_command_meta") or {},
+                    self.db.latest_tmall_buyer_event(body["tmall_account"], ccode),
+                )
+                if reason:
+                    response = {"status": "blocked", "error": reason, "real_send": False}
+                    self.db.mark_send_rejected(request_id, payload_hash, reason)
+                    return response
             native_receipt = self.appbiz.send_text(ccode, content, pcsource)
         except Exception as error:
             self.db.mark_send_rejected(request_id, payload_hash, str(error))
