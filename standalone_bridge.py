@@ -20,6 +20,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,7 @@ from brain_ws import (
 )
 from client_support import ClientSupportWatcher
 from config_defaults import apply_operational_defaults
+from nickname_support import event_nickname, nickname_event_id, valid_nickname
 from device_identity import (
     DeviceIdentityError,
     atomic_write_json,
@@ -83,10 +85,7 @@ EMPTY_VALUES = (None, "", [], {})
 
 
 def buyer_nick_is_placeholder(nick: str, buyer_id: str = "") -> bool:
-    value = str(nick or "").strip()
-    if not value:
-        return True
-    return value.isdigit()
+    return not valid_nickname(nick, buyer_id)
 
 
 def preferred_buyer_nick(
@@ -217,6 +216,8 @@ def backoff_delay(attempts: int, minimum: float = 0.5, maximum: float = 15.0) ->
     return min(maximum, minimum * (2 ** attempts))
 
 def canonical_event_id(event: dict[str, Any]) -> str:
+    if event.get("type") == "nickname_update":
+        return nickname_event_id(event)
     platform = str(event.get("platform") or "taobao").strip().lower()
     if platform in {"cntaobao", "qn", "qianniu"}:
         platform = "taobao"
@@ -258,6 +259,7 @@ def merge_events(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str,
 
 def normalize_event(event: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(event)
+    normalized["nickname"] = event_nickname(normalized)
     normalized["platform"] = "taobao"
     normalized.setdefault("source", "qianniu_standalone")
     normalized.setdefault("captured_at_ms", int(time.time() * 1000))
@@ -613,6 +615,13 @@ class StateDB:
                 );
                 CREATE INDEX IF NOT EXISTS session_controls_expiry
                     ON session_controls(mode,expires_at);
+                CREATE TABLE IF NOT EXISTS buyer_nicknames (
+                    account TEXT NOT NULL,
+                    buyer_id TEXT NOT NULL,
+                    nickname TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY(account,buyer_id)
+                );
                 UPDATE events SET status='pending' WHERE status='sending';
                 UPDATE brain_events SET status='pending' WHERE status='sending';
                 """
@@ -662,8 +671,39 @@ class StateDB:
                 "CREATE INDEX IF NOT EXISTS sends_match_status ON sends(status,buyer_cid,created_at)"
             )
 
+    def remember_nickname(self, account: str, buyer_id: str, nickname: str) -> bool:
+        nick = valid_nickname(nickname, buyer_id)
+        if not account or not buyer_id or not nick:
+            return False
+        with self.lock, closing(self.connect()) as connection, connection:
+            cursor = connection.execute(
+                """INSERT INTO buyer_nicknames(account,buyer_id,nickname,updated_at)
+                VALUES(?,?,?,?) ON CONFLICT(account,buyer_id) DO UPDATE SET
+                    nickname=excluded.nickname,updated_at=excluded.updated_at
+                WHERE buyer_nicknames.nickname != excluded.nickname""",
+                (account, buyer_id, nick, time.time()),
+            )
+            changed = bool(cursor.rowcount)
+            if changed:
+                self._invalidate_session_cache()
+            return changed
+
+    def cached_nickname(self, account: str, buyer_id: str) -> str:
+        with self.lock, closing(self.connect()) as connection:
+            row = connection.execute(
+                "SELECT nickname FROM buyer_nicknames WHERE account=? AND buyer_id=?",
+                (account, buyer_id),
+            ).fetchone()
+        return str(row["nickname"]) if row else ""
+
     def upsert_event(self, event: dict[str, Any]) -> tuple[str, bool]:
         normalized = normalize_event(event)
+        account = str(normalized.get("account") or "").strip()
+        buyer_id = str(normalized.get("buyer_id") or "").strip()
+        if normalized["nickname"]:
+            self.remember_nickname(account, buyer_id, normalized["nickname"])
+        else:
+            normalized["nickname"] = self.cached_nickname(account, buyer_id)
         event_id = normalized["event_id"]
         now = time.time()
         with self.lock, self.connect() as connection:
@@ -672,6 +712,8 @@ class StateDB:
             ).fetchone()
             merged = normalized
             if existing:
+                if normalized.get("type") == "nickname_update":
+                    return event_id, False
                 if existing["status"] == "sending":
                     return event_id, False
                 if existing["status"] == "delivered":
@@ -882,6 +924,13 @@ class StateDB:
                 controls = connection.execute(
                     "SELECT account,buyer_id,mode,reason,source,updated_at,expires_at FROM session_controls"
                 ).fetchall()
+                nickname_rows = connection.execute(
+                    "SELECT account,buyer_id,nickname FROM buyer_nicknames"
+                ).fetchall()
+            nickname_map = {
+                (str(row["account"]), str(row["buyer_id"])): str(row["nickname"])
+                for row in nickname_rows
+            }
             parsed_rows: list[tuple[dict[str, Any], str]] = []
             suppressed_parent_ids: set[str] = set()
             for row in rows:
@@ -925,7 +974,7 @@ class StateDB:
                 session = sessions.setdefault(key, {
                     "account": account,
                     "buyer_id": buyer_id,
-                    "buyer_nick": str(event.get("buyer_nick") or buyer_id),
+                    "buyer_nick": event_nickname(event) or str(event.get("buyer_nick") or buyer_id),
                     "_buyer_nick_ts": timestamp,
                     "last_message": "",
                     "last_ts": 0.0,
@@ -933,7 +982,7 @@ class StateDB:
                     "last_status": "",
                 })
                 session["message_count"] += 1
-                event_nick = str(event.get("buyer_nick") or "").strip()
+                event_nick = event_nickname(event) or str(event.get("buyer_nick") or "").strip()
                 current_nick = str(session.get("buyer_nick") or "").strip()
                 event_nick_is_usable = not buyer_nick_is_placeholder(event_nick, buyer_id)
                 current_nick_is_usable = not buyer_nick_is_placeholder(current_nick, buyer_id)
@@ -952,6 +1001,8 @@ class StateDB:
                     session["last_status"] = status
             for key, session in sessions.items():
                 session.pop("_buyer_nick_ts", None)
+                if nickname_map.get(key):
+                    session["buyer_nick"] = nickname_map[key]
                 session.update(control_map.get(key, {
                     "ai_mode": "ai",
                     "handoff_reason": "",
@@ -2883,6 +2934,9 @@ class BrainConnector:
         for row in allowed_rows:
             event = self.compatible_context_event(row["payload"])
             account = str(event.get("account") or "").strip()
+            event["nickname"] = event_nickname(event) or self.app.db.cached_nickname(
+                account, str(event.get("buyer_id") or "")
+            )
             captured_at = event.get("captured_at")
             if not captured_at:
                 try:
@@ -3551,9 +3605,13 @@ class BrowserServer:
                             self.record_diagnostics(connection, diagnostics)
                         continue
                     wire_id = str(message.get("event_id") or message["payload"].get("event_id") or "")
-                    required = ("account", "buyer_id", "content")
+                    nickname_update = message["payload"].get("type") == "nickname_update"
+                    required = ("account", "buyer_id", "nickname" if nickname_update else "content")
                     if any(not is_nonempty(message["payload"].get(key)) for key in required):
-                        self.error = "browser event missing account, buyer_id or content"
+                        self.error = "browser event missing " + ", ".join(required)
+                        continue
+                    if nickname_update and not event_nickname(message["payload"]):
+                        self.error = "browser nickname_update has no valid nickname"
                         continue
                     event_id, _changed = self.app.ingest_event(message["payload"])
                     self.total_events += 1
@@ -5454,6 +5512,17 @@ class StandaloneBridge:
         role = str(normalized.get("role") or "user").strip().lower()
         account = str(normalized.get("account") or "").strip()
         buyer_id = str(normalized.get("buyer_id") or "").strip()
+        if normalized.get("type") == "nickname_update":
+            if not account or not buyer_id or not normalized["nickname"]:
+                return canonical_event_id(normalized), False
+            event_id, changed = self.db.upsert_event(normalized)
+            if changed:
+                self.delivery.wakeup.set()
+                brain = getattr(self, "brain", None)
+                if brain is not None and brain.configured() and self.db.enqueue_brain_event(event_id):
+                    brain.wakeup.set()
+                    getattr(brain, "event_wakeup", brain.wakeup).set()
+            return event_id, changed
         brain_suppression = brain_event_suppression_reason(normalized)
         if brain_suppression:
             normalized.update({
@@ -5582,6 +5651,34 @@ class StandaloneBridge:
             self.workbench_error = str(error)[:500]
             LOG.exception("local workbench stopped")
 
+    def backfill_nicknames(self) -> None:
+        # Browser pages validate that these sessions are still loaded/online.
+        # Keep RPC work off the websocket receive thread so responses can arrive.
+        if not self.browser.connected:
+            return
+        cutoff = time.time() - 24 * 3600
+        targets = [
+            {"account": item["account"], "buyer_id": item["buyer_id"]}
+            for item in self.db.workbench_sessions()
+            if float(item.get("last_ts") or 0) >= cutoff
+            and buyer_nick_is_placeholder(item.get("buyer_nick", ""), item["buyer_id"])
+        ][:100]
+        if targets:
+            expression = (
+                "typeof window.__qn_standalone_backfill_nicknames === 'function' "
+                "? window.__qn_standalone_backfill_nicknames(" + json_text(targets) + ") : null"
+            )
+            self.browser.execute_all(expression, timeout=20.0)
+
+    def _nickname_backfill_loop(self) -> None:
+        while not self.stop_event.wait(5.0):
+            try:
+                self.backfill_nicknames()
+            except Exception:
+                LOG.debug("nickname backfill unavailable", exc_info=True)
+            if self.stop_event.wait(55.0):
+                return
+
     def start(self) -> None:
         self.workbench_thread.start()
         self.delivery.start()
@@ -5594,6 +5691,9 @@ class StandaloneBridge:
         self.native.start()
         self.client_support.start()
         self.api_thread.start()
+        threading.Thread(
+            target=self._nickname_backfill_loop, name="nickname-backfill", daemon=True
+        ).start()
 
     def stop(self) -> None:
         self.stop_event.set()

@@ -12,7 +12,7 @@
   }
   window.__qn_standalone_bridge_v1_installed = true;
 
-  var BRIDGE_VERSION = "qn-standalone-browser-v6-stable-identity";
+  var BRIDGE_VERSION = "qn-standalone-browser-v7-nicknames";
   // Message-source switches, written by the injector from config.json. The
   // three extra sources mirror what the commercial agent does inside the page:
   // observing imsdk.invoke (conversation discovery only), mirroring the client's
@@ -90,6 +90,17 @@
   var discoveryCursor = 0;
   var lastDiscoveryAt = 0;
   var lastSellerNick = "";
+  var NICK_CACHE_KEY = "qn_standalone_v1_buyer_nicknames";
+  var NICK_CACHE_TTL_MS = 7 * 24 * 3600 * 1000;
+  var nickCache = Object.create(null);
+  var nickPending = Object.create(null);
+  var nickRetryAt = Object.create(null);
+  var nickAnnounced = Object.create(null);
+  var nickQueue = [];
+  var nickActive = 0;
+  var recentNickRecords = null;
+  var recentNickAt = 0;
+  var recentNickPending = null;
   var lastDomScanAt = 0;
   var localRetryTimers = {};
   var LOCAL_RETRY_DELAYS_MS = [50, 200, 600, 1500, 3000];
@@ -195,6 +206,9 @@
   window.__qn_standalone_diag = diagnostics;
 
   function eventIdOf(row) {
+    if (row.type === "nickname_update") {
+      return "qn-nick-v1|" + ["taobao", row.account || "", row.buyer_id || "", row.nickname || ""].map(encodeURIComponent).join("|");
+    }
     var messageId = String(row.original_msg_id || row.msg_id || "").trim();
     if (messageId && !(row.incomplete && !row.original_msg_id)) {
       var platform = String(row.platform || "taobao").trim().toLowerCase();
@@ -221,6 +235,15 @@
         outbox[id] = envelope;
         outboxOrder.push(id);
         rememberSeen(envelope.payload.msg_id);
+        if (envelope.nickname_pending) {
+          resolveNickname(envelope.payload.account, envelope.payload.buyer_id,
+            buyerUid(null, envelope.payload.buyer_id)).then(function (nick) {
+              envelope.payload.nickname = nick || "";
+              delete envelope.nickname_pending;
+              persistOutbox();
+              flushOutbox();
+            });
+        }
       });
     } catch (e) {
       console.error("[qn-bridge] outbox load fail", e);
@@ -252,12 +275,13 @@
     return true;
   }
 
-  function queueEnvelope(row) {
+  function queueEnvelope(row, nicknamePending) {
     var id = eventIdOf(row) || row.event_id;
     row.event_id = id;
     row.idempotency_key = id;
     if (!outbox[id]) {
       outbox[id] = { type: "chat_event", event_id: id, payload: row };
+      if (nicknamePending) outbox[id].nickname_pending = true;
       outboxOrder.push(id);
       while (outboxOrder.length > MAX_OUTBOX) {
         var old = outboxOrder.shift();
@@ -284,6 +308,7 @@
     outboxOrder.slice(0, 200).forEach(function (id) {
       var envelope = outbox[id];
       if (!envelope) return;
+      if (envelope.nickname_pending) return;
       if (!force && envelope.__last_sent_at_ms && now - envelope.__last_sent_at_ms < 2000) return;
       try {
         socket.send(JSON.stringify(envelope));
@@ -755,6 +780,206 @@
     return out;
   }
 
+  function validNickname(value, buyerId) {
+    if (typeof value !== "string") return "";
+    var nick = value.trim();
+    if (!nick || nick.length > 128 || /[\x00-\x1f]/.test(nick)) return "";
+    if (nick === String(buyerId || "") || /^\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?(?:#\d+)?$/.test(nick)) return "";
+    if (nick.indexOf("#") >= 0 && nick.indexOf("@") >= 0) return "";
+    return nick;
+  }
+
+  function firstNickname(values, buyerId) {
+    for (var i = 0; i < values.length; i++) {
+      var nick = validNickname(values[i], buyerId);
+      if (nick) return nick;
+    }
+    return "";
+  }
+
+  function partyNickname(party, buyerId) {
+    if (typeof party === "string") return validNickname(party, buyerId);
+    if (!party || typeof party !== "object") return "";
+    return firstNickname([party.nick, party.nickname, party.senderNick, party.senderName, party.display], buyerId);
+  }
+
+  function buyerUid(party, buyerId) {
+    if (party && typeof party === "object") {
+      var uid = party.uid || party.userId || party.userid || party.targetId;
+      if (typeof uid === "string" || typeof uid === "number") return String(uid);
+    }
+    // ccode: buyerUID-sellerUID#domain@platform. Keep the UID's namespace.
+    return String(buyerId || "").split("#")[0].split("-")[0];
+  }
+
+  function nickKey(account, buyerId) { return JSON.stringify([account || "", buyerId || ""]); }
+
+  function cachedNickname(account, buyerId) {
+    var item = nickCache[nickKey(account, buyerId)];
+    return item && Date.now() - item.at < NICK_CACHE_TTL_MS ? validNickname(item.nick, buyerId) : "";
+  }
+
+  function rememberNickname(account, buyerId, nickname, announce) {
+    var nick = validNickname(nickname, buyerId);
+    if (!account || !buyerId || !nick) return "";
+    var key = nickKey(account, buyerId);
+    if (!nickCache[key] || nickCache[key].nick !== nick || Date.now() - nickCache[key].at >= NICK_CACHE_TTL_MS) {
+      nickCache[key] = {nick: nick, at: Date.now()};
+      var keys = Object.keys(nickCache).sort(function (a, b) { return nickCache[b].at - nickCache[a].at; });
+      keys.slice(1000).forEach(function (old) { delete nickCache[old]; });
+      try { window.localStorage.setItem(NICK_CACHE_KEY, JSON.stringify(nickCache)); } catch (e) {}
+    }
+    if (announce && nickAnnounced[key] !== nick) {
+      queueEnvelope({type: "nickname_update", platform: "taobao", account: account,
+        buyer_id: buyerId, nickname: nick, source: "qianniu_standalone_browser",
+        captured_at_ms: Date.now()});
+      nickAnnounced[key] = nick;
+      flushOutbox();
+    }
+    return nick;
+  }
+
+  function nicknameRecord(records, buyerId, uid, trusted, depth, recordKey) {
+    records = decodeFrameJson(records);
+    depth = depth || 0;
+    if (records == null || depth > 7) return "";
+    if (typeof records === "string") return trusted ? validNickname(records, buyerId) : "";
+    if (records instanceof Map) {
+      var found = "";
+      records.forEach(function (value, key) {
+        if (!found) found = nicknameRecord(value, buyerId, uid, String(key) === buyerId || String(key) === uid, depth + 1, String(key));
+      });
+      return found;
+    }
+    if (Array.isArray(records)) {
+      for (var i = 0; i < Math.min(records.length, 200); i++) {
+        var arrayNick = nicknameRecord(records[i], buyerId, uid, false, depth + 1);
+        if (arrayNick) return arrayNick;
+      }
+      return "";
+    }
+    if (typeof records !== "object" || records.ok === false || records.success === false) return "";
+    var identity = conversationIdOf(records.cid || records.ccode || records.conversationId || "") ||
+      String(records.uid || records.userId || records.userid || records.targetId || recordKey || "");
+    var matched = identity === buyerId || identity === uid;
+    // A mismatched row must never provide another buyer's (or the seller's) nick.
+    if (matched || (trusted && !identity)) {
+      var nick = firstNickname([records.nickname, records.nick, records.senderNick, records.senderName,
+        records.userNick, records.displayName], buyerId);
+      if (!nick) nick = partyNickname(records.buyer || records.contact || records.user || records.peer, buyerId);
+      if (nick) return nick;
+    }
+    var children = ["result", "data", "list", "items", "sessions", "conversations", "contacts", "users", "userInfo", "contactInfo"];
+    for (var k = 0; k < children.length; k++) {
+      var childNick = nicknameRecord(records[children[k]], buyerId, uid, trusted && !identity || matched, depth + 1);
+      if (childNick) return childNick;
+    }
+    // Session/contact caches can also be plain dictionaries keyed by ccode/UID.
+    for (var j = 0; j < 2; j++) {
+      var key = j ? uid : buyerId;
+      if (key && Object.prototype.hasOwnProperty.call(records, key)) {
+        var mapNick = nicknameRecord(records[key], buyerId, uid, true, depth + 1, key);
+        if (mapNick) return mapNick;
+      }
+    }
+    return "";
+  }
+
+  function localNickname(buyerId, uid) {
+    var paths = ["_db.sessionList", "_db.conversationList", "_db.conversationMap", "_db.contactList", "_db.contactMap"];
+    for (var i = 0; i < paths.length; i++) {
+      var nick = nicknameRecord(resolvePath(paths[i]), buyerId, uid, false);
+      if (nick) return nick;
+    }
+    return nicknameRecord(recentNickRecords, buyerId, uid, false);
+  }
+
+  function nicknameRpc(api, params) {
+    if (!window.imsdk || typeof window.imsdk.invoke !== "function") return Promise.resolve(null);
+    return new Promise(function (resolve) {
+      var finished = false;
+      function done(value) { if (!finished) { finished = true; clearTimeout(timer); resolve(value); } }
+      var timer = setTimeout(function () { done(null); }, 1500);
+      try { Promise.resolve(window.imsdk.invoke(api, params)).then(done, function () { done(null); }); }
+      catch (e) { done(null); }
+    });
+  }
+
+  function refreshNicknameSessions() {
+    if (recentNickPending) return recentNickPending;
+    if (Date.now() - recentNickAt < 60000) return Promise.resolve(recentNickRecords);
+    recentNickAt = Date.now();
+    recentNickPending = (async function () {
+      for (var i = 0; i < DISCOVERY_APIS.length; i++) {
+        var result = decodeFrameJson(await nicknameRpc(DISCOVERY_APIS[i], {count: 100}));
+        if (result && result.ok !== false && result.success !== false) {
+          recentNickRecords = result;
+          walkConversationIds(result, "nickname-sessions", 0);
+          return result;
+        }
+      }
+      return null;
+    })().then(function (result) { recentNickPending = null; return result; });
+    return recentNickPending;
+  }
+
+  function pumpNicknameQueue() {
+    while (nickActive < 2 && nickQueue.length) {
+      var task = nickQueue.shift();
+      nickActive += 1;
+      task().then(function () { nickActive -= 1; pumpNicknameQueue(); });
+    }
+  }
+
+  function resolveNickname(account, buyerId, uid) {
+    var known = cachedNickname(account, buyerId) || localNickname(buyerId, uid);
+    if (known) return Promise.resolve(rememberNickname(account, buyerId, known, true));
+    var key = nickKey(account, buyerId);
+    if (nickPending[key]) return nickPending[key];
+    if (Date.now() < (nickRetryAt[key] || 0)) return Promise.resolve("");
+    nickPending[key] = new Promise(function (resolve) {
+      nickQueue.push(async function () {
+        var nick = "";
+        try {
+          await refreshNicknameSessions();
+          nick = localNickname(buyerId, uid);
+          if (!nick && uid) {
+            // Documented by Qianniu's bundled im-sdk.js; this is a read-only RPC.
+            nick = nicknameRecord(await nicknameRpc("util.GetUserNick", {uid: uid}), buyerId, uid, true);
+          }
+          // A live message can provide a fresher name while this RPC is pending.
+          nick = cachedNickname(account, buyerId) || nick;
+          if (nick) rememberNickname(account, buyerId, nick, true);
+          else nickRetryAt[key] = Date.now() + 60000;
+        } catch (e) { nickRetryAt[key] = Date.now() + 60000; }
+        delete nickPending[key];
+        resolve(nick);
+      });
+    });
+    pumpNicknameQueue();
+    return nickPending[key] || Promise.resolve(cachedNickname(account, buyerId));
+  }
+
+  async function backfillNicknames(targets) {
+    if (!Array.isArray(targets) || !targets.length) return [];
+    await refreshNicknameSessions();
+    var results = [];
+    // A page can belong to a different shop or lack a known login identity.
+    // Only touch targets belonging to this page's observed seller account.
+    for (var i = 0; i < Math.min(targets.length, 100); i++) {
+      var target = targets[i];
+      if (!target || !lastSellerNick || target.account !== lastSellerNick) continue;
+      var buyerId = String(target.buyer_id || "");
+      var mdm = window._db && window._db.msgDataMap;
+      var loaded = mdm instanceof Map ? mdm.has(buyerId) : mdm && Object.prototype.hasOwnProperty.call(mdm, buyerId);
+      if (!loaded && !knownConversations[buyerId]) continue;
+      var nick = await resolveNickname(target.account, buyerId, buyerUid(null, buyerId));
+      if (nick) results.push({buyer_id: buyerId, nickname: nick});
+    }
+    return results;
+  }
+  window.__qn_standalone_backfill_nicknames = backfillNicknames;
+
   function normalizeDetail(detail, sellerHint, captureMode) {
     if (!detail || typeof detail !== "object") return null;
     var product = extractProduct(detail);
@@ -791,6 +1016,15 @@
     }
     if (!buyer) return null;
     var buyerId = ccode || buyer;
+    var previousNickname = cachedNickname(seller, buyerId);
+    var buyerParty = role === "mall_cs" ? toid : fromid;
+    var nickname = role === "mall_cs"
+      ? firstNickname([detail.receiverNick, detail.recipientNick, partyNickname(buyerParty, buyerId)], buyerId)
+      : firstNickname([detail.senderNick, detail.nick, detail.senderName, partyNickname(buyerParty, buyerId)], buyerId);
+    if (nickname) rememberNickname(seller, buyerId, nickname, !!nickPending[nickKey(seller, buyerId)]);
+    nickname = nickname || cachedNickname(seller, buyerId) || localNickname(buyerId, buyerUid(buyerParty, buyerId));
+    if (nickname) rememberNickname(seller, buyerId, nickname, false);
+    else if (seller) resolveNickname(seller, buyerId, buyerUid(buyerParty, buyerId));
     var mcode = detail.mcode && typeof detail.mcode === "object" ? detail.mcode : {};
     var msgId = textOf(mcode.messageId || mcode.clientId || detail.messageId || detail.msg_id || detail.clientId || "");
     var originalMsgId = msgId;
@@ -807,7 +1041,10 @@
       msgId = "tb-history-incomplete-" + String(seller) + "|" + String(buyerId) + "|" + content.slice(0, 80);
       captureMode = "history_snapshot";
     }
-    if (wasSeen(msgId)) return null;
+    if (wasSeen(msgId)) {
+      if (nickname && nickname !== previousNickname) rememberNickname(seller, buyerId, nickname, true);
+      return null;
+    }
     var row = {
       platform: "taobao",
       role: role,
@@ -815,6 +1052,7 @@
       account: seller || lastSellerNick || "",
       buyer_id: buyerId,
       buyer_nick: buyer,
+      nickname: nickname || "",
       msg_id: msgId,
       ts: ts,
       source: "qianniu_standalone_browser",
@@ -911,23 +1149,36 @@
       details.forEach(function (detail) {
         var row = normalizeDetail(detail, sellerHint, captureMode);
         if (!row) return;
-        var eventId = queueEnvelope(row);
+        var queuedId = queueEnvelope(row, !row.nickname && !!row.account);
         rememberSeen(row.msg_id);
         result.captured += 1;
         var capturedCcode = String(row.buyer_id || "");
         if (capturedCcode.indexOf("#") >= 0 && capturedCcode.indexOf("@") >= 0 && result.ccodes.indexOf(capturedCcode) < 0) {
           result.ccodes.push(capturedCcode);
         }
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          flushOutbox();
-          result.sent += 1;
-          diagnostics.sent_events += 1;
-          diagnostics.last_capture_at_ms = Date.now();
-          diagnostics.last_capture_mode = captureMode || "unknown";
-        } else {
-          diagnostics.queued_while_disconnected += 1;
-          console.warn("[qn-bridge] queued while disconnected", eventId);
+        function enqueueResolved(nick) {
+          row.nickname = validNickname(nick, row.buyer_id) || row.nickname || "";
+          var eventId = queuedId;
+          if (outbox[eventId]) {
+            outbox[eventId].payload = row;
+            delete outbox[eventId].nickname_pending;
+            persistOutbox();
+          }
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            flushOutbox();
+            result.sent += 1;
+            diagnostics.sent_events += 1;
+            diagnostics.last_capture_at_ms = Date.now();
+            diagnostics.last_capture_mode = captureMode || "unknown";
+          } else {
+            diagnostics.queued_while_disconnected += 1;
+            console.warn("[qn-bridge] queued while disconnected", eventId);
+          }
         }
+        if (row.nickname || !row.account) enqueueResolved(row.nickname);
+        else resolveNickname(row.account, row.buyer_id, buyerUid(
+          row.role === "mall_cs" ? (detail.toid || detail.toId) : (detail.fromid || detail.fromId), row.buyer_id
+        )).then(enqueueResolved);
       });
     } catch (e) {
       console.error("[qn-bridge] emit fail", e);
@@ -1578,6 +1829,8 @@
       var payload = res.result != null ? res.result : res;
       var before = conversationOrder.length;
       walkConversationIds(payload, "discovery:" + api, 0);
+      recentNickRecords = payload;
+      recentNickAt = Date.now();
       if (conversationOrder.length > before) diagnostics.discovery_hits += 1;
     }).catch(function () {});
   }
@@ -1835,6 +2088,13 @@
   }
 
   function boot() {
+    try {
+      var storedNicks = JSON.parse(window.localStorage.getItem(NICK_CACHE_KEY) || "{}");
+      Object.keys(storedNicks).slice(0, 1000).forEach(function (key) {
+        var item = storedNicks[key];
+        if (item && typeof item.nick === "string" && Date.now() - item.at < NICK_CACHE_TTL_MS) nickCache[key] = item;
+      });
+    } catch (e) {}
     loadOutbox();
     hookImSdk();
     setup();
