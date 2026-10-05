@@ -242,6 +242,16 @@
     body.dock .search-wrap { padding: 8px; }
     body.dock .session-row { min-height: 58px; grid-template-columns: 32px minmax(0, 1fr) auto; padding-left: 8px; }
     body.dock .avatar { width: 30px; height: 30px; }
+    /* The dock runs in an Edge --app window whose native title bar we strip; the
+       topbar doubles as the drag handle (like 福客's panel) and carries its own
+       window controls so the panel reads as a native app component. */
+    body.dock .topbar { -webkit-app-region: drag; app-region: drag; }
+    body.dock .topbar button, body.dock .topbar input { -webkit-app-region: no-drag; app-region: no-drag; }
+    body.dock .dock-controls { display: flex; gap: 2px; flex: 0 0 auto; }
+    body.dock .dock-controls button { width: 24px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--subtle); font-size: 15px; line-height: 1; border-radius: 6px; cursor: pointer; }
+    body.dock .dock-controls button:hover { background: rgba(0, 0, 0, 0.06); color: var(--text); }
+    body.dock .dock-controls .dock-close:hover { background: #e5484d; color: #fff; }
+    .dock-controls { display: none; }
     @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
   </style>
 </head>
@@ -262,6 +272,9 @@
       <button class="button quiet mobile-only" id="sessionsButton" type="button">会话</button>
       <button class="button quiet" id="refreshButton" type="button">刷新</button>
       <button class="button" id="settingsButton" type="button">设置</button>
+    </div>
+    <div class="dock-controls">
+      <button class="dock-close" id="dockCloseButton" type="button" title="关闭浮窗">×</button>
     </div>
   </header>
 
@@ -365,7 +378,12 @@
     const TOKEN = '__WORKBENCH_TOKEN__';
     const dockMode = new URLSearchParams(location.search).get('dock') === '1';
     const el = id => document.getElementById(id);
-    if (dockMode) { document.body.classList.add('dock'); el('sessionsTitle').textContent = '聚合接待'; }
+    if (dockMode) {
+      document.body.classList.add('dock');
+      el('sessionsTitle').textContent = '聚合接待';
+      const dockCloseButton = el('dockCloseButton');
+      if (dockCloseButton) dockCloseButton.addEventListener('click', () => window.close());
+    }
     const state = {
       sessions: [], current: null, messages: [], status: null, diagnostics: null,
       busy: false, sending: false, canSend: false, openingKey: '', lastNewest: '',

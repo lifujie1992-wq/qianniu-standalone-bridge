@@ -1,18 +1,19 @@
 #define AppName "淘宝千牛 AI 客服助手"
-#define AppVersion "1.5.5"
+#define AppVersion "1.6.1"
 #define AppPublisher "Qianniu AI Service"
-#define SourceDir "..\delivery\淘宝千牛AI客服-安装版-1.5.5"
+#define SourceDir "..\delivery\淘宝千牛AI客服-安装版-1.6.1"
 
 [Setup]
 AppId={{C31C8BA7-A990-4B80-99D2-E69EF3AD91CA}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={localappdata}\Programs\QianniuAIService
+DefaultDirName=D:\QianniuAIService
+UsePreviousAppDir=no
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=..\delivery
-OutputBaseFilename=淘宝千牛AI客服安装包-1.5.5
+OutputBaseFilename=淘宝千牛AI客服安装包-1.6.1
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

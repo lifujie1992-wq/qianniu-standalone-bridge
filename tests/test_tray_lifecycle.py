@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -32,21 +33,18 @@ class TrayStatusTests(unittest.TestCase):
         self.assertEqual(status.components["bridge"].detail, "ready")
 
     def test_build_status_distinguishes_healthy_degraded_and_stopped(self):
-        config = {"api_port": 42111, "dock_enabled": True}
+        config = {"api_port": 42111}
         with patch.object(launcher, "load_config_silent", return_value=config), \
                 patch.object(launcher, "fetch_status", return_value={"ok": True, "version": "1.5.2"}), \
-                patch.object(tray_app, "_managed_qianniu_count", return_value=2), \
-                patch.object(tray_app, "_pid_file_running", return_value=True):
+                patch.object(tray_app, "_managed_qianniu_count", return_value=2):
             self.assertEqual(tray_app.build_status(PROJECT).state, "healthy")
         with patch.object(launcher, "load_config_silent", return_value=config), \
                 patch.object(launcher, "fetch_status", return_value={"ok": True}), \
-                patch.object(tray_app, "_managed_qianniu_count", return_value=0), \
-                patch.object(tray_app, "_pid_file_running", return_value=False):
+                patch.object(tray_app, "_managed_qianniu_count", return_value=0):
             self.assertEqual(tray_app.build_status(PROJECT).state, "degraded")
         with patch.object(launcher, "load_config_silent", return_value=config), \
                 patch.object(launcher, "fetch_status", return_value=None), \
-                patch.object(tray_app, "_managed_qianniu_count", return_value=0), \
-                patch.object(tray_app, "_pid_file_running", return_value=False):
+                patch.object(tray_app, "_managed_qianniu_count", return_value=0):
             self.assertEqual(tray_app.build_status(PROJECT).state, "stopped")
 
 
@@ -62,6 +60,25 @@ class TrayLifecycleTests(unittest.TestCase):
                 patch.object(tray_app, "run", return_value=23) as run:
             self.assertEqual(qianniu_app.main(), 23)
             run.assert_called_once_with()
+
+    def test_dock_action_dispatches_to_show_dock_callback(self):
+        fake = SimpleNamespace(callbacks=Mock(show_dock=Mock()))
+        tray_control.TrayControlCenter._invoke(fake, "dock")
+        fake.callbacks.show_dock.assert_called_once_with()
+
+    def test_tray_menu_has_a_dock_entry_wired_end_to_end(self):
+        control_source = (PROJECT / "tray_control.py").read_text(encoding="utf-8")
+        # 菜单项、命令 ID 与动作映射三者在 tray_control 内闭合。
+        self.assertIn('CMD_DOCK, "显示浮窗"', control_source)
+        self.assertIn('CMD_DOCK: "dock"', control_source)
+        self.assertIn("show_dock: Callable[[], None]", control_source)
+        self.assertIn('elif command == "dock":', control_source)
+        # tray_app 侧：回调接线 + 浮窗窗口识别（标题 + dock 专属 Edge profile）。
+        app_source = (PROJECT / "tray_app.py").read_text(encoding="utf-8")
+        self.assertIn("show_dock=show_dock", app_source)
+        self.assertIn("docked_workbench.DOCK_TITLE", app_source)
+        self.assertIn("DOCK_PROFILE_MARKER", app_source)
+        self.assertIn("launcher.start_dock()", app_source)
 
     def test_scoped_qianniu_cleanup_never_kills_foreign_process(self):
         root = Path(r"C:\Apps\QianniuAIService")

@@ -7,12 +7,15 @@ from typing import Any
 from brain_endpoint import enforce as enforce_brain_endpoint
 
 
-CONFIG_DEFAULTS_REVISION = 5
+CONFIG_DEFAULTS_REVISION = 9
 CONFIG_DEFAULTS_REVISION_KEY = "config_defaults_revision"
 LEGACY_WORKBENCH_PORT = 18767
 DEFAULT_WORKBENCH_PORT = 18776
 LEGACY_EVENT_DELAY_SECONDS = 2.5
 DEFAULT_EVENT_DELAY_SECONDS = 0.2
+LEGACY_DOCK_WIDTH = 286
+DEFAULT_DOCK_WIDTH = 300
+DEFAULT_DOCK_HEIGHT = 720
 
 # These are customer-facing capabilities that are expected to work out of the box.
 OPERATIONAL_DEFAULTS: dict[str, bool] = {
@@ -95,6 +98,48 @@ def apply_operational_defaults(config: dict[str, Any]) -> bool:
     if revision < 5:
         config.setdefault("bridge_passive_dom_ms", 5000)
         config.setdefault("bridge_passive_cache_ms", 10000)
+
+    # Revision 6 adds the read-only MTop context enrichment ported from 福客's
+    # qn-hh-4.3.js: shop info (淘宝/天猫 判定) is on by default; history orders
+    # cost an extra MTop call per inbound message, so they stay opt-in.
+    if revision < 6:
+        config.setdefault("context_enrich_shop_info", True)
+        config.setdefault("context_enrich_history_orders", False)
+
+    # Revision 7 turns on the persistent WS event channel to the brain. Events
+    # used to leave only through the HTTP batch endpoint (a fresh round-trip per
+    # batch); the WS path pushes each frame as soon as it is claimed, with the
+    # HTTP path kept as an automatic fallback when the link is down.
+    if revision < 7:
+        config.setdefault("brain_ws_enabled", True)
+
+    # Revision 8 turns the dock from a Qianniu-snapping寄生窗 into a normal
+    # floating app window: it no longer follows/resizes with Qianniu, no longer
+    # hides itself when another app is focused, and no longer forces topmost.
+    # Re-enable it for installs that an earlier build switched off, and default
+    # the behaviour to the new floating mode.
+    if revision < 8:
+        config["dock_enabled"] = True
+        config.setdefault("dock_mode", "floating")
+
+    # Revision 9 makes the dock look like 福客's app component: a frameless
+    # 300-wide panel that follows Qianniu (position + height), stays out of the
+    # taskbar and is not forced topmost. The stock Edge `--app` title bar is
+    # stripped at runtime, so the panel reads as a native window instead of a
+    # browser popup. Floating stays available via dock_mode="floating".
+    if revision < 9:
+        config["dock_enabled"] = True
+        if str(config.get("dock_mode") or "").strip().lower() in ("", "floating"):
+            config["dock_mode"] = "snap"
+        try:
+            if int(config.get("dock_width") or 0) == LEGACY_DOCK_WIDTH:
+                config["dock_width"] = DEFAULT_DOCK_WIDTH
+        except (TypeError, ValueError):
+            pass
+        config.setdefault("dock_frameless", True)
+        config.setdefault("dock_skip_taskbar", True)
+        config.setdefault("dock_follow_height", True)
+        config.setdefault("dock_topmost", False)
 
     config[CONFIG_DEFAULTS_REVISION_KEY] = CONFIG_DEFAULTS_REVISION
     return True

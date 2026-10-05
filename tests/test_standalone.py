@@ -50,6 +50,7 @@ from standalone_bridge import (  # noqa: E402
     suggested_handoff_reason,
 )
 from docked_workbench import DockedWorkbench, Rect, choose_dock_rect  # noqa: E402
+import docked_workbench  # noqa: E402
 import launcher  # noqa: E402
 import qianniu_app  # noqa: E402
 import client_updater  # noqa: E402
@@ -67,6 +68,13 @@ from device_identity import (  # noqa: E402
     brain_workstation_token,
     prepare_device_identity,
     stable_device_id,
+)
+from brain_ws import (  # noqa: E402
+    BrainEventChannel,
+    BrainWsError,
+    ack_row_for,
+    build_event_frame,
+    ws_url_from_server_url,
 )
 
 
@@ -394,17 +402,81 @@ class BrowserReceiveCompatibilityTests(unittest.TestCase):
 
     def test_open_chat_uses_current_documented_buyer_identity_fields(self):
         server = BrowserServer(SimpleNamespace())
-        server.execute = Mock(return_value={"ok": True, "result": None})
+        server.execute_all = Mock(
+            return_value=[
+                {
+                    "ok": True,
+                    "href": "https://alires-webui/web_chat-packer/recent.html",
+                    "result": None,
+                }
+            ]
+        )
+        server.current_conversation = Mock(return_value={})
         result = server.open_conversation(
             "buyer-nick",
             security_uid="2217298756354",
         )
-        expression = server.execute.call_args.args[0]
+        expression = server.execute_all.call_args.args[0]
         self.assertIn('"nick": "cntaobaobuyer-nick"', expression)
         self.assertIn('"securityUID": "2217298756354"', expression)
         self.assertIn('"bizDomain": "taobao"', expression)
         self.assertIn(r'"sceneParam": "{\"toRole\":\"buyer\"}"', expression)
         self.assertEqual(result["ability_nick"], "cntaobaobuyer-nick")
+
+    def test_open_conversation_tolerates_a_page_without_conversation_state(self):
+        # dx-h5 keeps the bridge connection alive but cannot report the current
+        # conversation, so an empty reading must not fail the open.
+        server = BrowserServer(SimpleNamespace())
+        server.execute_all = Mock(
+            return_value=[{"ok": True, "href": "https://alires-webui/dx-h5/index.html"}]
+        )
+        server.current_conversation = Mock(return_value={})
+        result = server.open_conversation(
+            "buyer-nick",
+            expected_ccode="2217298756354.1-11789284.1#11001@cntaobao",
+        )
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["page"], "https://alires-webui/dx-h5/index.html")
+
+    def test_open_conversation_rejects_a_different_conversation(self):
+        server = BrowserServer(SimpleNamespace())
+        server.execute_all = Mock(return_value=[{"ok": True, "href": "https://alires-webui/dx-h5/index.html"}])
+        server.current_conversation = Mock(return_value={"ccode": "other@cntaobao"})
+        with self.assertRaises(RuntimeError):
+            server.open_conversation(
+                "buyer-nick",
+                expected_ccode="2217298756354.1-11789284.1#11001@cntaobao",
+            )
+
+    def test_execute_all_skips_pages_that_cannot_answer(self):
+        server = BrowserServer(SimpleNamespace())
+        capable, control = object(), object()
+        with server.connection_lock:
+            server.connections[capable] = threading.Lock()
+            server.connections[control] = threading.Lock()
+
+        def fake_send(connection, payload):
+            if connection is control:
+                response = {
+                    "ok": False,
+                    "error": "Qianniu native abilitycenter object is unavailable",
+                }
+            else:
+                response = {
+                    "ok": True,
+                    "value": {"ok": True, "href": "https://alires-webui/dx-h5/index.html"},
+                }
+            with server.connection_lock:
+                pending = server.pending.get(payload["request_id"])
+            if pending is not None:
+                pending.put_nowait(response)
+
+        server.send = fake_send
+        self.assertEqual(
+            server.execute_all("expr", timeout=1.0),
+            [{"ok": True, "href": "https://alires-webui/dx-h5/index.html"}],
+        )
 
     def test_remote_history_recovers_real_nick_from_numeric_uid(self):
         buyer_id = "2217298756354.1-11789284.1#11001@cntaobao"
@@ -499,7 +571,8 @@ class LauncherLifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "webui.zip"
             with zipfile.ZipFile(archive, "w") as target:
-                target.writestr(launcher.CHAT_ENTRY, "<html><body>chat</body></html>")
+                for entry in launcher.CHAT_ENTRIES:
+                    target.writestr(entry, "<html><body>chat</body></html>")
             injection = launcher.build_injection(
                 {"ws_host": "127.0.0.1", "ws_port": 42110, "browser_token": "token"},
                 "window.__bridge_test = true;",
@@ -508,6 +581,10 @@ class LauncherLifecycleTests(unittest.TestCase):
             first_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
             self.assertFalse(launcher.inject_zip(archive, injection))
             self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), first_hash)
+            with zipfile.ZipFile(archive, "r") as source:
+                for entry in launcher.CHAT_ENTRIES:
+                    injected = source.read(entry).decode("utf-8")
+                    self.assertEqual(injected.count(launcher.INJECTION_TAG), 1)
 
     def test_role_process_removes_its_own_pid_file_on_exit(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -700,6 +777,27 @@ class DockPlacementTests(unittest.TestCase):
             self.assertEqual(dock.run(), 0)
 
         self.assertEqual(len(launches), 2)
+
+    def test_close_existing_only_touches_this_installs_dock_profile(self):
+        own = SimpleNamespace(
+            hwnd=2, pid=22, title="千牛聚合接待", visible=True, minimized=False,
+            rect=Rect(0, 0, 300, 720),
+        )
+        foreign = SimpleNamespace(
+            hwnd=1, pid=11, title="千牛聚合接待", visible=True, minimized=False,
+            rect=Rect(0, 0, 300, 720),
+        )
+        with patch.object(
+                    docked_workbench.DockedWorkbench,
+                    "profile_edge_processes",
+                    return_value=[SimpleNamespace(pid=22)],
+                ), \
+                patch("docked_workbench.Win32.windows", return_value=[foreign, own]), \
+                patch("docked_workbench.psutil.Process") as process, \
+                patch("docked_workbench.Win32.user32.PostMessageW") as post:
+            process.return_value.name.return_value = "msedge.exe"
+            self.assertEqual(docked_workbench.close_existing(), 1)
+        post.assert_called_once_with(2, docked_workbench.Win32.WM_CLOSE, 0, 0)
 
 
 class CanonicalIdentityTests(unittest.TestCase):
@@ -925,6 +1023,10 @@ class BrainConnectorTests(unittest.TestCase):
             "device_id": "device-test",
             "brain_request_timeout_seconds": 1.0,
             "brain_command_poll_seconds": 0.0,
+            # Keep the existing HTTP assertions deterministic: the WS channel is
+            # exercised by BrainWsChannelTests instead of spinning a real thread
+            # against a port that has no WS server.
+            "brain_ws_enabled": False,
         }
         values.update(overrides)
         return Config(path, values)
@@ -1366,10 +1468,13 @@ class BrainConnectorTests(unittest.TestCase):
                 "account": "shop-a",
                 "buyer_id": "buyer.1-seller.1#11001@cntaobao",
             }
-            blocked = brain.execute_command({
-                **base, "id": "unsafe", "content": "这是测试发送",
+            # 出站内容不再拦截：含「测试」等词的正常话术必须原样送达。
+            passed = brain.execute_command({
+                **base, "id": "normal-wording", "content": "这是测试发送，可以带回去当地测试测试",
             })
-            self.assertEqual(blocked["via"], "safety")
+            self.assertNotEqual(passed.get("via"), "safety")
+            send_text.assert_called()
+            send_text.reset_mock()
             db.set_session_control("shop-a", base["buyer_id"], "human", "售后纠纷")
             blocked = brain.execute_command({
                 **base, "id": "handoff", "content": "好的亲，这边帮您看一下",
@@ -1385,10 +1490,13 @@ class BrainConnectorTests(unittest.TestCase):
 
 
 class AiPolicyTests(unittest.TestCase):
-    def test_legacy_safety_and_handoff_patterns_are_preserved(self):
-        self.assertEqual(outbound_safety_result("???")["status"], "blocked")
-        self.assertEqual(outbound_safety_result("加微信处理")["safety_reason"], "疑似引导站外联系")
+    def test_outbound_content_is_never_keyword_blocked(self):
+        # 回归：此前「测试」关键词误拦真实客服话术（cmd-1791051746293）。
+        self.assertIsNone(outbound_safety_result("这是测试发送"))
+        self.assertIsNone(outbound_safety_result("加微信处理"))
+        self.assertIsNone(outbound_safety_result("具体可以带回去您当地测试测试"))
         self.assertIsNone(outbound_safety_result("好的亲，这边帮您看一下"))
+        self.assertEqual(outbound_safety_result("   ")["error"], "empty content")
         self.assertEqual(suggested_handoff_reason({"content": "我要退款"}), "售后纠纷")
         self.assertEqual(suggested_handoff_reason({"raw_type": "video"}), "买家发送视频")
 
@@ -1623,6 +1731,82 @@ class ContextEnrichmentTests(unittest.TestCase):
         self.assertEqual(status["mtop_api"], "mtop.taobao.qianniu.cs.trade.query")
         self.assertNotIn("cookie", json.dumps(enriched, ensure_ascii=False).lower())
         self.assertNotIn("sign", json.dumps(enriched, ensure_ascii=False).lower())
+
+    def test_parses_shop_info_and_detects_tmall(self):
+        tmall = ContextEnricher.parse_shop({
+            "data": {"result": {"tmallSeller": True, "shopName": "测试旗舰店"}}
+        })
+        self.assertEqual(tmall["is_tmall"], True)
+        self.assertEqual(tmall["shop_name"], "测试旗舰店")
+        self.assertEqual(
+            ContextEnricher.parse_shop({"data": {"result": {"tmallSeller": False}}})["is_tmall"],
+            False,
+        )
+        self.assertEqual(ContextEnricher.parse_shop(None), {})
+        self.assertEqual(ContextEnricher.parse_shop({"data": {"result": {}}}), {})
+
+    def test_parses_order_memo_records(self):
+        memo = ContextEnricher.parse_order_memo({
+            "data": {"editRecordList": [{"memoContent": "尽快发货", "flagTag": "重要"}]}
+        })
+        self.assertEqual(memo["memo"], "尽快发货")
+        self.assertEqual(memo["tag"], "重要")
+        self.assertEqual(ContextEnricher.parse_order_memo({"data": {"editRecordList": []}}), {})
+
+    def test_shop_info_is_fetched_once_then_served_from_cache(self):
+        response = self._order_response([{
+            "bizOrderId": "1234567890123456789",
+            "itemList": [{"itemId": "799474439068", "title": "测试商品"}],
+        }])
+        response["shop"] = {"ok": True, "value": {"data": {"result": {"tmallSeller": True}}}}
+        app = self._context_app([response, response])
+        enricher = ContextEnricher(app)
+        first = enricher.fetch("2217298756354", "", "shop-a")
+        self.assertEqual(first["shop_is_tmall"], True)
+        self.assertEqual(first["order_info"]["shop_is_tmall"], True)
+        self.assertIn(
+            "mtop.taobao.jdy.resource.shop.info.get",
+            app.browser.execute.call_args_list[0].args[0],
+        )
+        second = enricher.fetch("2217298756354", "", "shop-a")
+        self.assertEqual(second["shop"]["is_tmall"], True)
+        # 第二次命中店铺缓存，不再重复请求店铺信息
+        self.assertNotIn(
+            "mtop.taobao.jdy.resource.shop.info.get",
+            app.browser.execute.call_args_list[-1].args[0],
+        )
+
+    def test_history_orders_are_opt_in(self):
+        response = self._order_response([{
+            "bizOrderId": "1234567890123456789",
+            "itemList": [{"itemId": "799474439068", "title": "测试商品"}],
+        }])
+        response["history"] = {"ok": True, "value": {"data": {"orderList": [
+            {"bizOrderId": "999", "itemList": [{"itemId": "1", "title": "历史商品"}]},
+        ]}}}
+        default_app = self._context_app([response])
+        default_enriched = ContextEnricher(default_app).fetch("2217298756354", "", "shop-a")
+        self.assertNotIn("history_orders", default_enriched)
+        self.assertNotIn(
+            "mtop.taobao.qianniu.cs.trade.history.query",
+            default_app.browser.execute.call_args.args[0],
+        )
+
+        optin_app = SimpleNamespace(
+            browser=SimpleNamespace(execute=Mock(side_effect=[response])),
+            config={
+                "context_enrich_timeout_seconds": 6.0,
+                "context_enrich_history_orders": True,
+            },
+        )
+        optin_enriched = ContextEnricher(optin_app).fetch("2217298756354", "", "shop-a")
+        self.assertEqual(optin_enriched["history_order_count"], 1)
+        self.assertEqual(optin_enriched["history_orders"][0]["order_id"], "999")
+        self.assertEqual(optin_enriched["order_info"]["history_order_count"], 1)
+        self.assertIn(
+            "mtop.taobao.qianniu.cs.trade.history.query",
+            optin_app.browser.execute.call_args.args[0],
+        )
 
     def test_parses_legacy_item_and_order_mtop_shapes(self):
         items = ContextEnricher.parse_items({
@@ -2515,6 +2699,308 @@ class SeparationTests(unittest.TestCase):
         plugin = ROOT / "vendor" / "9.77.01_qnmsgplugin_x64.dll"
         digest = hashlib.sha256(plugin.read_bytes()).hexdigest().upper()
         self.assertEqual(digest, "E73206A73F1D44969E8C9B9DDD91193369CA4ADEADAEB3E1525B5B9A741080AE")
+
+
+class BrainWsChannelTests(unittest.TestCase):
+    """Wire contract for the persistent WS event channel (protocol_version 1)."""
+
+    @staticmethod
+    def _free_port() -> int:
+        import socket
+
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        return port
+
+    def _start_server(self, *, ready=None, close_code=None, push_frames=None):
+        from websockets.sync.server import serve
+
+        received = []
+        headers = {}
+
+        def process_request(_connection, request):
+            headers.update({str(k).lower(): str(v) for k, v in request.headers.items()})
+            return None
+
+        def handler(connection):
+            if close_code is not None:
+                connection.close(code=close_code, reason="token bound to another device")
+                return
+            connection.send(json.dumps(ready or {
+                "type": "ready",
+                "protocol_version": 1,
+                "max_inflight": 64,
+                "connection_id": "conn-test",
+            }))
+            if push_frames:
+                for frame in push_frames:
+                    connection.send(json.dumps(frame))
+            while True:
+                try:
+                    raw = connection.recv()
+                except Exception:  # noqa: BLE001 - client hung up
+                    return
+                frame = json.loads(raw)
+                received.append(frame)
+                if frame.get("type") == "event":
+                    connection.send(json.dumps({
+                        "type": "ack",
+                        "event_id": frame.get("event_id"),
+                        "status": "accepted",
+                    }))
+
+        port = self._free_port()
+        server = serve(handler, "127.0.0.1", port, process_request=process_request)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, received, headers, port
+
+    def test_ws_url_derives_from_http_base(self):
+        self.assertEqual(
+            ws_url_from_server_url("http://47.107.138.228:18765"),
+            "ws://47.107.138.228:18765/api/bridge/v1/ws",
+        )
+        self.assertEqual(
+            ws_url_from_server_url("https://brain.example/"),
+            "wss://brain.example/api/bridge/v1/ws",
+        )
+        with self.assertRaises(BrainWsError):
+            ws_url_from_server_url("")
+
+    def test_event_frame_flattens_and_drops_agent_id(self):
+        frame = build_event_frame({
+            "event_id": "e1",
+            "account": "shop-a",
+            "buyer_id": "b1",
+            "role": "user",
+            "content": "hi",
+            "original_msg_id": "m1",
+            "captured_at": 1_700_000_000.0,
+            "agent_id": "agent-x",
+            "idempotency_key": "k1",
+            "shop_id": "tb_nick_shop-a",
+            "buyer_nick": "buyer",
+        }, 7)
+        self.assertEqual(frame["type"], "event")
+        self.assertEqual(frame["event_id"], "e1")
+        self.assertEqual(frame["sequence"], 7)
+        self.assertEqual(frame["msg_id"], "m1")
+        self.assertEqual(frame["captured_at_ms"], 1_700_000_000_000)
+        # The server derives agent_id from the bearer token; it must not ride in
+        # the payload, and neither must the HTTP-only idempotency key.
+        self.assertNotIn("agent_id", frame["payload"])
+        self.assertNotIn("idempotency_key", frame["payload"])
+        self.assertEqual(frame["payload"]["shop_id"], "tb_nick_shop-a")
+
+    def test_ack_semantics_match_the_http_ack_rows(self):
+        accepted = ack_row_for({"event_id": "e1"}, "accepted", "")
+        self.assertTrue(accepted["committed"])
+        self.assertFalse(accepted["retryable"])
+        missing_identity = ack_row_for(
+            {"event_id": "e1", "account": "", "buyer_id": ""},
+            "rejected", "PERSISTENCE_UNAVAILABLE",
+        )
+        self.assertFalse(missing_identity["retryable"])
+        retryable = ack_row_for(
+            {"event_id": "e1", "account": "a", "buyer_id": "b"},
+            "rejected", "PERSISTENCE_UNAVAILABLE",
+        )
+        self.assertTrue(retryable["retryable"])
+        malformed = ack_row_for({"event_id": "e1"}, "rejected", "MALFORMED_FRAME")
+        self.assertFalse(malformed["retryable"])
+
+    def test_channel_handshakes_sends_frames_and_routes_acks(self):
+        server, thread, received, headers, port = self._start_server()
+        channel = BrainEventChannel(
+            ws_url=f"ws://127.0.0.1:{port}/api/bridge/v1/ws",
+            token="tok",
+            agent_id="agent-1",
+            device_id="dev-1",
+        )
+        try:
+            self.assertTrue(channel.start())
+            deadline = time.time() + 5.0
+            while not channel.available and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(channel.available, channel.last_error)
+            result = channel.send_events([{
+                "event_id": "e1",
+                "account": "shop-a",
+                "buyer_id": "b1",
+                "role": "user",
+                "content": "hi",
+                "original_msg_id": "m1",
+                "captured_at_ms": 1_700_000_000_000,
+                "agent_id": "agent-1",
+            }], timeout=5.0)
+            self.assertEqual(result["event_acks"][0]["event_id"], "e1")
+            self.assertTrue(result["event_acks"][0]["committed"])
+            self.assertEqual(received[0]["type"], "event")
+            self.assertEqual(received[0]["event_id"], "e1")
+            self.assertNotIn("agent_id", received[0]["payload"])
+            self.assertEqual(headers.get("authorization"), "Bearer tok")
+            self.assertEqual(headers.get("x-agent-id"), "agent-1")
+            self.assertEqual(headers.get("x-device-id"), "dev-1")
+        finally:
+            channel.stop()
+            server.shutdown()
+            thread.join(timeout=2.0)
+
+    def test_auth_failure_is_reported_and_send_falls_back(self):
+        server, thread, _received, _headers, port = self._start_server(close_code=4001)
+        channel = BrainEventChannel(
+            ws_url=f"ws://127.0.0.1:{port}/api/bridge/v1/ws",
+            token="tok",
+            agent_id="agent-1",
+        )
+        try:
+            channel.start()
+            deadline = time.time() + 5.0
+            while not channel.last_error and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(channel.available)
+            self.assertIn("auth failed", channel.last_error)
+            with self.assertRaises(BrainWsError):
+                channel.send_events([{"event_id": "e1"}], timeout=1.0)
+        finally:
+            channel.stop()
+            server.shutdown()
+            thread.join(timeout=2.0)
+
+    def test_upload_events_prefers_ws_and_falls_back_to_http(self):
+        # ignore_cleanup_errors: the shared StateDB helper leaves sqlite handles
+        # for the GC, which makes Windows refuse the temp-dir unlink.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            db = StateDB(Path(directory) / "state.sqlite3")
+            config = Config(Path(directory) / "config.json", {
+                "brain_enabled": True,
+                "brain_server_url": "http://127.0.0.1:1",
+                "brain_agent_token": "brain-token",
+                "brain_agent_id": "agent-1",
+                "device_id": "dev-1",
+                "brain_ws_enabled": True,
+            })
+            app = SimpleNamespace(config=config, db=db, stop_event=threading.Event())
+            brain = BrainConnector(app)
+            rows = [{
+                "event_id": "e1",
+                "revision": "r1",
+                "payload": {
+                    "platform": "taobao",
+                    "event_id": "e1",
+                    "content": "hi",
+                    "account": "shop-a",
+                    "role": "user",
+                    "captured_at_ms": 1_700_000_000_000,
+                },
+            }]
+
+            sent = []
+
+            class StubChannel:
+                available = True
+
+                def send_events(self, events, timeout=10.0):
+                    sent.append(list(events))
+                    return {"ack_version": 1, "event_acks": [
+                        {"event_id": e["event_id"], "status": "accepted",
+                         "committed": True, "retryable": False} for e in events
+                    ]}
+
+            brain.event_channel = lambda: StubChannel()
+            brain.request = Mock(side_effect=AssertionError("HTTP must not be used"))
+            committed = brain.upload_events(rows)
+            self.assertEqual(committed, {"e1"})
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(brain.last_event_response["transport"], "ws")
+            self.assertEqual(brain.last_event_response["accepted"], 1)
+
+            class DownChannel:
+                available = False
+
+                def send_events(self, *_args, **_kwargs):
+                    raise AssertionError("down channel must not be called")
+
+            brain.event_channel = lambda: DownChannel()
+            brain.request = Mock(return_value={
+                "accepted": 1,
+                "acknowledged": 1,
+                "event_acks": [
+                    {"event_id": "e1", "committed": True, "retryable": False}
+                ],
+            })
+            committed = brain.upload_events(rows)
+            self.assertEqual(committed, {"e1"})
+            self.assertEqual(brain.last_event_response["transport"], "http")
+            self.assertEqual(brain.request.call_args.args[1], "/api/bridge/v1/events")
+
+
+    def test_channel_receives_ws_command_and_acks_receipt(self):
+        server, thread, received, _headers, port = self._start_server(
+            push_frames=[{"type": "command",
+                          "command": {"id": "cmd-1", "type": "send_text", "content": "hi"}}])
+        got = []
+        channel = BrainEventChannel(
+            ws_url=f"ws://127.0.0.1:{port}/api/bridge/v1/ws",
+            token="tok",
+            agent_id="agent-1",
+            device_id="dev-1",
+            on_command=got.append,
+        )
+        try:
+            channel.start()
+            deadline = time.time() + 5.0
+            while not got and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(got[0]["id"], "cmd-1")
+            self.assertEqual(got[0]["type"], "send_text")
+            deadline = time.time() + 5.0
+            while not any(f.get("type") == "command_ack" for f in received) \
+                    and time.time() < deadline:
+                time.sleep(0.02)
+            ack = next(f for f in received if f.get("type") == "command_ack")
+            self.assertEqual(ack["command_id"], "cmd-1")
+            self.assertEqual(ack["status"], "received")
+            self.assertEqual(ack["agent_id"], "agent-1")
+            self.assertEqual(channel.commands_received, 1)
+        finally:
+            channel.stop()
+            server.shutdown()
+            thread.join(timeout=2.0)
+
+    def test_command_frame_payload_shape_and_json_ping(self):
+        server, thread, received, _headers, port = self._start_server(
+            push_frames=[
+                {"type": "command_push", "command_id": "cmd-2",
+                 "payload": {"type": "send_text", "content": "yo"}},
+                {"type": "ping", "ts": 1.0},
+            ])
+        got = []
+        channel = BrainEventChannel(
+            ws_url=f"ws://127.0.0.1:{port}/api/bridge/v1/ws",
+            token="tok", agent_id="agent-1", device_id="dev-1",
+            on_command=got.append,
+        )
+        try:
+            channel.start()
+            deadline = time.time() + 5.0
+            while not got and time.time() < deadline:
+                time.sleep(0.02)
+            # id from command_id, fields merged from payload
+            self.assertEqual(got[0]["id"], "cmd-2")
+            self.assertEqual(got[0]["content"], "yo")
+            # the server pushed an application-level ping; the client must pong
+            deadline = time.time() + 5.0
+            while not any(f.get("type") == "pong" for f in received) \
+                    and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(any(f.get("type") == "pong" for f in received))
+        finally:
+            channel.stop()
+            server.shutdown()
+            thread.join(timeout=2.0)
 
 
 if __name__ == "__main__":

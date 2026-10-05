@@ -59,6 +59,17 @@ KNOWN_PROFILES: dict[int, dict[str, object]] = {
         "service_send_text": 0xA83AF0,
         "message_biz_send_text": 0xA64BF0,
     },
+    0x1F20000: {
+        "version": "9.97.81N",
+        "service_vtable": 0x18C4C78,
+        "secondary_vtable_1": 0x18C4DE0,
+        "secondary_vtable_2": 0x18C4DF0,
+        "message_biz_vtable": 0x18C2CF8,
+        "service_get_new_msg": 0xA798A0,
+        "service_on_message_arrive": 0xA7D1C0,
+        "service_send_text": 0xA85840,
+        "message_biz_send_text": 0xA66940,
+    },
 }
 
 VTABLE_ENTRIES = 12

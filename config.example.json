@@ -28,9 +28,13 @@
   "event_upload_concurrency": 4,
   "event_upload_batch_size": 100,
   "brain_request_timeout_seconds": 8.0,
+  "brain_ws_enabled": true,
+  "brain_ws_ack_timeout_seconds": 10.0,
   "update_manifest_url": "",
   "auto_update_check_enabled": true,
   "context_enrich_enabled": true,
+  "context_enrich_shop_info": true,
+  "context_enrich_history_orders": false,
   "context_enrich_timeout_seconds": 6.0,
   "delivery_enabled": true,
   "send_enabled": true,
@@ -59,7 +63,13 @@
   "poll_interval_seconds": 2.0,
   "delivery_timeout_seconds": 1.5
     ,"dock_enabled": true
-    ,"config_defaults_revision": 5
-    ,"dock_width": 286
+    ,"dock_mode": "snap"
+    ,"dock_frameless": true
+    ,"dock_skip_taskbar": true
+    ,"dock_follow_height": true
+    ,"dock_topmost": false
+    ,"config_defaults_revision": 9
+    ,"dock_width": 300
+    ,"dock_height": 720
     ,"dock_edge_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
 }

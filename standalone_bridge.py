@@ -29,6 +29,11 @@ import psutil
 import websocket
 
 from app_version import VERSION
+from brain_ws import (
+    BrainEventChannel,
+    BrainWsError,
+    ws_url_from_server_url,
+)
 from client_support import ClientSupportWatcher
 from config_defaults import apply_operational_defaults
 from device_identity import (
@@ -97,20 +102,10 @@ def preferred_buyer_nick(
             return candidate
     return next((candidate for candidate in candidates if candidate), "")
 
-OUTBOUND_BLOCK_PATTERNS = (
-    (re.compile(r"桥接|openbot|BridgeAgent|QianniuBridge|local_send", re.I), "含调试/桥接字样"),
-    (re.compile(r"请忽略|测试发送|发送测试|速度测试|联调|压测|测试文案", re.I), "含测试字样"),
-    (re.compile(r"【[^】]{0,12}测试[^】]{0,12}】", re.I), "含测试标记"),
-    (re.compile(r"(发送)?测试|test\s*msg|debug\s*send", re.I), "含测试字样"),
-    (re.compile(r"微信|v信|vx\s*[:：]?|加\s*v|外部联系|脱离平台", re.I), "疑似引导站外联系"),
-    (
-        re.compile(
-            r"https?://(?!item\.taobao\.com|detail\.tmall\.com|tmall\.com|taobao\.com)[^\s]+",
-            re.I,
-        ),
-        "含外部链接",
-    ),
-)
+# 出站内容不再做关键词拦截（大脑生成了就发）：此前的“测试/桥接/站外”规则会
+# 误伤正常客服话术（例如“可以带回去当地测试测试”），导致真实回复被拦。
+# outbound_safety_result 只保留空内容守卫。会话级开关（转人工、店铺范围）
+# 由 session_control / allowed_shop_ids 单独控制，不在此处。
 
 HANDOFF_BUYER_PATTERNS = (
     (re.compile(r"投诉|曝光|315|消协|12315|律师|报警", re.I), "投诉维权"),
@@ -134,6 +129,10 @@ def is_nonempty(value: Any) -> bool:
 
 
 def outbound_safety_result(content: Any) -> dict[str, Any] | None:
+    """Guard the bare minimum only: the content must be non-empty.
+
+    出站内容不做关键词拦截：内容审查交由大脑侧，本机只负责可靠送达。
+    """
     text = str(content or "").strip()
     if not text:
         return {
@@ -144,26 +143,6 @@ def outbound_safety_result(content: Any) -> dict[str, Any] | None:
             "real_send": False,
             "via": "safety",
         }
-    if text.replace("?", "").strip() == "" and set(text) <= {"?"}:
-        return {
-            "ok": False,
-            "status": "blocked",
-            "error": "content is only question marks",
-            "error_user": "发送内容异常（只有 ???），已拦截",
-            "real_send": False,
-            "via": "safety",
-        }
-    for pattern, reason in OUTBOUND_BLOCK_PATTERNS:
-        if pattern.search(text):
-            return {
-                "ok": False,
-                "status": "blocked",
-                "error": f"safety blocked: {reason}",
-                "error_user": f"发送已拦截（{reason}）。请改成正常客服话术，勿提测试/桥接/站外联系",
-                "real_send": False,
-                "via": "safety",
-                "safety_reason": reason,
-            }
     return None
 
 
@@ -1127,7 +1106,7 @@ class StateDB:
                 "express_order_number", "after_sale_text", "category",
                 "buyer_encrypt_id", "chat_scene", "context_enrich",
                 "order_info", "order_context", "local_context_lookup",
-                "recent_orders", "inquiry_goods",
+                "recent_orders", "inquiry_goods", "history_orders", "shop_is_tmall",
             )
             messages.append({
                 "event_id": str(row["event_id"]),
@@ -1908,6 +1887,8 @@ class BrainConnector:
         self.brain_handoff_count = 0
         self.last_heartbeat_response: dict[str, Any] = {}
         self.last_event_response: dict[str, Any] = {}
+        self._event_channel: BrainEventChannel | None = None
+        self._event_channel_key = ""
         self.server_status: dict[str, Any] = {}
         self.last_server_status_at = 0.0
         self.server_status_error = ""
@@ -1954,6 +1935,73 @@ class BrainConnector:
             or self.app.config.get("device_id")
             or ""
         ).strip()
+
+    def event_channel(self) -> BrainEventChannel | None:
+        """Return the persistent WS event channel, creating it on first use.
+
+        Returns None when the feature is off or the brain is not configured, so
+        `upload_events` simply keeps using the HTTP batch endpoint.
+        """
+        if not bool(self.app.config.get("brain_ws_enabled", True)):
+            return None
+        if not self.configured():
+            return None
+        key = self.configuration_key()
+        with self.lock:
+            existing = self._event_channel
+            if existing is not None and self._event_channel_key == key:
+                return existing
+            self._event_channel = None
+            self._event_channel_key = ""
+        if existing is not None:
+            existing.stop()
+        try:
+            ws_url = ws_url_from_server_url(
+                str(self.app.config.get("brain_server_url") or "")
+            )
+        except BrainWsError as error:
+            self.record("brain", "warn", f"WS 通道地址无效，回退 HTTP：{error}")
+            return None
+        channel = BrainEventChannel(
+            ws_url=ws_url,
+            token=brain_workstation_token(self.app.config),
+            agent_id=self.agent_id(),
+            device_id=str(self.app.config.get("device_id") or ""),
+            platform="taobao",
+            on_command=self.ws_command_received,
+        )
+        with self.lock:
+            if self._event_channel is not None and self._event_channel_key == key:
+                return self._event_channel
+            self._event_channel = channel
+            self._event_channel_key = key
+        channel.start()
+        self.record("brain", "ok", "已启用大脑事件长连接", {"url": ws_url})
+        return channel
+
+    def stop_event_channel(self) -> None:
+        with self.lock:
+            channel = self._event_channel
+            self._event_channel = None
+            self._event_channel_key = ""
+        if channel is not None:
+            channel.stop()
+
+    def ws_command_received(self, command: dict[str, Any]) -> None:
+        """Handle a command pushed over the persistent WS channel.
+
+        The HTTP long-poll keeps running as a fallback, so the same command may
+        arrive twice; `handle_command` is idempotent on command id and reuses the
+        stored result, so it still executes at most once.
+        """
+        command_id = str(command.get("id") or command.get("command_id") or "").strip()
+        if not command_id:
+            return
+        self.record("command", "ok", f"WS 推送指令：{command_id}", {
+            "command_id": command_id,
+            "type": str(command.get("type") or ""),
+        })
+        self.dispatch_command(command)
 
     @staticmethod
     def account_shop_id(account: str) -> str:
@@ -2102,6 +2150,10 @@ class BrainConnector:
             self.record("events", "ok", f"queued {backfilled} local events after brain reconnect")
         self.wakeup.set()
         self.event_wakeup.set()
+        # Start the persistent WS channel as soon as registration succeeds, so the
+        # first captured message does not pay the handshake cost. The HTTP path
+        # still covers any window where the link is not yet up.
+        self.event_channel()
         return payload
 
     def heartbeat_status(self) -> dict[str, Any]:
@@ -2844,12 +2896,32 @@ class BrainConnector:
                 "captured_at": float(captured_at or time.time()),
             })
             events.append(event)
-        payload = self.request("POST", "/api/bridge/v1/events", {
-            "agent_id": self.agent_id(),
-            "events": events,
-        })
-        with self.lock:
-            self.last_event_response = {
+        payload: dict[str, Any] | None = None
+        transport = "http"
+        channel = self.event_channel()
+        if channel is not None and channel.available:
+            try:
+                payload = channel.send_events(
+                    events,
+                    timeout=float(
+                        self.app.config.get("brain_ws_ack_timeout_seconds", 10.0)
+                    ),
+                )
+                transport = "ws"
+            except BrainWsError as error:
+                # The link dropped between the availability check and the send;
+                # fall back to HTTP for this batch instead of stalling the queue.
+                payload = None
+                with self.lock:
+                    self.last_error = f"WS 上报失败，回退 HTTP：{error}"[:500]
+        if payload is None:
+            payload = self.request("POST", "/api/bridge/v1/events", {
+                "agent_id": self.agent_id(),
+                "events": events,
+            })
+        acknowledgements = list(payload.get("event_acks") or [])
+        if transport == "http":
+            summary = {
                 "accepted": int(payload.get("accepted") or 0),
                 "acknowledged": int(payload.get("acknowledged") or 0),
                 "ingested_local": int(payload.get("ingested_local") or 0),
@@ -2858,7 +2930,28 @@ class BrainConnector:
                 "shadow_stale_skipped": int(payload.get("shadow_stale_skipped") or 0),
                 "scope_rejected": int(payload.get("scope_rejected") or 0),
                 "shop_rejected": int(payload.get("shop_rejected") or 0),
-                "event_acks": list(payload.get("event_acks") or []),
+            }
+        else:
+            # WS acks only carry per-event status; derive the counters from them.
+            summary = {
+                "accepted": sum(
+                    1 for item in acknowledgements
+                    if isinstance(item, dict)
+                    and str(item.get("status") or "") == "accepted"
+                ),
+                "acknowledged": len(acknowledgements),
+                "ingested_local": 0,
+                "context_updated": 0,
+                "shadow_queued": 0,
+                "shadow_stale_skipped": 0,
+                "scope_rejected": 0,
+                "shop_rejected": 0,
+            }
+        with self.lock:
+            self.last_event_response = {
+                "transport": transport,
+                **summary,
+                "event_acks": acknowledgements,
             }
         for event in events:
             if str(event.get("role") or "").strip().lower() not in {"user", "buyer", "customer"}:
@@ -3073,6 +3166,10 @@ class BrainConnector:
                 "brain_handoff_count": self.brain_handoff_count,
                 "last_heartbeat_response": dict(self.last_heartbeat_response),
                 "last_event_response": dict(self.last_event_response),
+                "event_channel": (
+                    self._event_channel.status()
+                    if self._event_channel is not None else None
+                ),
                 "server_status": dict(self.server_status),
                 "last_server_status_at": self.last_server_status_at,
                 "server_status_error": self.server_status_error,
@@ -3179,6 +3276,51 @@ class BrowserServer:
             with self.connection_lock:
                 self.pending.pop(request_id, None)
 
+    def execute_all(self, expression: str, timeout: float = 3.0) -> list[Any]:
+        """Run an expression on every connected page and return the successes.
+
+        `execute` broadcasts and keeps whichever page answers first. That is
+        wrong for capability probes: dx-h5 stays connected but cannot answer
+        conversation questions, so it can win the race with a useless reply.
+        Callers that need "some page can do this" use this instead.
+        """
+        with self.connection_lock:
+            connections = list(self.connections)
+        if not connections:
+            raise RuntimeError("Qianniu browser bridge is not connected")
+        values: list[Any] = []
+        last_error: Exception | None = None
+        for connection in connections:
+            request_id = uuid.uuid4().hex
+            response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
+            with self.connection_lock:
+                self.pending[request_id] = response_queue
+            try:
+                self.send(connection, {
+                    "method": "execute",
+                    "request_id": request_id,
+                    "expression": expression,
+                })
+                try:
+                    response = response_queue.get(timeout=timeout)
+                except queue.Empty:
+                    last_error = RuntimeError("Qianniu browser command timed out")
+                    continue
+                if not response.get("ok"):
+                    last_error = RuntimeError(
+                        str(response.get("error") or "Qianniu browser command failed")
+                    )
+                    continue
+                values.append(response.get("value"))
+            except Exception as error:
+                last_error = error
+            finally:
+                with self.connection_lock:
+                    self.pending.pop(request_id, None)
+        if not values:
+            raise last_error or RuntimeError("Qianniu browser command could not be sent")
+        return values
+
     def runtime_snapshot(self) -> dict[str, Any]:
         expression = r"""
 (() => {
@@ -3223,11 +3365,22 @@ class BrowserServer:
         return value if isinstance(value, dict) else {"value": value}
 
     def current_conversation(self) -> dict[str, Any]:
-        value = self.execute(
-            "(() => window._conversationId || window.__conversationId || null)()",
-            timeout=3.0,
-        )
-        return value if isinstance(value, dict) else {}
+        expression = r"""
+(() => {
+  const raw = window._conversationId || window.__conversationId || null;
+  if (raw === null || raw === undefined) return {ccode: ''};
+  if (typeof raw === 'string') return {ccode: raw};
+  return {ccode: String(raw.ccode || raw.conversationId || raw.id || '')};
+})()
+"""
+        try:
+            values = self.execute_all(expression, timeout=3.0)
+        except RuntimeError:
+            return {}
+        for value in values:
+            if isinstance(value, dict) and str(value.get("ccode") or ""):
+                return value
+        return values[0] if values and isinstance(values[0], dict) else {}
 
     def open_conversation(
         self,
@@ -3268,7 +3421,7 @@ class BrowserServer:
         param: __PARAM__,
         success(info) {
           clearTimeout(timer);
-          finish({ok: true, result: info === undefined ? null : info});
+          finish({ok: true, href: location.href, result: info === undefined ? null : info});
         },
         error(error) {
           clearTimeout(timer);
@@ -3305,11 +3458,25 @@ class BrowserServer:
   document.head.appendChild(script);
 }))()
 """.replace("__PARAM__", json.dumps(ability_param, ensure_ascii=False))
-        result = self.execute(expression, timeout=timeout)
-        if not isinstance(result, dict) or not result.get("ok"):
-            detail = result.get("err") if isinstance(result, dict) else "invalid openChat response"
-            raise RuntimeError(str(detail or "Qianniu openChat failed"))
+        result = self.execute_all(expression, timeout=timeout)
+        accepted: dict[str, Any] | None = None
+        for value in result:
+            if isinstance(value, dict) and value.get("ok"):
+                accepted = value
+                break
+        if accepted is None:
+            detail = ""
+            for value in result:
+                if isinstance(value, dict) and value.get("err"):
+                    detail = str(value.get("err"))
+                    break
+            raise RuntimeError(detail or "Qianniu openChat failed")
         current: dict[str, Any] = {}
+        # The page that runs openChat can only report the current conversation
+        # when it is the message-center page. dx-h5 keeps the bridge alive but
+        # has no conversation state, so an empty reading is inconclusive; only a
+        # different ccode is a real mismatch.
+        verified = not expected_ccode
         if expected_ccode:
             deadline = time.time() + 3.5
             while time.time() < deadline:
@@ -3317,17 +3484,23 @@ class BrowserServer:
                     current = self.current_conversation()
                 except RuntimeError:
                     current = {}
-                if str(current.get("ccode") or "") == expected_ccode:
+                observed = str(current.get("ccode") or "")
+                if observed == expected_ccode:
+                    verified = True
                     break
+                if observed and observed != expected_ccode:
+                    raise RuntimeError(
+                        "Qianniu acknowledged openChat but switched to a different conversation"
+                    )
                 time.sleep(0.15)
-            if str(current.get("ccode") or "") != expected_ccode:
-                raise RuntimeError("Qianniu acknowledged openChat but did not switch to the requested conversation")
         return {
             "ok": True,
             "buyer_nick": nick,
             "ability_nick": ability_nick,
             "opened_ccode": str(current.get("ccode") or ""),
-            "result": result.get("result"),
+            "verified": verified,
+            "page": str(accepted.get("href") or ""),
+            "result": accepted.get("result"),
         }
 
     def handler(self, connection: Any) -> None:
@@ -3421,6 +3594,15 @@ class BrowserServer:
 class ContextEnricher:
     ITEM_METHOD = "mtop.taobao.qianniu.cs.item.record.query"
     ORDER_METHOD = "mtop.taobao.qianniu.cs.trade.query"
+    # 福客 qn-hh-4.3.js 里额外的只读富化方法，参数形状逐字对齐：
+    #   jdy.resource.shop.info.get -> {}，取 .data.result.tmallSeller 判定淘宝/天猫
+    #   cs.trade.history.query     -> {securityBuyerUid,pageNum,pageSize}，取 .data.orders
+    #   order.sold.memo            -> {orderId,operation:"query",source:"qn_znkf"}，取 .data.editRecordList
+    SHOP_INFO_METHOD = "mtop.taobao.jdy.resource.shop.info.get"
+    HISTORY_ORDER_METHOD = "mtop.taobao.qianniu.cs.trade.history.query"
+    ORDER_MEMO_METHOD = "mtop.com.taobao.order.sold.memo"
+    HISTORY_PAGE_SIZE = 10
+    SHOP_CACHE_TTL_SECONDS = 1800.0
     EMPTY_ORDER_RETRIES = 2
     ORDER_CACHE_TTL_SECONDS = 300.0
     MAX_PENDING = 500
@@ -3439,6 +3621,7 @@ class ContextEnricher:
         self.last_event_id = ""
         self.last_buyer_encrypt_id = ""
         self.order_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self.shop_cache: dict[str, dict[str, Any]] = {}
 
     def start(self) -> None:
         self.thread.start()
@@ -3643,19 +3826,89 @@ class ContextEnricher:
                 output.append({key: value for key, value in order.items() if is_nonempty(value)})
         return output[:6]
 
+    @classmethod
+    def parse_shop(cls, payload: Any) -> dict[str, Any]:
+        """Parse ``mtop.taobao.jdy.resource.shop.info.get`` (福客 qn-hh-4.3.js).
+
+        fuke 用 ``?.data?.result?.tmallSeller`` 判定店铺是否天猫；这里同时保留
+        店名/卖家昵称，便于大脑区分淘宝与天猫话术。
+        """
+        decoded = cls.decode(payload)
+        result: Any = decoded
+        if isinstance(decoded, dict):
+            data = cls.decode(decoded.get("data"))
+            if isinstance(data, dict):
+                candidate = cls.decode(data.get("result"))
+                result = candidate if isinstance(candidate, dict) else data
+        if not isinstance(result, dict):
+            return {}
+        tmall = result.get("tmallSeller")
+        if tmall is None:
+            tmall = result.get("isTmall")
+        output: dict[str, Any] = {}
+        if tmall is not None:
+            if isinstance(tmall, str):
+                output["is_tmall"] = tmall.strip().lower() in {"1", "true", "yes", "y"}
+            else:
+                output["is_tmall"] = bool(tmall)
+        for source, target in (
+            ("shopName", "shop_name"), ("nick", "seller_nick"),
+            ("sellerNick", "seller_nick"), ("shopId", "shop_id"),
+            ("userId", "seller_id"),
+        ):
+            value = cls.first(result, source)
+            if is_nonempty(value):
+                output.setdefault(target, str(value))
+        return output
+
+    @classmethod
+    def parse_order_memo(cls, payload: Any) -> dict[str, Any]:
+        """Parse ``mtop.com.taobao.order.sold.memo`` query result (订单备注/标旗)."""
+        output: dict[str, Any] = {}
+        for bucket in cls.collect_lists(payload, {"editRecordList"}):
+            for raw in bucket[:5]:
+                row = cls.decode(raw)
+                if not isinstance(row, dict):
+                    continue
+                memo = cls.first(row, "memoContent", "memo", "content")
+                tag = cls.first(row, "flagTag", "tagName", "flagName")
+                if is_nonempty(memo):
+                    output["memo"] = str(memo)
+                if is_nonempty(tag):
+                    output["tag"] = str(tag)
+                if output:
+                    return output
+        return output
+
     def fetch(self, encrypt_id: str, biz_order_id: str = "", account: str = "") -> dict[str, Any]:
         account = str(account or "").strip()
         cache_key = (account, encrypt_id)
         attempts: list[dict[str, Any]] = []
         found: dict[str, Any] | None = None
+        # 店铺信息在会话期间基本不变：命中缓存就不再重复调用 MTop，只做一次。
+        cached_shop = self._cached_shop(account) if account else None
+        include_shop = bool(self.app.config.get("context_enrich_shop_info", True)) and cached_shop is None
+        include_history = bool(self.app.config.get("context_enrich_history_orders", False))
+        shop: dict[str, Any] = {}
+        history_orders: list[dict[str, Any]] = []
         for attempt in range(1 + self.EMPTY_ORDER_RETRIES):
-            snapshot = self._fetch_once(encrypt_id, biz_order_id)
+            # 店铺/历史订单与订单重试无关，只在第一次尝试里并行取。
+            snapshot = self._fetch_once(
+                encrypt_id, biz_order_id,
+                include_shop and attempt == 0,
+                include_history and attempt == 0,
+            )
             attempts.append(snapshot)
+            if attempt == 0:
+                shop = dict(snapshot.get("shop") or {}) or dict(cached_shop or {})
+                history_orders = list(snapshot.get("history_orders") or [])
             if snapshot["orders_ok"] and snapshot["orders"]:
                 found = snapshot
                 break
             if attempt < self.EMPTY_ORDER_RETRIES:
                 time.sleep(min(0.6, 0.15 * (attempt + 1)))
+        if shop and account:
+            self._remember_shop(account, shop)
 
         if found is not None:
             status = "found"
@@ -3702,6 +3955,11 @@ class ContextEnricher:
             "elapsed_ms": elapsed_ms,
             "retry_count": retry_count,
         }
+        if shop:
+            context_status["shop_is_tmall"] = shop.get("is_tmall")
+            context_status["shop_info"] = dict(shop)
+        if history_orders:
+            context_status["history_orders_count"] = len(history_orders)
         order_info: dict[str, Any] = {
             "source": "taobao_mtop_context",
             "lookup_scope": "buyer_shop_recent_orders",
@@ -3773,9 +4031,26 @@ class ContextEnricher:
                         order_info.setdefault(key, selected[key])
                         enrichment["order_context"].setdefault(key, selected[key])
             enrichment["chat_scene"] = "order_consult"
+        if shop:
+            enrichment["shop"] = dict(shop)
+            if "is_tmall" in shop:
+                enrichment["shop_is_tmall"] = shop["is_tmall"]
+                order_info.setdefault("shop_is_tmall", shop["is_tmall"])
+                enrichment["order_context"].setdefault("shop_is_tmall", shop["is_tmall"])
+        if history_orders:
+            enrichment["history_orders"] = history_orders
+            enrichment["history_order_count"] = len(history_orders)
+            order_info.setdefault("history_order_count", len(history_orders))
+            enrichment["order_context"].setdefault("history_order_count", len(history_orders))
         return enrichment
 
-    def _fetch_once(self, encrypt_id: str, biz_order_id: str = "") -> dict[str, Any]:
+    def _fetch_once(
+        self,
+        encrypt_id: str,
+        biz_order_id: str = "",
+        include_shop: bool = True,
+        include_history: bool = False,
+    ) -> dict[str, Any]:
         trace_id = uuid.uuid4().hex
         started = time.perf_counter()
         expression = """
@@ -3792,13 +4067,27 @@ class ContextEnricher:
    }));
    return Promise.all([
      call('__ITEM_METHOD__', {encryptId}),
-     call('__ORDER_METHOD__', {securityBuyerUid: encryptId, bizOrderId: __BIZ_ORDER_ID__})
-   ]).then(values => ({ok: true, items: values[0], orders: values[1]}));
+     call('__ORDER_METHOD__', {securityBuyerUid: encryptId, bizOrderId: __BIZ_ORDER_ID__}),
+     __SHOP_CALL__,
+     __HISTORY_CALL__
+   ]).then(values => ({ok: true, items: values[0], orders: values[1], shop: values[2], history: values[3]}));
  })()
 """.replace("__ENCRYPT_ID__", json.dumps(encrypt_id, ensure_ascii=False))
         expression = expression.replace("__BIZ_ORDER_ID__", json.dumps(biz_order_id or "", ensure_ascii=False))
         expression = expression.replace("__ITEM_METHOD__", self.ITEM_METHOD)
         expression = expression.replace("__ORDER_METHOD__", self.ORDER_METHOD)
+        expression = expression.replace(
+            "__SHOP_CALL__",
+            f"call('{self.SHOP_INFO_METHOD}', {{}})" if include_shop
+            else "Promise.resolve({ok: false, error: 'shop info disabled'})",
+        )
+        expression = expression.replace(
+            "__HISTORY_CALL__",
+            f"call('{self.HISTORY_ORDER_METHOD}', "
+            f"{{securityBuyerUid: encryptId, pageNum: 1, pageSize: {self.HISTORY_PAGE_SIZE}}})"
+            if include_history
+            else "Promise.resolve({ok: false, error: 'history orders disabled'})",
+        )
         result = self.app.browser.execute(
             expression,
             timeout=float(self.app.config.get("context_enrich_timeout_seconds", 6.0)),
@@ -3807,10 +4096,18 @@ class ContextEnricher:
             raise RuntimeError("Qianniu context response is not an object")
         items_result = result.get("items") if isinstance(result.get("items"), dict) else {}
         orders_result = result.get("orders") if isinstance(result.get("orders"), dict) else {}
+        shop_result = result.get("shop") if isinstance(result.get("shop"), dict) else {}
+        history_result = result.get("history") if isinstance(result.get("history"), dict) else {}
         items_ok = items_result.get("ok") is True
         orders_ok = orders_result.get("ok") is True
+        shop_ok = shop_result.get("ok") is True
+        history_ok = history_result.get("ok") is True
         items = self.parse_items(items_result.get("value")) if items_ok else []
         orders = self.parse_orders(orders_result.get("value")) if orders_ok else []
+        shop = self.parse_shop(shop_result.get("value")) if (include_shop and shop_ok) else {}
+        history_orders = (
+            self.parse_orders(history_result.get("value")) if (include_history and history_ok) else []
+        )
         raw_order_count = self._raw_order_count(orders_result.get("value")) if orders_ok else 0
         ret_code = self._mtop_ret_code(orders_result.get("value"))
         errors = [
@@ -3822,8 +4119,12 @@ class ContextEnricher:
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
             "items": items,
             "orders": orders,
+            "shop": shop,
+            "history_orders": history_orders,
             "items_ok": items_ok,
             "orders_ok": orders_ok,
+            "shop_ok": shop_ok,
+            "history_ok": history_ok,
             "errors": errors,
             "raw_order_count": raw_order_count,
             "ret_code": ret_code,
@@ -3900,6 +4201,31 @@ class ContextEnricher:
                 return None
             orders = entry.get("orders")
             return list(orders) if isinstance(orders, list) else None
+
+    def _remember_shop(self, account: str, shop: dict[str, Any]) -> None:
+        if not shop:
+            return
+        with self.lock:
+            self.shop_cache[account] = {"shop": dict(shop), "ts": time.time()}
+            if len(self.shop_cache) > 64:
+                stale = sorted(
+                    self.shop_cache,
+                    key=lambda item: float(self.shop_cache[item].get("ts") or 0.0),
+                )[: len(self.shop_cache) - 64]
+                for item in stale:
+                    self.shop_cache.pop(item, None)
+
+    def _cached_shop(self, account: str) -> dict[str, Any] | None:
+        if not account:
+            return None
+        with self.lock:
+            entry = self.shop_cache.get(account)
+            if entry is None:
+                return None
+            if time.time() - float(entry.get("ts") or 0.0) > self.SHOP_CACHE_TTL_SECONDS:
+                return None
+            shop = entry.get("shop")
+            return dict(shop) if isinstance(shop, dict) else None
 
     def run(self) -> None:
         while not self.app.stop_event.is_set():
@@ -5273,6 +5599,7 @@ class StandaloneBridge:
         self.stop_event.set()
         # These workers own Frida sessions and perform their detach cleanup
         # after stop_event interrupts their retry waits.
+        self.brain.stop_event_channel()
         self.appbiz.thread.join(timeout=3.0)
         self.native.thread.join(timeout=3.0)
 

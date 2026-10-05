@@ -59,6 +59,7 @@ class TrayCallbacks:
     restart_all: Callable[[], None]
     open_settings: Callable[[], None]
     completely_exit: Callable[[], None]
+    show_dock: Callable[[], None]
 
 
 def coerce_status(value: AppStatus | Mapping[str, object] | None) -> AppStatus:
@@ -126,6 +127,7 @@ if sys.platform == "win32":
     CMD_RESTART = 1003
     CMD_SETTINGS = 1004
     CMD_EXIT = 1005
+    CMD_DOCK = 1006
 
     LRESULT = ctypes.c_ssize_t
     WNDPROC = ctypes.WINFUNCTYPE(
@@ -311,6 +313,7 @@ class NativeTrayIcon:
             user32.AppendMenuW(menu, MF_STRING, CMD_OPEN, "打开控制中心")
             flags = MF_STRING | (MF_GRAYED | MF_DISABLED if busy else 0)
             user32.AppendMenuW(menu, flags, CMD_WORKBENCH, "打开工作台")
+            user32.AppendMenuW(menu, flags, CMD_DOCK, "显示浮窗")
             user32.AppendMenuW(menu, flags, CMD_RESTART, "重新启动全部")
             user32.AppendMenuW(menu, flags, CMD_SETTINGS, "设置")
             user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
@@ -330,6 +333,7 @@ class NativeTrayIcon:
             actions = {
                 CMD_OPEN: "open",
                 CMD_WORKBENCH: "workbench",
+                CMD_DOCK: "dock",
                 CMD_RESTART: "restart",
                 CMD_SETTINGS: "settings",
                 CMD_EXIT: "exit",
@@ -402,7 +406,7 @@ class TrayControlCenter:
     COMPONENTS = (
         ("bridge", "桥接服务"),
         ("qianniu", "千牛客户端"),
-        ("dock", "右侧浮层"),
+        ("dock", "浮窗"),
     )
 
     def __init__(
@@ -562,6 +566,8 @@ class TrayControlCenter:
             self.show()
         elif command == "workbench":
             self.callbacks.open_workbench()
+        elif command == "dock":
+            self.callbacks.show_dock()
         elif command == "restart":
             self.callbacks.restart_all()
         elif command == "settings":
@@ -595,7 +601,7 @@ class TrayControlCenter:
             return
         answer = ctypes.windll.user32.MessageBoxW(
             0,
-            "将关闭客服助手、浮层和随包千牛。确定退出？",
+            "将关闭客服助手、浮窗和随包千牛。确定退出？",
             PRODUCT_NAME,
             MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
         ) if sys.platform == "win32" else 7

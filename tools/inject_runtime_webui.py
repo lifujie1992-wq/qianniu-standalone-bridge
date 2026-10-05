@@ -8,6 +8,10 @@ from pathlib import Path
 
 
 CHAT_ENTRY = "web_chat-packer/recent.html"
+# Keep in sync with launcher.CHAT_ENTRIES: recent.html is the message center
+# page, dx-h5 is loaded on every launch and keeps the bridge reachable for
+# openChat when the seller never opens the message center.
+CHAT_ENTRIES = (CHAT_ENTRY, "dx-h5/index.html")
 INJECTION_TAG = "data-qn-standalone-bridge"
 INJECTION_RE = re.compile(
     r'<script\b[^>]*\bdata-qn-standalone-bridge\s*=\s*["\'][^"\']*["\'][^>]*>'
@@ -49,24 +53,36 @@ def build_injection(config: dict, bridge_source: str) -> str:
     )
 
 
+def inject_entry(original: str, injection: str, label: str) -> str | None:
+    if original.count(INJECTION_TAG) == 1 and injection in original:
+        return None
+    cleaned = INJECTION_RE.sub("", original)
+    if "</body>" not in cleaned.lower():
+        raise RuntimeError(f"chat entry has no body end tag: {label}")
+    html = re.sub(
+        r"</body>",
+        lambda _match: injection + "\n</body>",
+        cleaned,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if html.count(INJECTION_TAG) != 1:
+        raise RuntimeError(f"standalone injection count is invalid: {label}")
+    return None if html == original else html
+
+
 def inject_zip(path: Path, injection: str) -> bool:
     with zipfile.ZipFile(path, "r") as source:
-        original = source.read(CHAT_ENTRY).decode("utf-8")
-        if original.count(INJECTION_TAG) == 1 and injection in original:
-            return False
-        cleaned = INJECTION_RE.sub("", original)
-        if "</body>" not in cleaned.lower():
-            raise RuntimeError(f"chat entry has no body end tag: {path}")
-        html = re.sub(
-            r"</body>",
-            lambda _match: injection + "\n</body>",
-            cleaned,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-        if html.count(INJECTION_TAG) != 1:
-            raise RuntimeError(f"standalone injection count is invalid: {path}")
-        if html == original:
+        names = {item.filename.replace("\\", "/") for item in source.infolist()}
+        replacements = {}
+        for entry in CHAT_ENTRIES:
+            if entry not in names:
+                continue
+            original = source.read(entry).decode("utf-8")
+            html = inject_entry(original, injection, f"{path}:{entry}")
+            if html is not None:
+                replacements[entry] = html.encode("utf-8")
+        if not replacements:
             return False
 
         with tempfile.NamedTemporaryFile(
@@ -76,9 +92,10 @@ def inject_zip(path: Path, injection: str) -> bool:
         try:
             with zipfile.ZipFile(temporary_path, "w") as target:
                 for item in source.infolist():
+                    name = item.filename.replace("\\", "/")
                     data = source.read(item.filename)
-                    if item.filename.replace("\\", "/") == CHAT_ENTRY:
-                        data = html.encode("utf-8")
+                    if name in replacements:
+                        data = replacements[name]
                     target.writestr(item, data)
             source.close()
             temporary_path.replace(path)

@@ -39,6 +39,12 @@ from device_identity import (
 
 
 CHAT_ENTRY = "web_chat-packer/recent.html"
+# Entries that get the in-page bridge. recent.html is the message center page
+# and the only one that carries the IM SDK, but Qianniu only loads it when the
+# seller opens the message center. dx-h5 (the DinamicX card renderer) is loaded
+# on every launch, so it keeps a bridge connection alive for openChat even when
+# the message center was never opened.
+CHAT_ENTRIES = (CHAT_ENTRY, "dx-h5/index.html")
 INJECTION_TAG = "data-qn-standalone-bridge"
 INJECTION_RE = re.compile(
     r'<script\b[^>]*\bdata-qn-standalone-bridge\s*=\s*["\'][^"\']*["\'][^>]*>'
@@ -153,7 +159,7 @@ def ensure_edge(config: dict, config_path: Path) -> bool:
     save_config(config, config_path)
     message_box(
         "千牛客服助手",
-        "未检测到 Microsoft Edge，浮层功能不可用。\n请安装 Edge 后重试。",
+        "未检测到 Microsoft Edge，浮窗功能不可用。\n请安装 Edge 后重试。",
         MB_ICONWARNING,
     )
     return False
@@ -196,24 +202,37 @@ def build_injection(config: dict, bridge_source: str) -> str:
     )
 
 
+def inject_entry(original: str, injection: str, label: str) -> str | None:
+    """Return injected HTML for one entry, or None when it is already current."""
+    if original.count(INJECTION_TAG) == 1 and injection in original:
+        return None
+    cleaned = INJECTION_RE.sub("", original)
+    if "</body>" not in cleaned.lower():
+        raise RuntimeError(f"chat entry has no body end tag: {label}")
+    html = re.sub(
+        r"</body>",
+        lambda _match: injection + "\n</body>",
+        cleaned,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if html.count(INJECTION_TAG) != 1:
+        raise RuntimeError(f"standalone injection count is invalid: {label}")
+    return None if html == original else html
+
+
 def inject_zip(path: Path, injection: str) -> bool:
     with zipfile.ZipFile(path, "r") as source:
-        original = source.read(CHAT_ENTRY).decode("utf-8")
-        if original.count(INJECTION_TAG) == 1 and injection in original:
-            return False
-        cleaned = INJECTION_RE.sub("", original)
-        if "</body>" not in cleaned.lower():
-            raise RuntimeError(f"chat entry has no body end tag: {path}")
-        html = re.sub(
-            r"</body>",
-            lambda _match: injection + "\n</body>",
-            cleaned,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-        if html.count(INJECTION_TAG) != 1:
-            raise RuntimeError(f"standalone injection count is invalid: {path}")
-        if html == original:
+        names = {item.filename.replace("\\", "/") for item in source.infolist()}
+        replacements: dict[str, bytes] = {}
+        for entry in CHAT_ENTRIES:
+            if entry not in names:
+                continue
+            original = source.read(entry).decode("utf-8")
+            html = inject_entry(original, injection, f"{path}:{entry}")
+            if html is not None:
+                replacements[entry] = html.encode("utf-8")
+        if not replacements:
             return False
 
         with tempfile.NamedTemporaryFile(
@@ -223,9 +242,10 @@ def inject_zip(path: Path, injection: str) -> bool:
         try:
             with zipfile.ZipFile(temporary_path, "w") as target:
                 for item in source.infolist():
+                    name = item.filename.replace("\\", "/")
                     data = source.read(item.filename)
-                    if item.filename.replace("\\", "/") == CHAT_ENTRY:
-                        data = html.encode("utf-8")
+                    if name in replacements:
+                        data = replacements[name]
                     target.writestr(item, data)
             source.close()
             temporary_path.replace(path)
@@ -275,6 +295,28 @@ def fetch_status(config: dict, timeout: float = 2.0) -> dict | None:
             return json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, ValueError):
         return None
+
+
+def live_managed_pid(pid_file: Path) -> int:
+    """Return the pid from a state file when that process is still alive.
+
+    The HTTP probe can be slow while the bridge runs its first process/GPU
+    scan, so an unresponsive probe must not be read as "not running"; the pid
+    file is the cheap, reliable fallback that stops a second bridge from
+    being started on top of a healthy one.
+    """
+    try:
+        pid = int(pid_file.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return 0
+    if pid <= 0:
+        return 0
+    try:
+        import psutil
+
+        return pid if psutil.pid_exists(pid) else 0
+    except ImportError:
+        return pid
 
 
 def workbench_url(config: dict) -> str:
@@ -546,7 +588,11 @@ def start_all() -> int:
 
     state_dir = app_root() / "state"
     passive_upgrade_marker = state_dir / PASSIVE_UPGRADE_MARKER
-    current_status = fetch_status(config, timeout=0.6)
+    current_status = fetch_status(config, timeout=5.0)
+    if current_status is None and live_managed_pid(state_dir / "standalone_bridge.pid"):
+        # Probe timed out but the bridge process is alive: treat it as running
+        # rather than starting a duplicate that would fight over the ports.
+        current_status = {"ok": True}
     if not passive_upgrade_marker.is_file():
         running = running_qianniu_processes()
         if current_status or running:
@@ -610,10 +656,13 @@ def start_all() -> int:
         )
         return 5
 
-    deadline = time.time() + 25.0
+    deadline = time.time() + 40.0
     status = None
     while time.time() < deadline:
-        status = fetch_status(config, timeout=1.0)
+        # /api/v1/status can take a couple of seconds while the bridge runs its
+        # first process/GPU scan; the old 1s probe timed out and made the
+        # launcher kill a perfectly healthy bridge.
+        status = fetch_status(config, timeout=5.0)
         if status and bool(status.get("ok")):
             break
         time.sleep(1.0)
@@ -674,10 +723,10 @@ def start_dock() -> int:
         return 2
     config, config_path = loaded
 
-    if not fetch_status(config, timeout=1.0):
+    if not fetch_status(config, timeout=5.0):
         message_box(
             "千牛客服助手",
-            "桥接服务未运行。请先双击“启动千牛客服助手.cmd”，再启动浮层。",
+            "桥接服务未运行。请先双击“启动千牛客服助手.cmd”，再启动浮窗。",
             MB_ICONWARNING,
         )
         return 1
@@ -693,17 +742,14 @@ def start_dock() -> int:
         try:
             old_pid = int(dock_pid_file.read_text(encoding="ascii").strip())
             if psutil.pid_exists(old_pid):
-                message_box("千牛客服助手", "浮层已在运行。")
+                message_box("千牛客服助手", "浮窗已在运行。")
                 return 0
         except (OSError, ValueError):
             pass
 
     dock = start_process("dock", config_path)
     write_pid("docked_workbench.pid", dock.pid)
-    message_box(
-        "千牛客服助手",
-        "浮层已启动。请打开千牛“接待中心 / 千牛工作台”，浮层会自动贴到旁边。",
-    )
+    message_box("千牛客服助手", "浮窗已启动。")
     return 0
 
 

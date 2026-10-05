@@ -32,6 +32,10 @@ AGENT_PROFILE_RE = re.compile(
 INJECTION_MARKER = "data-qn-standalone-bridge"
 INJECTION_INSTALLED = "__qn_standalone_bridge_v1_installed"
 DEFAULT_INTERVAL_SECONDS = 600.0
+# The GPU probe walks every process and reads each one's command line, which
+# costs 1-2s on Windows. The status endpoint is polled by the launcher and the
+# dock, so cache the result briefly instead of re-scanning on every request.
+GPU_STATE_TTL_SECONDS = 5.0
 
 
 def size_of_image(path: Path) -> int:
@@ -222,6 +226,8 @@ class ClientSupportWatcher(threading.Thread):
         self.last_checked_at = 0.0
         self.last_error = ""
         self._gpu_warned = False
+        self._gpu_state: dict[str, Any] = {}
+        self._gpu_state_at = 0.0
 
     def refresh(self) -> dict[str, Any]:
         try:
@@ -270,6 +276,13 @@ class ClientSupportWatcher(threading.Thread):
             self.last_error = str(error)
             LOG.error("client support: re-injection failed: %s", error)
 
+    def _cached_gpu_state(self) -> dict[str, Any]:
+        now = time.time()
+        if not self._gpu_state or now - self._gpu_state_at >= GPU_STATE_TTL_SECONDS:
+            self._gpu_state = gpu_rendering_state()
+            self._gpu_state_at = now
+        return self._gpu_state
+
     def status(self) -> dict[str, Any]:
         # Read the launcher ini live: a client upgrade can flip the active build
         # between two watcher passes, and a stale active build would delay the
@@ -279,7 +292,7 @@ class ClientSupportWatcher(threading.Thread):
             build["name"]: bool(build["send_supported"])
             for build in self.report.get("builds", [])
         }
-        gpu = gpu_rendering_state()
+        gpu = self._cached_gpu_state()
         if gpu["software_rendering"] and not self._gpu_warned:
             self._gpu_warned = True
             LOG.warning(
