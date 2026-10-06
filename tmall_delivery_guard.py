@@ -57,6 +57,7 @@ def parent_guard_evidence(meta, latest):
             "command_parent_ts": timestamp(meta.get("takeover_parent_ts")),
             "latest_local_msg_id": latest.get("original_msg_id") or latest.get("msg_id") or "",
             "latest_local_ts": timestamp(latest.get("original_timestamp") or latest.get("ts")),
+            "latest_captured_at_ms": latest.get("captured_at_ms", 0),
             "latest_capture_mode": latest.get("capture_mode", "")}
 
 
