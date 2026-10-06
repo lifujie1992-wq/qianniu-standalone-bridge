@@ -1,6 +1,7 @@
 """Last-mile deterministic guards for the authorized Tmall shop only."""
 import math
 import time
+from taobao_message_contract import message_id, epoch, classification, REVISION
 
 
 def in_scope(account):
@@ -8,23 +9,15 @@ def in_scope(account):
 
 
 def parent_id(value):
-    return str(value or "").removeprefix("qn-msg-v1|taobao|")
+    return message_id(value)
+
+
+def is_platform_context_notice(event):
+    return classification(event) == "context"
 
 
 def timestamp(value):
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(value) or value <= 0:
-        return 0.0
-    if value > 1e17:
-        return value / 1e9
-    if value > 1e14:
-        return value / 1e6
-    if value > 1e11:
-        return value / 1e3
-    return value
+    return epoch(value)
 
 
 def blocked_reason(meta, latest, now=None):
@@ -44,7 +37,7 @@ def blocked_reason(meta, latest, now=None):
         return "tmall_local_parent_missing"
     latest_id = parent_id(latest.get("original_msg_id") or latest.get("msg_id"))
     latest_ts = timestamp(latest.get("original_timestamp") or latest.get("ts"))
-    if latest_id != parent and latest_ts >= parent_ts:
+    if latest_id != parent and (latest.get("_parent_guard_superseded") or latest_ts >= parent_ts):
         return "tmall_command_parent_superseded"
     if latest_id != parent:
         return "tmall_local_parent_mismatch"
@@ -53,7 +46,9 @@ def blocked_reason(meta, latest, now=None):
 
 def parent_guard_evidence(meta, latest):
     latest = latest or {}
-    return {"command_parent_msg_id": meta.get("takeover_parent_msg_id", ""),
+    return {"contract_revision": REVISION, "latest_class": classification(latest),
+            "command_parent_msg_ids": meta.get("takeover_parent_msg_ids", []),
+            "command_parent_msg_id": meta.get("takeover_parent_msg_id", ""),
             "command_parent_ts": timestamp(meta.get("takeover_parent_ts")),
             "latest_local_msg_id": latest.get("original_msg_id") or latest.get("msg_id") or "",
             "latest_local_ts": timestamp(latest.get("original_timestamp") or latest.get("ts")),

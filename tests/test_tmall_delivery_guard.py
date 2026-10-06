@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from standalone_bridge import BrainConnector, StandaloneBridge, StateDB
-from tmall_delivery_guard import blocked_reason, in_scope
+from tmall_delivery_guard import blocked_reason, in_scope, is_platform_context_notice
 
 ACCOUNT = '联想官方旗舰店:燕燕'
 BUYER = '4007146934.1-126446588.1#11001@cntaobao'
@@ -88,6 +88,32 @@ class TmallDeliveryTests(unittest.TestCase):
         self.assertEqual(r['error'],'tmall_command_parent_superseded')
         self.assertEqual(r['parent_guard']['latest_local_msg_id'],'real-new-question')
         self.send.assert_not_called()
+
+    def test_product_page_origin_does_not_replace_reported_buyer_image(self):
+        self.event('parent',self.now,content='https://img.alicdn.com/imgextra/buyer-amp.jpg',
+                   raw_type='105',message_type='image')
+        self.event('origin',self.now+1,content='当前用户来自 商品详情页',raw_type='129')
+        self.command['meta']['takeover_parent_ts']=self.now+12
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
+        self.send.assert_called_once()
+
+    def test_real_new_image_after_platform_notice_still_blocks_old_reply(self):
+        self.event('origin',self.now+1,content='当前用户来自 商品详情页',raw_type='129')
+        self.event('new-image',self.now+2,content='https://img.alicdn.com/imgextra/buyer.jpg',
+                   raw_type='105',message_type='image')
+        r=self.brain.execute_command(self.command)
+        self.assertEqual(r['error'],'tmall_command_parent_superseded')
+        self.assertEqual(r['parent_guard']['latest_local_msg_id'],'new-image')
+        self.send.assert_not_called()
+
+    def test_exact_platform_context_notices_do_not_replace_real_question(self):
+        for i,text in enumerate(('为您推荐宝贝','向您推荐宝贝','邀请您评价','请尽快回复，避免超时')):
+            self.event('notice-'+str(i),self.now+i+1,content=text)
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
+
+    def test_similar_real_buyer_questions_and_image_types_are_not_filtered(self):
+        for text in ('当前用户来自 商品详情页是什么意思？','请尽快回复我','这张图片是怎么回事','帮我推荐宝贝'):
+            self.assertFalse(is_platform_context_notice({'content':text,'raw_type':'129'}))
 
     def test_missing_meta_blocks_only_authorized_shop(self):
         self.command['meta']={}

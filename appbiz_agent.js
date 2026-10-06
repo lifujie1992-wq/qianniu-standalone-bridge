@@ -371,6 +371,12 @@ rpc.exports = {
       helper_loaded: helperModule !== null,
     };
   },
+  preparesend(ccode) {
+    // Passive cached route validation only: no GetNewMsg or native send call.
+    const route = serviceByCcode.get(String(ccode));
+    if (!route || Date.now() - route.seen_at_ms > 120000) return {ok: false};
+    return {ok: selectService(route.service, 'singlemsg_getnewmsg')};
+  },
   sendtext(arg1, arg2, arg3, receiptToken) {
     const ccode = String(arg1);
     const route = serviceByCcode.get(ccode);

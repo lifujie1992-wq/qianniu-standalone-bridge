@@ -30,7 +30,8 @@ import psutil
 import websocket
 
 from app_version import VERSION
-from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, timestamp as tmall_timestamp, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence, parent_id as tmall_parent_id
+from taobao_message_contract import select_parent as tmall_select_parent
+from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence
 from brain_ws import (
     BrainEventChannel,
     BrainWsError,
@@ -766,38 +767,15 @@ class StateDB:
             self._invalidate_session_cache()
             return event_id, True
 
-    def latest_tmall_buyer_event(self, account: str, buyer_id: str, command_parent: str = "") -> dict[str, Any] | None:
-        # Scope by exact seat and conversation; another shop must never
-        # replace the parent we need to validate.
+    def latest_tmall_buyer_event(self, account: str, buyer_id: str, command_parent: str = "", batch_ids=()) -> dict[str, Any] | None:
         with self.lock, self.connect() as connection:
             rows = connection.execute(
                 "SELECT payload FROM events WHERE json_extract(payload,'$.account')=? "
                 "AND json_extract(payload,'$.buyer_id')=? "
-                "AND json_extract(payload,'$.role')='user' ORDER BY created_at DESC",
+                "ORDER BY created_at ASC, rowid ASC",
                 (account, buyer_id),
             ).fetchall()
-        candidates = []
-        for row in rows:
-            event = json.loads(row["payload"])
-            if (event.get("type") == "nickname_update" or event.get("incomplete")
-                    or event.get("identity_uncertain") or event.get("brain_suppressed")
-                    or event.get("capture_mode") == "brain_projection"):
-                continue
-            ts = tmall_timestamp(event.get("original_timestamp") or event.get("ts"))
-            if ts and (event.get("original_msg_id") or event.get("msg_id")):
-                # Transfer notices can arrive after the buyer text in the same
-                # capture second. They must not replace that substantive turn.
-                transfer = bool(re.fullmatch(r"由\s*.+?\s*转交给\s*.+", str(event.get("content") or "").strip()))
-                candidates.append((ts, not transfer, event))
-        parent = tmall_parent_id(command_parent)
-        substantive_parent = any(item[1] and tmall_parent_id(item[2].get("original_msg_id") or item[2].get("msg_id")) == parent
-                                 for item in candidates) if parent else False
-        if substantive_parent:
-            # A platform transfer is not a new buyer question. Its AppBiz
-            # timestamp may be later than the original browser message even
-            # when the buyer message was captured afterwards.
-            candidates = [item for item in candidates if item[1]]
-        return max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
+        return tmall_select_parent([json.loads(row["payload"]) for row in rows], command_parent, batch_ids)
 
     def upsert_local_projection(self, event: dict[str, Any]) -> tuple[str, bool]:
         """Persist a center-side draft for local display without any delivery queue."""
@@ -2722,7 +2700,7 @@ class BrainConnector:
                 }
             guard_tmall_auto = tmall_guard_scope(account) and meta.get("manual_direct") is not True
             if guard_tmall_auto:
-                latest = self.app.db.latest_tmall_buyer_event(account, buyer_id, meta.get("takeover_parent_msg_id", ""))
+                latest = self.app.db.latest_tmall_buyer_event(account, buyer_id, meta.get("takeover_parent_msg_id", ""), meta.get("takeover_parent_msg_ids", ()))
                 reason = tmall_command_blocked(meta, latest)
                 if reason:
                     return {**base_result, "ok": False, "status": "blocked", "error": reason,
@@ -4916,9 +4894,16 @@ class AppBizSendAdapter:
             and self.app.config.get("appbiz_send_abi_validated", False)
         )
 
-    def send_text(self, ccode: str, content: str, pcsource: str) -> dict[str, Any]:
+    def send_text(self, ccode: str, content: str, pcsource: str, *, tmall_account: str = "") -> dict[str, Any]:
         if not self.app.config.get("appbiz_send_abi_validated", False):
             raise RuntimeError("AppBiz send ABI has not passed a tagged acceptance test")
+        if tmall_guard_scope(tmall_account) and self.script is not None and not self.route_ready:
+            exports = getattr(self.script, "exports_sync", None)
+            if callable(getattr(exports, "status", None)):
+                self.refresh_status()
+            if not self.route_ready and callable(getattr(exports, "preparesend", None)):
+                exports.preparesend(ccode)
+                self.refresh_status()
         if not self.route_ready or self.script is None:
             raise RuntimeError(self.last_error or "AppBiz send service is not selected")
         token = ((self.pid & 0xFFFFFFFF) << 32) | (self.next_send_token & 0xFFFFFFFF)
@@ -4926,9 +4911,17 @@ class AppBizSendAdapter:
         if self.next_send_token == 0:
             self.next_send_token = 1
         result = int(self.script.exports_sync.sendtext(ccode, content, pcsource, str(token)))
-        self.refresh_status()
         if result != 0:
             raise RuntimeError(f"AppBiz adapter rejected send with code {result}")
+        # Once the native call accepted the message, a telemetry/read failure
+        # must not re-label it as unsent or make another send safe.
+        if tmall_guard_scope(tmall_account):
+            try:
+                self.refresh_status()
+            except Exception as error:
+                self.last_error = str(error)[:500]
+        else:
+            self.refresh_status()
         callback_received = False
         result_code: int | None = None
         wait_seconds = max(
@@ -4938,7 +4931,13 @@ class AppBizSendAdapter:
         deadline = time.monotonic() + wait_seconds
         started = time.monotonic()
         while self.script is not None and time.monotonic() <= deadline:
-            receipt = self.script.exports_sync.pollsend(str(token))
+            try:
+                receipt = self.script.exports_sync.pollsend(str(token))
+            except Exception as error:
+                if not tmall_guard_scope(tmall_account):
+                    raise
+                self.last_error = str(error)[:500]
+                break
             state = int(receipt.get("state") or 0)
             if state == 1:
                 callback_received = True
@@ -5680,14 +5679,17 @@ class StandaloneBridge:
             # have a route, otherwise sending fails safely.
             if tmall_guard_scope(body.get("tmall_account")):
                 meta = body.get("tmall_command_meta") or {}
-                latest = self.db.latest_tmall_buyer_event(body["tmall_account"], ccode, meta.get("takeover_parent_msg_id", ""))
+                latest = self.db.latest_tmall_buyer_event(body["tmall_account"], ccode, meta.get("takeover_parent_msg_id", ""), meta.get("takeover_parent_msg_ids", ()))
                 reason = tmall_command_blocked(meta, latest)
                 if reason:
                     response = {"status": "blocked", "error": reason, "real_send": False,
                                 "parent_guard": tmall_parent_guard_evidence(meta, latest)}
                     self.db.mark_send_rejected(request_id, payload_hash, reason)
                     return response
-            native_receipt = self.appbiz.send_text(ccode, content, pcsource)
+            if tmall_guard_scope(body.get("tmall_account")):
+                native_receipt = self.appbiz.send_text(ccode, content, pcsource, tmall_account=body["tmall_account"])
+            else:
+                native_receipt = self.appbiz.send_text(ccode, content, pcsource)
         except Exception as error:
             self.db.mark_send_rejected(request_id, payload_hash, str(error))
             raise

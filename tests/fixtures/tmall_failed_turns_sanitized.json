@@ -1,0 +1,4004 @@
+[
+  {
+    "name": "case-01",
+    "parent": "msg-c2293b0391db",
+    "questions": [
+      {
+        "msg_id": "msg-ec34fbd2e6b6",
+        "content": "客户原文-ed147542a806"
+      },
+      {
+        "msg_id": "msg-b3036e06d4f3",
+        "content": "客户原文-2f71067eaa71"
+      },
+      {
+        "msg_id": "msg-c2293b0391db",
+        "content": "客户原文-4b98bf4e7f6a"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791274366,
+        "original_timestamp": 1791274366,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-b00549ee2323",
+        "content": "客户原文-127962fb032e",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274376,
+        "original_timestamp": 1791274376,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-2deb785b490f",
+        "content": "客户原文-b68dab7bba68",
+        "role": "user",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274275,
+        "original_timestamp": 1791274275,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-ec34fbd2e6b6",
+        "content": "客户原文-ed147542a806",
+        "role": "user",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274310,
+        "original_timestamp": 1791274310,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-b3036e06d4f3",
+        "content": "客户原文-2f71067eaa71",
+        "role": "user",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274269,
+        "original_timestamp": 1791274269,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-e45ed822d5fe",
+        "content": "客户原文-94e928f5b2d8",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274329,
+        "original_timestamp": 1791274329,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-c2293b0391db",
+        "content": "客户原文-4b98bf4e7f6a",
+        "role": "user",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274289,
+        "original_timestamp": 1791274289,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-004720d8a727",
+        "content": "客户原文-35ccdcb83dd7",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274338,
+        "original_timestamp": 1791274338,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-fcaa9bcd4740",
+        "content": "客户原文-86931252c03b",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274327,
+        "original_timestamp": 1791274327,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-895e02d4ed6e",
+        "content": "客户原文-eda27abba694",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274266,
+        "original_timestamp": 1791274266,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-5f6e96d4de09",
+        "content": "客户原文-096ee720d2fb",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274363,
+        "original_timestamp": 1791274363,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "102",
+        "msg_id": "msg-387eefb3bfee",
+        "content": "https://img.alicdn.com/test/9c528ed2.jpg",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555885
+      },
+      {
+        "ts": 1791274442,
+        "original_timestamp": 1791274442,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-2a311ca96edc",
+        "content": "客户原文-ab7882427e3f",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555886
+      },
+      {
+        "ts": 1791274390,
+        "original_timestamp": 1791274390,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-8af9a04cd05a",
+        "content": "客户原文-505756636c8c",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555886
+      },
+      {
+        "ts": 1791274385,
+        "original_timestamp": 1791274385,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-c52c7ee46282",
+        "content": "客户原文-1acfb675b090",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555886
+      },
+      {
+        "ts": 1791274395,
+        "original_timestamp": 1791274395,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-c2457e3e9648",
+        "content": "客户原文-d4f5264b6eed",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555886
+      },
+      {
+        "ts": 1791274417,
+        "original_timestamp": 1791274417,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-ff68b417bf4b",
+        "content": "客户原文-43b91c1337c2",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555886
+      },
+      {
+        "ts": 1791274388,
+        "original_timestamp": 1791274388,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-223c57029e38",
+        "content": "客户原文-e642d61d117c",
+        "role": "user",
+        "captured_at_ms": 1791274555886
+      },
+      {
+        "ts": 1791274439,
+        "original_timestamp": 1791274439,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-c6aa79ab6138",
+        "content": "客户原文-552506376377",
+        "role": "user",
+        "captured_at_ms": 1791274555886
+      },
+      {
+        "ts": 1791274401,
+        "original_timestamp": 1791274401,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-fec9ff31878d",
+        "content": "客户原文-f7600028ac37",
+        "role": "user",
+        "captured_at_ms": 1791274555886
+      },
+      {
+        "ts": 1791274399,
+        "original_timestamp": 1791274399,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-3b43e3e98b80",
+        "content": "客户原文-e56632fdd404",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274555886
+      },
+      {
+        "ts": 1791274559,
+        "original_timestamp": 1791274559,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-e4da78cd39a9",
+        "content": "客户原文-3de36cc71d47",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274558751
+      }
+    ],
+    "expected_parent": "msg-c2293b0391db",
+    "expected_selected": "msg-fec9ff31878d",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-02",
+    "parent": "msg-55c50799968a",
+    "questions": [
+      {
+        "msg_id": "msg-55c50799968a",
+        "content": "客户原文-3e67ce8f1a36"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791274440.1,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-bd56a14a93b2",
+        "content": "由 若芹 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791274440103
+      },
+      {
+        "msg_id": "msg-eb5176d5a37b",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791274440864
+      },
+      {
+        "ts": 1791274439,
+        "original_timestamp": 1791274439,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-e705f3787494",
+        "content": "客户原文-8fdce6028b51",
+        "role": "mall_cs",
+        "captured_at_ms": 1791274440865
+      },
+      {
+        "ts": 1791274434,
+        "original_timestamp": 1791274434,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-55c50799968a",
+        "content": "客户原文-3e67ce8f1a36",
+        "role": "user",
+        "captured_at_ms": 1791274440865
+      }
+    ],
+    "expected_parent": "msg-55c50799968a",
+    "expected_selected": "msg-55c50799968a",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-03",
+    "parent": "msg-438793a2fa04",
+    "questions": [
+      {
+        "msg_id": "msg-438793a2fa04",
+        "content": "客户原文-dfb4175e6359"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791276504.567,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-dcd9f0f314e2",
+        "content": "由 然然 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791276504572
+      },
+      {
+        "ts": 1791276442,
+        "original_timestamp": 1791276442,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "383003",
+        "msg_id": "msg-230c83eb7ac3",
+        "content": "客户原文-15d80a53f130",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276521279
+      },
+      {
+        "ts": 1791276444,
+        "original_timestamp": 1791276444,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-bfaac84dcf03",
+        "content": "客户原文-e80bc3bf21f9",
+        "role": "user",
+        "captured_at_ms": 1791276521279
+      },
+      {
+        "ts": 1791276432,
+        "original_timestamp": 1791276432,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-438793a2fa04",
+        "content": "客户原文-dfb4175e6359",
+        "role": "user",
+        "captured_at_ms": 1791276521279
+      },
+      {
+        "ts": 1791276445,
+        "original_timestamp": 1791276445,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-737bc06c1b39",
+        "content": "客户原文-11c1c8efb99a",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276521280
+      },
+      {
+        "ts": 1791276504,
+        "original_timestamp": 1791276504,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-cbd102f54abe",
+        "content": "客户原文-cabbc136a869",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276521280
+      },
+      {
+        "ts": 1791276488,
+        "original_timestamp": 1791276488,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-4af5e35a95b1",
+        "content": "客户原文-40f97b594338",
+        "role": "user",
+        "captured_at_ms": 1791276521280
+      },
+      {
+        "ts": 1791276445,
+        "original_timestamp": 1791276445,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "102",
+        "msg_id": "msg-f1a5b3060deb",
+        "content": "https://img.alicdn.com/test/4ade6bc9.jpg",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276521280
+      },
+      {
+        "ts": 1791276506,
+        "original_timestamp": 1791276506,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-331b830061b0",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276521280
+      },
+      {
+        "ts": 1791276490,
+        "original_timestamp": 1791276490,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-12026978bf83",
+        "content": "由 服务助手 转交给 然然 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791276521280
+      }
+    ],
+    "expected_parent": "msg-438793a2fa04",
+    "expected_selected": "msg-4af5e35a95b1",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-04",
+    "parent": "msg-7e7cf14a81fe",
+    "questions": [
+      {
+        "msg_id": "msg-7e7cf14a81fe",
+        "content": "客户原文-e5657af9f343"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791277069.94,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-9c3d4e3d5439",
+        "content": "客户原文-6db112a20c58",
+        "role": "user",
+        "captured_at_ms": 1791277069942
+      },
+      {
+        "ts": 1791277075.139,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-1a4311d2dccd",
+        "content": "客户原文-b9f2519d4ffd",
+        "role": "user",
+        "captured_at_ms": 1791277075141
+      },
+      {
+        "ts": 1791277072,
+        "original_timestamp": 1791277072,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-b522563a115e",
+        "content": "客户原文-ae8964be3c08",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277082829
+      },
+      {
+        "ts": 1791277083,
+        "original_timestamp": 1791277083,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-e77544568056",
+        "content": "客户原文-310086a03111",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277086354
+      },
+      {
+        "ts": 1791277089,
+        "original_timestamp": 1791277089,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-ef504c9b870b",
+        "content": "客户原文-f239d4ec8167",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277089173
+      },
+      {
+        "ts": 1791277089,
+        "original_timestamp": 1791277089,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-b66184af60e6",
+        "content": "客户原文-f239d4ec8167",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277096360
+      },
+      {
+        "ts": 1791277102.886,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-7e7cf14a81fe",
+        "content": "客户原文-e5657af9f343",
+        "role": "user",
+        "captured_at_ms": 1791277102892
+      },
+      {
+        "ts": 1791277107.141,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-2402e646d683",
+        "content": "客户原文-f9cc9aaeb277",
+        "role": "user",
+        "captured_at_ms": 1791277107143
+      }
+    ],
+    "expected_parent": "msg-7e7cf14a81fe",
+    "expected_selected": "msg-2402e646d683",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-05",
+    "parent": "4332794596651.PNM",
+    "questions": [
+      {
+        "msg_id": "4332794596651.PNM",
+        "content": "客户原文-0ae700874535"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791277047.201,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-e1ac9d18af1d",
+        "content": "由 若芹 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791277047202
+      },
+      {
+        "msg_id": "msg-63bd5d3ed640",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791277049079
+      },
+      {
+        "ts": 1791277040,
+        "original_timestamp": 1791277040,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "4332794596651.PNM",
+        "content": "客户原文-0ae700874535",
+        "role": "user",
+        "captured_at_ms": 1791277049081
+      },
+      {
+        "ts": 1791277046,
+        "original_timestamp": 1791277046,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-24b467f4f894",
+        "content": "客户原文-8fdce6028b51",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277049081
+      },
+      {
+        "ts": 1791277041,
+        "original_timestamp": 1791277041,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-911b4532dc19",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791277049081
+      }
+    ],
+    "expected_parent": "4332794596651.PNM",
+    "expected_selected": "4332794596651.PNM",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-06",
+    "parent": "msg-2752f463629c",
+    "questions": [
+      {
+        "msg_id": "msg-2752f463629c",
+        "content": "客户原文-74570c72706a"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791279325.562,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-a21bd59c7c84",
+        "content": "由 然然 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791279325563
+      },
+      {
+        "ts": 1791279315,
+        "original_timestamp": 1791279315,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-db7da6ba5ec2",
+        "content": "客户原文-823e0b0d66f3",
+        "role": "user",
+        "captured_at_ms": 1791279325569
+      },
+      {
+        "ts": 1791279324,
+        "original_timestamp": 1791279324,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-5c62248503bd",
+        "content": "客户原文-cabbc136a869",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279325569
+      },
+      {
+        "ts": 1791279330,
+        "original_timestamp": 1791279330,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-9a7befa1c0bb",
+        "content": "客户原文-89965c2d2f82",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279330797
+      },
+      {
+        "ts": 1791279331,
+        "original_timestamp": 1791279331,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-41d9ca7adeac",
+        "content": "客户原文-89965c2d2f82",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279333251
+      },
+      {
+        "ts": 1791279356,
+        "original_timestamp": 1791279356,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-9fc7c37acd1a",
+        "content": "客户原文-13723d422de8",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279356797
+      },
+      {
+        "ts": 1791279365.622,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-2752f463629c",
+        "content": "客户原文-74570c72706a",
+        "role": "user",
+        "captured_at_ms": 1791279365626
+      },
+      {
+        "ts": 1791279366.836,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-bd11e9e36370",
+        "content": "客户原文-da5d0399eba8",
+        "role": "user",
+        "captured_at_ms": 1791279366838
+      }
+    ],
+    "expected_parent": "msg-2752f463629c",
+    "expected_selected": "msg-bd11e9e36370",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-07",
+    "parent": "4341021796415.PNM",
+    "questions": [
+      {
+        "msg_id": "msg-2a4e38047252",
+        "content": "客户原文-c2c9f2431ae7"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791280059.222,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-d095db31c53a",
+        "content": "由 然然 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791280059223
+      },
+      {
+        "msg_id": "msg-877d6829e980",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791280061413
+      },
+      {
+        "ts": 1791280048,
+        "original_timestamp": 1791280048,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-2a4e38047252",
+        "content": "客户原文-c2c9f2431ae7",
+        "role": "user",
+        "captured_at_ms": 1791280061416
+      },
+      {
+        "ts": 1791280050,
+        "original_timestamp": 1791280050,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "4341021796415.PNM",
+        "content": "由 服务助手 转交给 然然 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791280061416
+      },
+      {
+        "ts": 1791280058,
+        "original_timestamp": 1791280058,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-ed44fe7484f6",
+        "content": "客户原文-cabbc136a869",
+        "role": "mall_cs",
+        "captured_at_ms": 1791280061417
+      }
+    ],
+    "expected_parent": "msg-2a4e38047252",
+    "expected_selected": "msg-2a4e38047252",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-08",
+    "parent": "4338651246019.PNM",
+    "questions": [
+      {
+        "msg_id": "msg-57f933432088",
+        "content": "客户原文-87e27c80f34e"
+      },
+      {
+        "msg_id": "4338651246019.PNM",
+        "content": "https://img.alicdn.com/test/e2ea0a9d.jpg"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791282102.699,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-474df005b23f",
+        "content": "由 小韩韩 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791282102714
+      },
+      {
+        "ts": 1791282086,
+        "original_timestamp": 1791282086,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-57f933432088",
+        "content": "客户原文-87e27c80f34e",
+        "role": "user",
+        "captured_at_ms": 1791282104671
+      },
+      {
+        "ts": 1791282059,
+        "original_timestamp": 1791282059,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-af4d30d0efd0",
+        "content": "客户原文-64f9cd190eca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791282104671
+      },
+      {
+        "ts": 1791282098,
+        "original_timestamp": 1791282098,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-cad245f7b596",
+        "content": "客户原文-9d47c874d592",
+        "role": "mall_cs",
+        "captured_at_ms": 1791282104672
+      },
+      {
+        "ts": 1791282094,
+        "original_timestamp": 1791282094,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-f3b92b652c53",
+        "content": "由 服务助手 转交给 小韩韩 原因：买家发送视频，平台干预转人工",
+        "role": "user",
+        "captured_at_ms": 1791282104672
+      },
+      {
+        "ts": 1791282092,
+        "original_timestamp": 1791282092,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "105",
+        "msg_id": "4338651246019.PNM",
+        "content": "https://img.alicdn.com/test/e2ea0a9d.jpg",
+        "role": "user",
+        "captured_at_ms": 1791282104672
+      },
+      {
+        "ts": 1791282093,
+        "original_timestamp": 1791282093,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-24596d1e35df",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791282104672
+      },
+      {
+        "ts": 1791282104,
+        "original_timestamp": 1791282104,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-6ad43d7ca3b6",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791282106633
+      }
+    ],
+    "expected_parent": "4338651246019.PNM",
+    "expected_selected": "4338651246019.PNM",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-09",
+    "parent": "msg-02700ba0f162",
+    "questions": [
+      {
+        "msg_id": "msg-51ca56817d7c",
+        "content": "客户原文-e6f764587e4a"
+      },
+      {
+        "msg_id": "msg-02700ba0f162",
+        "content": "客户原文-c88bc39a4590"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791275532,
+        "original_timestamp": 1791275532,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-51ca56817d7c",
+        "content": "客户原文-e6f764587e4a",
+        "role": "user",
+        "captured_at_ms": 1791275544186
+      },
+      {
+        "ts": 1791275532,
+        "original_timestamp": 1791275532,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-02700ba0f162",
+        "content": "客户原文-c88bc39a4590",
+        "role": "user",
+        "captured_at_ms": 1791275544186
+      },
+      {
+        "ts": 1791275542,
+        "original_timestamp": 1791275542,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-ffa35be19b39",
+        "content": "客户原文-9d47c874d592",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275544186
+      },
+      {
+        "ts": 1791275544.189,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-e6d31e418044",
+        "content": "由 小韩韩 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791275544190
+      }
+    ],
+    "expected_parent": "msg-02700ba0f162",
+    "expected_selected": "msg-02700ba0f162",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-10",
+    "parent": "4338505033944.PNM",
+    "questions": [
+      {
+        "msg_id": "4338505033944.PNM",
+        "content": "客户原文-01523e4dcec7"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791275300.82,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-72b6a61526bf",
+        "content": "由 然然 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791275300821
+      },
+      {
+        "ts": 1791275291,
+        "original_timestamp": 1791275291,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "4338505033944.PNM",
+        "content": "客户原文-01523e4dcec7",
+        "role": "user",
+        "captured_at_ms": 1791275300861
+      },
+      {
+        "ts": 1791275300,
+        "original_timestamp": 1791275300,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-722cda87c0eb",
+        "content": "客户原文-cabbc136a869",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275300861
+      }
+    ],
+    "expected_parent": "4338505033944.PNM",
+    "expected_selected": "4338505033944.PNM",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-11",
+    "parent": "msg-d7032a5a77b4",
+    "questions": [
+      {
+        "msg_id": "msg-929fcdd90cd4",
+        "content": "客户原文-8210de0806d8"
+      },
+      {
+        "msg_id": "msg-d7032a5a77b4",
+        "content": "客户原文-4c4b5747d687"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791275818.379,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-d6087f5e460f",
+        "content": "由 服务助手 转交给 燕燕 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791275818380
+      },
+      {
+        "ts": 1791275728,
+        "original_timestamp": 1791275728,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-a741eedd091c",
+        "content": "客户原文-4ea2d5a5c93b",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275818385
+      },
+      {
+        "ts": 1791275726,
+        "original_timestamp": 1791275726,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-929fcdd90cd4",
+        "content": "客户原文-8210de0806d8",
+        "role": "user",
+        "captured_at_ms": 1791275818385
+      },
+      {
+        "ts": 1791275816,
+        "original_timestamp": 1791275816,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-d7032a5a77b4",
+        "content": "客户原文-4c4b5747d687",
+        "role": "user",
+        "captured_at_ms": 1791275818386
+      }
+    ],
+    "expected_parent": "msg-d7032a5a77b4",
+    "expected_selected": "msg-d7032a5a77b4",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-12",
+    "parent": "msg-57d72d738435",
+    "questions": [
+      {
+        "msg_id": "msg-57d72d738435",
+        "content": "客户原文-7bb4448c47e0"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791275625.536,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-9784022b539f",
+        "content": "由 小韩韩 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791275625537
+      },
+      {
+        "ts": 1791275605,
+        "original_timestamp": 1791275605,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-57d72d738435",
+        "content": "客户原文-7bb4448c47e0",
+        "role": "user",
+        "captured_at_ms": 1791275625541
+      },
+      {
+        "ts": 1791275624,
+        "original_timestamp": 1791275624,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-9dd6dca7adbc",
+        "content": "客户原文-9d47c874d592",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275625542
+      }
+    ],
+    "expected_parent": "msg-57d72d738435",
+    "expected_selected": "msg-57d72d738435",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-13",
+    "parent": "msg-b8de42001852",
+    "questions": [
+      {
+        "msg_id": "msg-5e7198e1c99b",
+        "content": "客户原文-670d9743542c"
+      },
+      {
+        "msg_id": "msg-06a688a03902",
+        "content": "客户原文-375c31c7b9a6"
+      },
+      {
+        "msg_id": "msg-b8de42001852",
+        "content": "客户原文-df1a21be86fb"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791277943.509,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-e4aa2bd0ee55",
+        "content": "由 服务助手 转交给 燕燕 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791277943510
+      },
+      {
+        "ts": 1791277906,
+        "original_timestamp": 1791277906,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-cc979a8aef83",
+        "content": "客户原文-8965c3496bba",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277945933
+      },
+      {
+        "msg_id": "msg-112fbf3d87d7",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791277945933
+      },
+      {
+        "ts": 1791277908,
+        "original_timestamp": 1791277908,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-5e7198e1c99b",
+        "content": "客户原文-670d9743542c",
+        "role": "user",
+        "captured_at_ms": 1791277945934
+      },
+      {
+        "ts": 1791277909,
+        "original_timestamp": 1791277909,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-48935500be22",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791277945935
+      },
+      {
+        "ts": 1791277916,
+        "original_timestamp": 1791277916,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "383003",
+        "msg_id": "msg-d3fd300d42cd",
+        "content": "客户原文-ca2e669a8667",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277945935
+      },
+      {
+        "ts": 1791277931,
+        "original_timestamp": 1791277931,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "383003",
+        "msg_id": "msg-c4859366bec0",
+        "content": "客户原文-039cf37e3229",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277945936
+      },
+      {
+        "ts": 1791277941,
+        "original_timestamp": 1791277941,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-b8de42001852",
+        "content": "客户原文-df1a21be86fb",
+        "role": "user",
+        "captured_at_ms": 1791277945936
+      },
+      {
+        "ts": 1791277921,
+        "original_timestamp": 1791277921,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-06a688a03902",
+        "content": "客户原文-375c31c7b9a6",
+        "role": "user",
+        "captured_at_ms": 1791277945936
+      },
+      {
+        "ts": 1791277946,
+        "original_timestamp": 1791277946,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-1522790d09e4",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277946455
+      },
+      {
+        "ts": 1791277951,
+        "original_timestamp": 1791277951,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-70ff2b57548a",
+        "content": "客户原文-07954568fd9a",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277951548
+      }
+    ],
+    "expected_parent": "msg-b8de42001852",
+    "expected_selected": "msg-b8de42001852",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-14",
+    "parent": "msg-22874fa22d23",
+    "questions": [
+      {
+        "msg_id": "msg-22874fa22d23",
+        "content": "客户原文-c5940f27566b"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791277912.315,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-8f588cc8a3bf",
+        "content": "由 服务助手 转交给 燕燕 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791277912316
+      },
+      {
+        "ts": 1791277535,
+        "original_timestamp": 1791277535,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-7920a48de23f",
+        "content": "客户原文-64f9cd190eca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277912336
+      },
+      {
+        "ts": 1791277910,
+        "original_timestamp": 1791277910,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-22874fa22d23",
+        "content": "客户原文-c5940f27566b",
+        "role": "user",
+        "captured_at_ms": 1791277912336
+      }
+    ],
+    "expected_parent": "msg-22874fa22d23",
+    "expected_selected": "msg-22874fa22d23",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-15",
+    "parent": "msg-15ee4089c79e",
+    "questions": [
+      {
+        "msg_id": "msg-15ee4089c79e",
+        "content": "客户原文-b70c30a2c948"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791278046.331,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-dd26cfe4095b",
+        "content": "由 小韩韩 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791278046332
+      },
+      {
+        "ts": 1791278035,
+        "original_timestamp": 1791278035,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-b3c802e21251",
+        "content": "客户原文-64f9cd190eca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278048571
+      },
+      {
+        "ts": 1791278037,
+        "original_timestamp": 1791278037,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-a38311e7d4d4",
+        "content": "https://img.alicdn.com/test/61e94d5f.jpg",
+        "role": "user",
+        "captured_at_ms": 1791278048571
+      },
+      {
+        "ts": 1791278038,
+        "original_timestamp": 1791278038,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-5ff86e20ad28",
+        "content": "由 服务助手 转交给 小韩韩 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791278048572
+      },
+      {
+        "ts": 1791278045,
+        "original_timestamp": 1791278045,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-15ee4089c79e",
+        "content": "客户原文-b70c30a2c948",
+        "role": "user",
+        "captured_at_ms": 1791278048572
+      },
+      {
+        "ts": 1791278037,
+        "original_timestamp": 1791278037,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-abf918de6e04",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791278048572
+      },
+      {
+        "ts": 1791278044,
+        "original_timestamp": 1791278044,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-f874f360d25c",
+        "content": "客户原文-9d47c874d592",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278048572
+      },
+      {
+        "ts": 1791278048,
+        "original_timestamp": 1791278048,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-cd084a847407",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278048712
+      },
+      {
+        "msg_id": "msg-da0622fd00cf",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791278051607
+      }
+    ],
+    "expected_parent": "msg-15ee4089c79e",
+    "expected_selected": "msg-15ee4089c79e",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-16",
+    "parent": "4340961923110.PNM",
+    "questions": [
+      {
+        "msg_id": "4340961923110.PNM",
+        "content": "客户原文-de499ed53660"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791278285.842,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-028996d7303c",
+        "content": "由 若芹 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791278285843
+      },
+      {
+        "msg_id": "msg-0d42c645f82f",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791278286474
+      },
+      {
+        "ts": 1791278270,
+        "original_timestamp": 1791278270,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-632f2b5038f4",
+        "content": "客户原文-64f9cd190eca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278286477
+      },
+      {
+        "ts": 1791278272,
+        "original_timestamp": 1791278272,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-a6b5da1888ea",
+        "content": "由 服务助手 转交给 若芹 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791278286477
+      },
+      {
+        "ts": 1791278271,
+        "original_timestamp": 1791278271,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-6b2ff1bed69f",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791278286477
+      },
+      {
+        "ts": 1791278270,
+        "original_timestamp": 1791278270,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-49175540ce43",
+        "content": "https://img.alicdn.com/test/cf99639c.jpg",
+        "role": "user",
+        "captured_at_ms": 1791278286477
+      },
+      {
+        "ts": 1791278284,
+        "original_timestamp": 1791278284,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-5289231d0674",
+        "content": "客户原文-8fdce6028b51",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278286478
+      },
+      {
+        "ts": 1791278274,
+        "original_timestamp": 1791278274,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "4340961923110.PNM",
+        "content": "客户原文-de499ed53660",
+        "role": "user",
+        "captured_at_ms": 1791278286478
+      }
+    ],
+    "expected_parent": "4340961923110.PNM",
+    "expected_selected": "4340961923110.PNM",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-17",
+    "parent": "msg-0fefbf738450",
+    "questions": [
+      {
+        "msg_id": "msg-f4ccbd6f9238",
+        "content": "https://img.alicdn.com/test/9273c221.jpg"
+      },
+      {
+        "msg_id": "msg-8c27e5bd8398",
+        "content": "客户原文-41f043872f9e"
+      },
+      {
+        "msg_id": "msg-9780a85e862a",
+        "content": "客户原文-2984765b0935"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791277991.988,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-d30883ffe50e",
+        "content": "由 若芹 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791277991989
+      },
+      {
+        "ts": 1791277953,
+        "original_timestamp": 1791277953,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "102",
+        "msg_id": "msg-f4ccbd6f9238",
+        "content": "https://img.alicdn.com/test/9273c221.jpg",
+        "role": "user",
+        "captured_at_ms": 1791277994137
+      },
+      {
+        "ts": 1791277955,
+        "original_timestamp": 1791277955,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-78fe4a6ad179",
+        "content": "客户原文-5a184f708e48",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277994138
+      },
+      {
+        "ts": 1791277969,
+        "original_timestamp": 1791277969,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-9780a85e862a",
+        "content": "客户原文-2984765b0935",
+        "role": "user",
+        "captured_at_ms": 1791277994138
+      },
+      {
+        "ts": 1791277963,
+        "original_timestamp": 1791277963,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-8c27e5bd8398",
+        "content": "客户原文-41f043872f9e",
+        "role": "user",
+        "captured_at_ms": 1791277994138
+      },
+      {
+        "ts": 1791277990,
+        "original_timestamp": 1791277990,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-4d27682f146a",
+        "content": "客户原文-8fdce6028b51",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277994139
+      },
+      {
+        "ts": 1791277977,
+        "original_timestamp": 1791277977,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-689befd5fe28",
+        "content": "客户原文-0689539538e6",
+        "role": "mall_cs",
+        "captured_at_ms": 1791277994139
+      },
+      {
+        "ts": 1791277981,
+        "original_timestamp": 1791277981,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-0fefbf738450",
+        "content": "由 海棠 转交给 若芹",
+        "role": "user",
+        "captured_at_ms": 1791277994139
+      }
+    ],
+    "expected_parent": "msg-9780a85e862a",
+    "expected_selected": "msg-9780a85e862a",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-18",
+    "parent": "msg-9cf6a5aa398f",
+    "questions": [
+      {
+        "msg_id": "msg-67907d43d487",
+        "content": "客户原文-5c2c6f42f478"
+      },
+      {
+        "msg_id": "msg-da810ce4374b",
+        "content": "客户原文-800fe230f8c2"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791278155.99,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-ad7357a89dc7",
+        "content": "由 小韩韩 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791278155991
+      },
+      {
+        "msg_id": "msg-214499ec6a8a",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791278157411
+      },
+      {
+        "ts": 1791276081,
+        "original_timestamp": 1791276081,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-67907d43d487",
+        "content": "客户原文-5c2c6f42f478",
+        "role": "user",
+        "captured_at_ms": 1791278157414
+      },
+      {
+        "ts": 1791276090,
+        "original_timestamp": 1791276090,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "383003",
+        "msg_id": "msg-3d041e384042",
+        "content": "客户原文-39fc5347d5a4",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278157414
+      },
+      {
+        "ts": 1791278148,
+        "original_timestamp": 1791278148,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-9cf6a5aa398f",
+        "content": "由 服务助手 转交给 小韩韩 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791278157415
+      },
+      {
+        "ts": 1791278154,
+        "original_timestamp": 1791278154,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-1442cef40655",
+        "content": "客户原文-9d47c874d592",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278157415
+      },
+      {
+        "ts": 1791278146,
+        "original_timestamp": 1791278146,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-da810ce4374b",
+        "content": "客户原文-800fe230f8c2",
+        "role": "user",
+        "captured_at_ms": 1791278157415
+      },
+      {
+        "ts": 1791278157,
+        "original_timestamp": 1791278157,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-6e11eddd4a2e",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278161471
+      }
+    ],
+    "expected_parent": "msg-da810ce4374b",
+    "expected_selected": "msg-da810ce4374b",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-19",
+    "parent": "msg-d1e9d8b58af0",
+    "questions": [
+      {
+        "msg_id": "msg-d1e9d8b58af0",
+        "content": "客户原文-a71f445d3577"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791278689.655,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-d1e9d8b58af0",
+        "content": "客户原文-a71f445d3577",
+        "role": "user",
+        "captured_at_ms": 1791278689658
+      },
+      {
+        "ts": 1791278306,
+        "original_timestamp": 1791278306,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "102",
+        "msg_id": "msg-4dce058bc6f7",
+        "content": "https://img.alicdn.com/test/bd85dcc9.jpg",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278689920
+      },
+      {
+        "ts": 1791278691.939,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-ccf972ddfd18",
+        "content": "客户原文-41dea5913064",
+        "role": "user",
+        "captured_at_ms": 1791278691944
+      }
+    ],
+    "expected_parent": "msg-d1e9d8b58af0",
+    "expected_selected": "msg-ccf972ddfd18",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-20",
+    "parent": "msg-bc9b0ec700c8",
+    "questions": [
+      {
+        "msg_id": "msg-bc9b0ec700c8",
+        "content": "客户原文-4bbfc2461d03"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791278178,
+        "original_timestamp": 1791278178,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "105",
+        "msg_id": "msg-056340383211",
+        "content": "https://img.alicdn.com/test/135a1597.jpg",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278186469
+      },
+      {
+        "ts": 1791278197.342,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-4cf9cffbd718",
+        "content": "客户原文-a71f445d3577",
+        "role": "user",
+        "captured_at_ms": 1791278197343
+      },
+      {
+        "ts": 1791278202,
+        "original_timestamp": 1791278202,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-1784fb145cfe",
+        "content": "客户原文-0daa950897e0",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278202512
+      },
+      {
+        "ts": 1791278202,
+        "original_timestamp": 1791278202,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-e0eb95ef9c2d",
+        "content": "客户原文-0daa950897e0",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278202670
+      },
+      {
+        "ts": 1791278209.703,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-e347f0511148",
+        "content": "客户原文-87caa576fdc7",
+        "role": "user",
+        "captured_at_ms": 1791278209706
+      },
+      {
+        "ts": 1791278203,
+        "original_timestamp": 1791278203,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-ed7e1fa603fa",
+        "content": "客户原文-2468e58c4e46",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278209723
+      },
+      {
+        "ts": 1791278214,
+        "original_timestamp": 1791278214,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-5a1aeb2b73ce",
+        "content": "客户原文-cb050d94013e",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278213785
+      },
+      {
+        "ts": 1791278214,
+        "original_timestamp": 1791278214,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-7a0fe5dfc28c",
+        "content": "客户原文-cb050d94013e",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278221765
+      },
+      {
+        "ts": 1791278222,
+        "original_timestamp": 1791278222,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-8dba08a06af6",
+        "content": "客户原文-c055be86b888",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278226470
+      },
+      {
+        "ts": 1791278258.477,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-af07dddfbeb4",
+        "content": "客户原文-536edaf7cdd1",
+        "role": "user",
+        "captured_at_ms": 1791278258480
+      },
+      {
+        "ts": 1791278261,
+        "original_timestamp": 1791278261,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-2f11e6bd6c13",
+        "content": "客户原文-ae8964be3c08",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278261140
+      },
+      {
+        "ts": 1791278261,
+        "original_timestamp": 1791278261,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-bed006c57009",
+        "content": "客户原文-ae8964be3c08",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278261476
+      },
+      {
+        "ts": 1791278292.978,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-bc9b0ec700c8",
+        "content": "客户原文-4bbfc2461d03",
+        "role": "user",
+        "captured_at_ms": 1791278292980
+      },
+      {
+        "ts": 1791278298.172,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-93847295cdb3",
+        "content": "客户原文-87d101feee6e",
+        "role": "user",
+        "captured_at_ms": 1791278298174
+      }
+    ],
+    "expected_parent": "msg-bc9b0ec700c8",
+    "expected_selected": "msg-93847295cdb3",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-21",
+    "parent": "msg-93847295cdb3",
+    "questions": [
+      {
+        "msg_id": "msg-93847295cdb3",
+        "content": "客户原文-87d101feee6e"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791278178,
+        "original_timestamp": 1791278178,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "105",
+        "msg_id": "msg-056340383211",
+        "content": "https://img.alicdn.com/test/135a1597.jpg",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278186469
+      },
+      {
+        "ts": 1791278197.342,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-4cf9cffbd718",
+        "content": "客户原文-a71f445d3577",
+        "role": "user",
+        "captured_at_ms": 1791278197343
+      },
+      {
+        "ts": 1791278202,
+        "original_timestamp": 1791278202,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-1784fb145cfe",
+        "content": "客户原文-0daa950897e0",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278202512
+      },
+      {
+        "ts": 1791278202,
+        "original_timestamp": 1791278202,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-e0eb95ef9c2d",
+        "content": "客户原文-0daa950897e0",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278202670
+      },
+      {
+        "ts": 1791278209.703,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-e347f0511148",
+        "content": "客户原文-87caa576fdc7",
+        "role": "user",
+        "captured_at_ms": 1791278209706
+      },
+      {
+        "ts": 1791278203,
+        "original_timestamp": 1791278203,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-ed7e1fa603fa",
+        "content": "客户原文-2468e58c4e46",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278209723
+      },
+      {
+        "ts": 1791278214,
+        "original_timestamp": 1791278214,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-5a1aeb2b73ce",
+        "content": "客户原文-cb050d94013e",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278213785
+      },
+      {
+        "ts": 1791278214,
+        "original_timestamp": 1791278214,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-7a0fe5dfc28c",
+        "content": "客户原文-cb050d94013e",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278221765
+      },
+      {
+        "ts": 1791278222,
+        "original_timestamp": 1791278222,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-8dba08a06af6",
+        "content": "客户原文-c055be86b888",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278226470
+      },
+      {
+        "ts": 1791278258.477,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-af07dddfbeb4",
+        "content": "客户原文-536edaf7cdd1",
+        "role": "user",
+        "captured_at_ms": 1791278258480
+      },
+      {
+        "ts": 1791278261,
+        "original_timestamp": 1791278261,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-2f11e6bd6c13",
+        "content": "客户原文-ae8964be3c08",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278261140
+      },
+      {
+        "ts": 1791278261,
+        "original_timestamp": 1791278261,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-bed006c57009",
+        "content": "客户原文-ae8964be3c08",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278261476
+      },
+      {
+        "ts": 1791278292.978,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-bc9b0ec700c8",
+        "content": "客户原文-4bbfc2461d03",
+        "role": "user",
+        "captured_at_ms": 1791278292980
+      },
+      {
+        "ts": 1791278298.172,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-93847295cdb3",
+        "content": "客户原文-87d101feee6e",
+        "role": "user",
+        "captured_at_ms": 1791278298174
+      },
+      {
+        "ts": 1791278302.927,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-b453f98c246f",
+        "content": "客户原文-15ceee4805cf",
+        "role": "user",
+        "captured_at_ms": 1791278302931
+      }
+    ],
+    "expected_parent": "msg-93847295cdb3",
+    "expected_selected": "msg-b453f98c246f",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-22",
+    "parent": "msg-f799a9c7d1ef",
+    "questions": [
+      {
+        "msg_id": "msg-117d58c917ad",
+        "content": "客户原文-a71f445d3577"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791278345.745,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-117d58c917ad",
+        "content": "客户原文-a71f445d3577",
+        "role": "user",
+        "captured_at_ms": 1791278345746
+      },
+      {
+        "ts": 1791278346.099,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-f799a9c7d1ef",
+        "content": "当前用户来自 订单3316456779203096175",
+        "role": "user",
+        "captured_at_ms": 1791278346099
+      },
+      {
+        "ts": 1791278350.346,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-d58b8c780818",
+        "content": "客户原文-c42849544247",
+        "role": "user",
+        "captured_at_ms": 1791278350348
+      }
+    ],
+    "expected_parent": "msg-117d58c917ad",
+    "expected_selected": "msg-d58b8c780818",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-23",
+    "parent": "msg-d1d51fe39400",
+    "questions": [
+      {
+        "msg_id": "msg-d1d51fe39400",
+        "content": "客户原文-a12e90bb2567"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791278625.91,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-d1d51fe39400",
+        "content": "客户原文-a12e90bb2567",
+        "role": "user",
+        "captured_at_ms": 1791278625913
+      },
+      {
+        "ts": 1791278626.377,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-f431bff4d3be",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791278626377
+      }
+    ],
+    "expected_parent": "msg-d1d51fe39400",
+    "expected_selected": "msg-d1d51fe39400",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-24",
+    "parent": "msg-fb1f0de366dc",
+    "questions": [
+      {
+        "msg_id": "msg-7abe42b837d9",
+        "content": "客户原文-4151ce55468e"
+      },
+      {
+        "msg_id": "msg-fb1f0de366dc",
+        "content": "客户原文-1607bbf1dff5"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791278610.328,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-d87780a86473",
+        "content": "由 小韩韩 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791278610329
+      },
+      {
+        "msg_id": "msg-37ee40cd865c",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791278611506
+      },
+      {
+        "ts": 1791278607,
+        "original_timestamp": 1791278607,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-fb1f0de366dc",
+        "content": "客户原文-1607bbf1dff5",
+        "role": "user",
+        "captured_at_ms": 1791278611508
+      },
+      {
+        "ts": 1791278605,
+        "original_timestamp": 1791278605,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-7abe42b837d9",
+        "content": "客户原文-4151ce55468e",
+        "role": "user",
+        "captured_at_ms": 1791278611508
+      },
+      {
+        "ts": 1791278608,
+        "original_timestamp": 1791278608,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-f2c22560cb55",
+        "content": "客户原文-9d47c874d592",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278611509
+      },
+      {
+        "ts": 1791278612,
+        "original_timestamp": 1791278612,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-9be5ca50b24e",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278612657
+      }
+    ],
+    "expected_parent": "msg-fb1f0de366dc",
+    "expected_selected": "msg-fb1f0de366dc",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-25",
+    "parent": "msg-90b79b7e9a34",
+    "questions": [],
+    "events": [
+      {
+        "ts": 1791278983.567,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-90b79b7e9a34",
+        "content": "由 小金 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791278983570
+      },
+      {
+        "ts": 1791278875,
+        "original_timestamp": 1791278875,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-357cd39811e6",
+        "content": "客户原文-f924794f4adb",
+        "role": "user",
+        "captured_at_ms": 1791278984752
+      },
+      {
+        "ts": 1791278878,
+        "original_timestamp": 1791278878,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-239a0a9a4c55",
+        "content": "客户原文-a155f72d2aa6",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278984753
+      },
+      {
+        "ts": 1791278898,
+        "original_timestamp": 1791278898,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-7c865f870686",
+        "content": "客户原文-155ddd66ff59",
+        "role": "mall_cs",
+        "captured_at_ms": 1791278984753
+      },
+      {
+        "ts": 1791278891,
+        "original_timestamp": 1791278891,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-ee76f78bd71f",
+        "content": "由 小鹏鹏 转交给 小金",
+        "role": "user",
+        "captured_at_ms": 1791278984753
+      },
+      {
+        "ts": 1791278875,
+        "original_timestamp": 1791278875,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-bacd035327c3",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791278984753
+      }
+    ],
+    "expected_parent": "msg-90b79b7e9a34",
+    "expected_selected": "msg-90b79b7e9a34",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-26",
+    "parent": "msg-0539ee9bbbb0",
+    "questions": [],
+    "events": [
+      {
+        "ts": 1791281171.067,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-0539ee9bbbb0",
+        "content": "由 若芹 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791281171070
+      }
+    ],
+    "expected_parent": "msg-0539ee9bbbb0",
+    "expected_selected": "msg-0539ee9bbbb0",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-27",
+    "parent": "msg-9b0c242b3851",
+    "questions": [
+      {
+        "msg_id": "msg-9b0c242b3851",
+        "content": "客户原文-a71f445d3577"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791282457.779,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-9b0c242b3851",
+        "content": "客户原文-a71f445d3577",
+        "role": "user",
+        "captured_at_ms": 1791282457787
+      },
+      {
+        "ts": 1791282462.771,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-8da0d2111c44",
+        "content": "客户原文-4be33614761f",
+        "role": "user",
+        "captured_at_ms": 1791282462773
+      }
+    ],
+    "expected_parent": "msg-9b0c242b3851",
+    "expected_selected": "msg-8da0d2111c44",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-28",
+    "parent": "msg-9b06d8ab6f25",
+    "questions": [
+      {
+        "msg_id": "msg-1c8b22d9ad27",
+        "content": "客户原文-609bc0751d56"
+      },
+      {
+        "msg_id": "msg-9b06d8ab6f25",
+        "content": "客户原文-542d1ad0a397"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791282354.986,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-bd6a7144fa3d",
+        "content": "由 小鹏鹏 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791282354988
+      },
+      {
+        "ts": 1791282167,
+        "original_timestamp": 1791282167,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-1c8b22d9ad27",
+        "content": "客户原文-609bc0751d56",
+        "role": "user",
+        "captured_at_ms": 1791282357097
+      },
+      {
+        "ts": 1791282168,
+        "original_timestamp": 1791282168,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-fb53ba4086ee",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791282357097
+      },
+      {
+        "ts": 1791282175,
+        "original_timestamp": 1791282175,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "383003",
+        "msg_id": "msg-89027a1825cd",
+        "content": "客户原文-ea5d710083d2",
+        "role": "mall_cs",
+        "captured_at_ms": 1791282357097
+      },
+      {
+        "ts": 1791282217,
+        "original_timestamp": 1791282217,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-9b06d8ab6f25",
+        "content": "客户原文-542d1ad0a397",
+        "role": "user",
+        "captured_at_ms": 1791282357097
+      },
+      {
+        "ts": 1791282148,
+        "original_timestamp": 1791282148,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-18814ce684ff",
+        "content": "客户原文-64f9cd190eca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791282357097
+      },
+      {
+        "ts": 1791282353,
+        "original_timestamp": 1791282353,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-4f87b62b1ea8",
+        "content": "客户原文-a155f72d2aa6",
+        "role": "mall_cs",
+        "captured_at_ms": 1791282357098
+      },
+      {
+        "ts": 1791282343,
+        "original_timestamp": 1791282343,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-238736bb7177",
+        "content": "由 服务助手 转交给 小鹏鹏 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791282357098
+      },
+      {
+        "ts": 1791282335,
+        "original_timestamp": 1791282335,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "104",
+        "msg_id": "msg-675bab924a3a",
+        "content": "https://img.alicdn.com/test/a9a2d60d.amr",
+        "role": "user",
+        "captured_at_ms": 1791282357098
+      },
+      {
+        "ts": 1791282226,
+        "original_timestamp": 1791282226,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "383003",
+        "msg_id": "msg-ccf68827f3aa",
+        "content": "客户原文-0c3f9d4bbcc1",
+        "role": "mall_cs",
+        "captured_at_ms": 1791282357098
+      },
+      {
+        "ts": 1791282357,
+        "original_timestamp": 1791282357,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-ab17a98ebc9a",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791282357376
+      }
+    ],
+    "expected_parent": "msg-9b06d8ab6f25",
+    "expected_selected": "msg-675bab924a3a",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-29",
+    "parent": "msg-8da0d2111c44",
+    "questions": [
+      {
+        "msg_id": "msg-8da0d2111c44",
+        "content": "客户原文-4be33614761f"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791282457.779,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-9b0c242b3851",
+        "content": "客户原文-a71f445d3577",
+        "role": "user",
+        "captured_at_ms": 1791282457787
+      },
+      {
+        "ts": 1791282462.771,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-8da0d2111c44",
+        "content": "客户原文-4be33614761f",
+        "role": "user",
+        "captured_at_ms": 1791282462773
+      },
+      {
+        "ts": 1791282466.453,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-819aa3c5dd25",
+        "content": "客户原文-fd4b75a62f92",
+        "role": "user",
+        "captured_at_ms": 1791282466455
+      }
+    ],
+    "expected_parent": "msg-8da0d2111c44",
+    "expected_selected": "msg-819aa3c5dd25",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-30",
+    "parent": "msg-0ef61e8a9ecc",
+    "questions": [
+      {
+        "msg_id": "msg-0ef61e8a9ecc",
+        "content": "客户原文-c89e73002172"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791281171.067,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-0539ee9bbbb0",
+        "content": "由 若芹 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791281171070
+      },
+      {
+        "msg_id": "msg-ef37f685d479",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791281174050
+      },
+      {
+        "ts": 1791281165,
+        "original_timestamp": 1791281165,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-0ef61e8a9ecc",
+        "content": "客户原文-c89e73002172",
+        "role": "user",
+        "captured_at_ms": 1791281174055
+      },
+      {
+        "ts": 1791281169,
+        "original_timestamp": 1791281169,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-504d5a86ae06",
+        "content": "客户原文-8fdce6028b51",
+        "role": "mall_cs",
+        "captured_at_ms": 1791281174056
+      },
+      {
+        "ts": 1791281179.844,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-9bccc0239c95",
+        "content": "客户原文-979e2bc35b14",
+        "role": "user",
+        "captured_at_ms": 1791281179846
+      }
+    ],
+    "expected_parent": "msg-0ef61e8a9ecc",
+    "expected_selected": "msg-9bccc0239c95",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-31",
+    "parent": "msg-46719b8b3f0f",
+    "questions": [
+      {
+        "msg_id": "msg-46719b8b3f0f",
+        "content": "客户原文-646c1f8d1304"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791275734.089,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-cb02917fad67",
+        "content": "由 服务助手 转交给 燕燕 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791275734090
+      },
+      {
+        "msg_id": "msg-8c82495f4a61",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791275736002
+      },
+      {
+        "ts": 1791275732,
+        "original_timestamp": 1791275732,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-150238979750",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791275736004
+      },
+      {
+        "ts": 1791275428,
+        "original_timestamp": 1791275428,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-03ff7c022442",
+        "content": "客户原文-64f9cd190eca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275736004
+      },
+      {
+        "ts": 1791275731,
+        "original_timestamp": 1791275731,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-46719b8b3f0f",
+        "content": "客户原文-646c1f8d1304",
+        "role": "user",
+        "captured_at_ms": 1791275736004
+      },
+      {
+        "ts": 1791275736,
+        "original_timestamp": 1791275736,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-d13cb92907f4",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275736155
+      }
+    ],
+    "expected_parent": "msg-46719b8b3f0f",
+    "expected_selected": "msg-46719b8b3f0f",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-32",
+    "parent": "msg-898c78dc92d1",
+    "questions": [
+      {
+        "msg_id": "msg-898c78dc92d1",
+        "content": "客户原文-a71f445d3577"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791275935.362,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-8867979abe7f",
+        "content": "客户原文-28af7cc61a3b",
+        "role": "user",
+        "captured_at_ms": 1791275935364
+      },
+      {
+        "ts": 1791275941,
+        "original_timestamp": 1791275941,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-e53cf1a61a6d",
+        "content": "客户原文-55d747f6c934",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275941157
+      },
+      {
+        "ts": 1791275943.135,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-6f41fa8bb8cb",
+        "content": "客户原文-7ac0797cf0de",
+        "role": "user",
+        "captured_at_ms": 1791275943138
+      },
+      {
+        "ts": 1791275941,
+        "original_timestamp": 1791275941,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-8c4efd3f1d69",
+        "content": "客户原文-55d747f6c934",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275943147
+      },
+      {
+        "ts": 1791275944,
+        "original_timestamp": 1791275944,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-6bf4a58ce44f",
+        "content": "客户原文-ad0e21ebf3f4",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275944275
+      },
+      {
+        "ts": 1791275948,
+        "original_timestamp": 1791275948,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-f01e92748066",
+        "content": "客户原文-919d82987102",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275948375
+      },
+      {
+        "ts": 1791275949,
+        "original_timestamp": 1791275949,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-641357e4d6bf",
+        "content": "客户原文-919d82987102",
+        "role": "mall_cs",
+        "captured_at_ms": 1791275948559
+      },
+      {
+        "ts": 1791275984.154,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-898c78dc92d1",
+        "content": "客户原文-a71f445d3577",
+        "role": "user",
+        "captured_at_ms": 1791275984157
+      },
+      {
+        "ts": 1791275988.889,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-422ae242937a",
+        "content": "客户原文-b845137deeca",
+        "role": "user",
+        "captured_at_ms": 1791275988893
+      }
+    ],
+    "expected_parent": "msg-898c78dc92d1",
+    "expected_selected": "msg-422ae242937a",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-33",
+    "parent": "msg-12026978bf83",
+    "questions": [
+      {
+        "msg_id": "msg-bfaac84dcf03",
+        "content": "客户原文-e80bc3bf21f9"
+      },
+      {
+        "msg_id": "msg-4af5e35a95b1",
+        "content": "客户原文-40f97b594338"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791276504.567,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-dcd9f0f314e2",
+        "content": "由 然然 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791276504572
+      },
+      {
+        "ts": 1791276442,
+        "original_timestamp": 1791276442,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "383003",
+        "msg_id": "msg-230c83eb7ac3",
+        "content": "客户原文-15d80a53f130",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276521279
+      },
+      {
+        "ts": 1791276444,
+        "original_timestamp": 1791276444,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-bfaac84dcf03",
+        "content": "客户原文-e80bc3bf21f9",
+        "role": "user",
+        "captured_at_ms": 1791276521279
+      },
+      {
+        "ts": 1791276432,
+        "original_timestamp": 1791276432,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-438793a2fa04",
+        "content": "客户原文-dfb4175e6359",
+        "role": "user",
+        "captured_at_ms": 1791276521279
+      },
+      {
+        "ts": 1791276445,
+        "original_timestamp": 1791276445,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-737bc06c1b39",
+        "content": "客户原文-11c1c8efb99a",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276521280
+      },
+      {
+        "ts": 1791276504,
+        "original_timestamp": 1791276504,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-cbd102f54abe",
+        "content": "客户原文-cabbc136a869",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276521280
+      },
+      {
+        "ts": 1791276488,
+        "original_timestamp": 1791276488,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-4af5e35a95b1",
+        "content": "客户原文-40f97b594338",
+        "role": "user",
+        "captured_at_ms": 1791276521280
+      },
+      {
+        "ts": 1791276445,
+        "original_timestamp": 1791276445,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "102",
+        "msg_id": "msg-f1a5b3060deb",
+        "content": "https://img.alicdn.com/test/4ade6bc9.jpg",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276521280
+      },
+      {
+        "ts": 1791276506,
+        "original_timestamp": 1791276506,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-331b830061b0",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276521280
+      },
+      {
+        "ts": 1791276490,
+        "original_timestamp": 1791276490,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-12026978bf83",
+        "content": "由 服务助手 转交给 然然 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791276521280
+      }
+    ],
+    "expected_parent": "msg-4af5e35a95b1",
+    "expected_selected": "msg-4af5e35a95b1",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-34",
+    "parent": "msg-4db62dad4dcb",
+    "questions": [
+      {
+        "msg_id": "msg-4db62dad4dcb",
+        "content": "客户原文-9efbca377347"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791276431.055,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-d3381aa343c1",
+        "content": "由 服务助手 转交给 燕燕 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791276431058
+      },
+      {
+        "ts": 1791276428,
+        "original_timestamp": 1791276428,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-4db62dad4dcb",
+        "content": "客户原文-9efbca377347",
+        "role": "user",
+        "captured_at_ms": 1791276431933
+      },
+      {
+        "ts": 1791276414,
+        "original_timestamp": 1791276414,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-886a37fc8d8f",
+        "content": "客户原文-8965c3496bba",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276431933
+      },
+      {
+        "ts": 1791276436,
+        "original_timestamp": 1791276436,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-0d2ee337812b",
+        "content": "客户原文-11c1ddeda4be",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276436117
+      }
+    ],
+    "expected_parent": "msg-4db62dad4dcb",
+    "expected_selected": "msg-4db62dad4dcb",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-35",
+    "parent": "msg-e5e4f2b187ee",
+    "questions": [
+      {
+        "msg_id": "msg-e5e4f2b187ee",
+        "content": "客户原文-a6605ea7ea5d"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791276091.415,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-1187e0399a01",
+        "content": "由 小鹏鹏 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791276091416
+      },
+      {
+        "msg_id": "msg-dfb6eea6752d",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791276091457
+      },
+      {
+        "ts": 1791276087,
+        "original_timestamp": 1791276087,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-0778525bbd48",
+        "content": "客户原文-a155f72d2aa6",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276091459
+      },
+      {
+        "ts": 1791276051,
+        "original_timestamp": 1791276051,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-e5e4f2b187ee",
+        "content": "客户原文-a6605ea7ea5d",
+        "role": "user",
+        "captured_at_ms": 1791276091459
+      },
+      {
+        "ts": 1791276042,
+        "original_timestamp": 1791276042,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-f9e7730dd5f3",
+        "content": "由 服务助手 转交给 小鹏鹏 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791276091459
+      },
+      {
+        "ts": 1791276041,
+        "original_timestamp": 1791276041,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-1a3e1c43377b",
+        "content": "https://img.alicdn.com/test/cf99639c.jpg",
+        "role": "user",
+        "captured_at_ms": 1791276091459
+      },
+      {
+        "ts": 1791276042,
+        "original_timestamp": 1791276042,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-2527305d490d",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791276091459
+      },
+      {
+        "ts": 1791276026,
+        "original_timestamp": 1791276026,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-0d436659a5e5",
+        "content": "客户原文-8965c3496bba",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276091459
+      }
+    ],
+    "expected_parent": "msg-e5e4f2b187ee",
+    "expected_selected": "msg-1a3e1c43377b",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-36",
+    "parent": "msg-946d8215be95",
+    "questions": [
+      {
+        "msg_id": "msg-946d8215be95",
+        "content": "客户原文-d15efe591afd"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791276154.686,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-b24ffc2b6365",
+        "content": "由 小韩韩 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791276154687
+      },
+      {
+        "msg_id": "msg-7afc08252761",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791276156227
+      },
+      {
+        "ts": 1791276137,
+        "original_timestamp": 1791276137,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-946d8215be95",
+        "content": "客户原文-d15efe591afd",
+        "role": "user",
+        "captured_at_ms": 1791276156228
+      },
+      {
+        "ts": 1791276153,
+        "original_timestamp": 1791276153,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-e89e2a266ed8",
+        "content": "客户原文-9d47c874d592",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276156229
+      },
+      {
+        "ts": 1791276157,
+        "original_timestamp": 1791276157,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-ad674fd6a6cf",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276157547
+      }
+    ],
+    "expected_parent": "msg-946d8215be95",
+    "expected_selected": "msg-946d8215be95",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-37",
+    "parent": "msg-b730ca9a97c3",
+    "questions": [
+      {
+        "msg_id": "msg-3b29869ae83f",
+        "content": "客户原文-084988aa21ab"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791276495.07,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-750b007a9a8f",
+        "content": "由 小韩韩 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791276495072
+      },
+      {
+        "msg_id": "msg-a08ae162d9f1",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791276496811
+      },
+      {
+        "ts": 1791276463,
+        "original_timestamp": 1791276463,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-59a8dd80dbb9",
+        "content": "客户原文-64f9cd190eca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276496813
+      },
+      {
+        "ts": 1791276479,
+        "original_timestamp": 1791276479,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-3b29869ae83f",
+        "content": "客户原文-084988aa21ab",
+        "role": "user",
+        "captured_at_ms": 1791276496813
+      },
+      {
+        "ts": 1791276493,
+        "original_timestamp": 1791276493,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-a7896a0256fc",
+        "content": "客户原文-9d47c874d592",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276496814
+      },
+      {
+        "ts": 1791276480,
+        "original_timestamp": 1791276480,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-3d80367ffaf7",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791276496814
+      },
+      {
+        "ts": 1791276486,
+        "original_timestamp": 1791276486,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-b730ca9a97c3",
+        "content": "由 服务助手 转交给 小韩韩 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791276496814
+      }
+    ],
+    "expected_parent": "msg-3b29869ae83f",
+    "expected_selected": "msg-3b29869ae83f",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-38",
+    "parent": "msg-a5283d504072",
+    "questions": [
+      {
+        "msg_id": "msg-58c9b05b5385",
+        "content": "客户原文-cfec4c427559"
+      },
+      {
+        "msg_id": "msg-b1b3ce8579f9",
+        "content": "客户原文-9014fd0aec14"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791276750.801,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-1ec7bc12e6b3",
+        "content": "由 小鹏鹏 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791276750803
+      },
+      {
+        "ts": 1791276618,
+        "original_timestamp": 1791276618,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-58c9b05b5385",
+        "content": "客户原文-cfec4c427559",
+        "role": "user",
+        "captured_at_ms": 1791276750811
+      },
+      {
+        "ts": 1791276646,
+        "original_timestamp": 1791276646,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-d41fb201c2a8",
+        "content": "客户原文-a155f72d2aa6",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276750811
+      },
+      {
+        "ts": 1791276646,
+        "original_timestamp": 1791276646,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-b1b3ce8579f9",
+        "content": "客户原文-9014fd0aec14",
+        "role": "user",
+        "captured_at_ms": 1791276750811
+      },
+      {
+        "ts": 1791276699,
+        "original_timestamp": 1791276699,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-81d3c2375351",
+        "content": "客户原文-a155f72d2aa6",
+        "role": "mall_cs",
+        "captured_at_ms": 1791276750812
+      },
+      {
+        "ts": 1791276647,
+        "original_timestamp": 1791276647,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-e25535bc7eff",
+        "content": "由 小鹏鹏 转交给 时光",
+        "role": "user",
+        "captured_at_ms": 1791276750812
+      },
+      {
+        "ts": 1791276713,
+        "original_timestamp": 1791276713,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-a5283d504072",
+        "content": "由 时光 转交给 小鹏鹏",
+        "role": "user",
+        "captured_at_ms": 1791276750812
+      }
+    ],
+    "expected_parent": "msg-b1b3ce8579f9",
+    "expected_selected": "msg-b1b3ce8579f9",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-39",
+    "parent": "msg-aa12f162ceff",
+    "questions": [
+      {
+        "msg_id": "msg-88a5cc637756",
+        "content": "客户原文-8ca229382be4"
+      },
+      {
+        "msg_id": "msg-aa12f162ceff",
+        "content": "客户原文-7e3d58a0f186"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791279087.055,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-dfabf54c1862",
+        "content": "由 小显 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791279087056
+      },
+      {
+        "ts": 1791279100.877,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-88a5cc637756",
+        "content": "客户原文-8ca229382be4",
+        "role": "user",
+        "captured_at_ms": 1791279100878
+      },
+      {
+        "ts": 1791279101.268,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-aa12f162ceff",
+        "content": "客户原文-7e3d58a0f186",
+        "role": "user",
+        "captured_at_ms": 1791279101269
+      },
+      {
+        "ts": 1791278865,
+        "original_timestamp": 1791278865,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-cf3ca897e108",
+        "content": "客户原文-f924794f4adb",
+        "role": "user",
+        "captured_at_ms": 1791279104254
+      },
+      {
+        "ts": 1791279084,
+        "original_timestamp": 1791279084,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-a705bb1f74f8",
+        "content": "客户原文-ab7882427e3f",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279104254
+      },
+      {
+        "ts": 1791278865,
+        "original_timestamp": 1791278865,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-96120c12c74a",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791279104254
+      },
+      {
+        "ts": 1791279048,
+        "original_timestamp": 1791279048,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-a74c32208b62",
+        "content": "客户原文-f924794f4adb",
+        "role": "user",
+        "captured_at_ms": 1791279104254
+      },
+      {
+        "ts": 1791278869,
+        "original_timestamp": 1791278869,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-5e3860273f20",
+        "content": "客户原文-4c2b0c10a0af",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279104254
+      },
+      {
+        "ts": 1791279089,
+        "original_timestamp": 1791279089,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-afa1b0e3e834",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279104255
+      },
+      {
+        "ts": 1791279104,
+        "original_timestamp": 1791279104,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-0cf30e15a445",
+        "content": "客户原文-6b86b273ff34",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279106267
+      }
+    ],
+    "expected_parent": "msg-aa12f162ceff",
+    "expected_selected": "msg-aa12f162ceff",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-40",
+    "parent": "msg-2a0955c2c151",
+    "questions": [
+      {
+        "msg_id": "msg-070ba0b312b4",
+        "content": "客户原文-8ca229382be4"
+      },
+      {
+        "msg_id": "msg-2a0955c2c151",
+        "content": "客户原文-7e3d58a0f186"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791279105.758,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-c6e25882b22a",
+        "content": "由 小韩韩 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791279105760
+      },
+      {
+        "ts": 1791279073,
+        "original_timestamp": 1791279073,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-2120c9d5ff50",
+        "content": "客户原文-8965c3496bba",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279107749
+      },
+      {
+        "ts": 1791279075,
+        "original_timestamp": 1791279075,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-528fac684c1d",
+        "content": "客户原文-f924794f4adb",
+        "role": "user",
+        "captured_at_ms": 1791279107749
+      },
+      {
+        "ts": 1791279087,
+        "original_timestamp": 1791279087,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-fcce66ae16b4",
+        "content": "由 服务助手 转交给 小韩韩 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791279107750
+      },
+      {
+        "ts": 1791279076,
+        "original_timestamp": 1791279076,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-5edb90b960ec",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791279107750
+      },
+      {
+        "ts": 1791279098,
+        "original_timestamp": 1791279098,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-f36f1d8fa7d4",
+        "content": "客户原文-536edaf7cdd1",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279107750
+      },
+      {
+        "ts": 1791279108,
+        "original_timestamp": 1791279108,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-5f264238ab45",
+        "content": "客户原文-6b86b273ff34",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279107939
+      },
+      {
+        "ts": 1791279108,
+        "original_timestamp": 1791279108,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-59ae9ef12c21",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279108118
+      },
+      {
+        "ts": 1791279120.646,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-070ba0b312b4",
+        "content": "客户原文-8ca229382be4",
+        "role": "user",
+        "captured_at_ms": 1791279120649
+      },
+      {
+        "ts": 1791279121.143,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-2a0955c2c151",
+        "content": "客户原文-7e3d58a0f186",
+        "role": "user",
+        "captured_at_ms": 1791279121143
+      },
+      {
+        "ts": 1791279123,
+        "original_timestamp": 1791279123,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-6120fad6dab2",
+        "content": "客户原文-6b86b273ff34",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279123035
+      }
+    ],
+    "expected_parent": "msg-2a0955c2c151",
+    "expected_selected": "msg-2a0955c2c151",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-41",
+    "parent": "msg-f9a21539f391",
+    "questions": [],
+    "events": [
+      {
+        "ts": 1791279052.366,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-5f36d330cf42",
+        "content": "由 小鹏鹏 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791279052368
+      },
+      {
+        "ts": 1791279066.687,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-e6acf9a9397f",
+        "content": "客户原文-8ca229382be4",
+        "role": "user",
+        "captured_at_ms": 1791279066689
+      },
+      {
+        "ts": 1791279067.088,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-eb13ed857a47",
+        "content": "客户原文-7e3d58a0f186",
+        "role": "user",
+        "captured_at_ms": 1791279067089
+      },
+      {
+        "ts": 1791279036,
+        "original_timestamp": 1791279036,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-0ec679995f3b",
+        "content": "客户原文-f924794f4adb",
+        "role": "user",
+        "captured_at_ms": 1791279100491
+      },
+      {
+        "ts": 1791279033,
+        "original_timestamp": 1791279033,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-64a1a56d584a",
+        "content": "客户原文-8965c3496bba",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279100491
+      },
+      {
+        "ts": 1791279036,
+        "original_timestamp": 1791279036,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-174ee5928e64",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791279100491
+      },
+      {
+        "ts": 1791279054,
+        "original_timestamp": 1791279054,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-80d48d18a128",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279100492
+      },
+      {
+        "ts": 1791279047,
+        "original_timestamp": 1791279047,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-f9a21539f391",
+        "content": "由 服务助手 转交给 小鹏鹏 原因：机器人接待触发转人工",
+        "role": "user",
+        "captured_at_ms": 1791279100492
+      },
+      {
+        "ts": 1791279050,
+        "original_timestamp": 1791279050,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-7dbeebf8cb16",
+        "content": "客户原文-a155f72d2aa6",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279100492
+      },
+      {
+        "ts": 1791279100,
+        "original_timestamp": 1791279100,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-36d9eda8d5df",
+        "content": "客户原文-6b86b273ff34",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279101368
+      }
+    ],
+    "expected_parent": "msg-f9a21539f391",
+    "expected_selected": "msg-f9a21539f391",
+    "expected_superseded": false
+  },
+  {
+    "name": "case-42",
+    "parent": "msg-8917552f8081",
+    "questions": [],
+    "events": [
+      {
+        "ts": 1791279152.861,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-f15bc8ae8e2b",
+        "content": "由 小显 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791279152862
+      },
+      {
+        "ts": 1791279167.186,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-fe8b066280fd",
+        "content": "客户原文-8ca229382be4",
+        "role": "user",
+        "captured_at_ms": 1791279167189
+      },
+      {
+        "ts": 1791279168.012,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-664b39f034b7",
+        "content": "客户原文-7e3d58a0f186",
+        "role": "user",
+        "captured_at_ms": 1791279168012
+      },
+      {
+        "ts": 1791279077,
+        "original_timestamp": 1791279077,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-8917552f8081",
+        "content": "由 小韩韩 转交给 小显",
+        "role": "user",
+        "captured_at_ms": 1791279177825
+      },
+      {
+        "ts": 1791279022,
+        "original_timestamp": 1791279022,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-f9b04fc4e505",
+        "content": "客户原文-536edaf7cdd1",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279177825
+      },
+      {
+        "ts": 1791279013,
+        "original_timestamp": 1791279013,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-36d0b252547f",
+        "content": "客户原文-f924794f4adb",
+        "role": "user",
+        "captured_at_ms": 1791279177825
+      },
+      {
+        "ts": 1791279013,
+        "original_timestamp": 1791279013,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "129",
+        "msg_id": "msg-4d990f1cc222",
+        "content": "当前用户来自 商品详情页",
+        "role": "user",
+        "captured_at_ms": 1791279177825
+      },
+      {
+        "msg_id": "msg-83c126e9bb5b",
+        "content": "客户原文-e3b0c44298fc",
+        "role": "user",
+        "captured_at_ms": 1791279177825
+      },
+      {
+        "ts": 1791279155,
+        "original_timestamp": 1791279155,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-f7cb6b5983b9",
+        "content": "客户原文-fca4dbf0b9ca",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279177826
+      },
+      {
+        "ts": 1791279147,
+        "original_timestamp": 1791279147,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-de96b0a8e215",
+        "content": "客户原文-4c2b0c10a0af",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279177826
+      },
+      {
+        "ts": 1791279180,
+        "original_timestamp": 1791279180,
+        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
+        "incomplete": false,
+        "identity_uncertain": false,
+        "raw_type": "101",
+        "msg_id": "msg-0fb424d8a66e",
+        "content": "客户原文-6b86b273ff34",
+        "role": "mall_cs",
+        "captured_at_ms": 1791279180479
+      }
+    ],
+    "expected_parent": "msg-8917552f8081",
+    "expected_selected": "msg-36d0b252547f",
+    "expected_superseded": true
+  },
+  {
+    "name": "case-43",
+    "parent": "msg-00d11efe50b6",
+    "questions": [
+      {
+        "msg_id": "msg-b182eb95dc75",
+        "content": "客户原文-8ca229382be4"
+      },
+      {
+        "msg_id": "msg-00d11efe50b6",
+        "content": "客户原文-7e3d58a0f186"
+      }
+    ],
+    "events": [
+      {
+        "ts": 1791279095.978,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-8be3efd6eda9",
+        "content": "由 若芹 转交给 燕燕",
+        "role": "user",
+        "captured_at_ms": 1791279095980
+      },
+      {
+        "ts": 1791279109.979,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-b182eb95dc75",
+        "content": "客户原文-8ca229382be4",
+        "role": "user",
+        "captured_at_ms": 1791279109982
+      },
+      {
+        "ts": 1791279110.694,
+        "capture_mode": "appbiz_native_callback",
+        "raw_type": "text",
+        "msg_id": "msg-00d11efe50b6",
+        "content": "客户原文-7e3d58a0f186",
+        "role": "user",
+        "captured_at_ms": 1791279110695
+      }
+    ],
+    "expected_parent": "msg-00d11efe50b6",
+    "expected_selected": "msg-00d11efe50b6",
+    "expected_superseded": false
+  }
+]
