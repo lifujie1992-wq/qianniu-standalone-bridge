@@ -67,6 +67,28 @@ class TmallDeliveryTests(unittest.TestCase):
         self.command['meta'].update(takeover_parent_msg_id='qn-msg-v1|taobao|transfer', takeover_parent_ts=self.now+1)
         self.assertTrue(self.brain.execute_command(self.command)['real_send'])
 
+    def test_browser_parent_older_timestamp_than_appbiz_transfer_can_send(self):
+        # Report 4332794596651.PNM: transfer original +7.201s, buyer
+        # captured later but browser original time precedes the transfer.
+        self.event('transfer', self.now+7.201, content='由 若芹 转交给 燕燕',
+                   source='qianniu_appbiz_on_message_arrive')
+        self.event('parent', self.now, captured_at_ms=(self.now+9.081)*1000)
+        self.command['meta']['takeover_parent_ts']=self.now+9
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
+        self.send.assert_called_once()
+
+    def test_later_transfer_does_not_invalidate_known_substantive_parent(self):
+        self.event('transfer', self.now+10, content='由 雪晴 转交给 燕燕')
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
+
+    def test_real_new_question_after_transfer_still_blocks_old_reply(self):
+        self.event('transfer',self.now+10,content='由 雪晴 转交给 燕燕')
+        self.event('real-new-question',self.now+1)
+        r=self.brain.execute_command(self.command)
+        self.assertEqual(r['error'],'tmall_command_parent_superseded')
+        self.assertEqual(r['parent_guard']['latest_local_msg_id'],'real-new-question')
+        self.send.assert_not_called()
+
     def test_missing_meta_blocks_only_authorized_shop(self):
         self.command['meta']={}
         self.assertEqual(self.brain.execute_command(self.command)['error'],'tmall_command_parent_missing')

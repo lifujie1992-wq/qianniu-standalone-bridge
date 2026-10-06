@@ -30,7 +30,7 @@ import psutil
 import websocket
 
 from app_version import VERSION
-from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, timestamp as tmall_timestamp, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence
+from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, timestamp as tmall_timestamp, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence, parent_id as tmall_parent_id
 from brain_ws import (
     BrainEventChannel,
     BrainWsError,
@@ -766,7 +766,7 @@ class StateDB:
             self._invalidate_session_cache()
             return event_id, True
 
-    def latest_tmall_buyer_event(self, account: str, buyer_id: str) -> dict[str, Any] | None:
+    def latest_tmall_buyer_event(self, account: str, buyer_id: str, command_parent: str = "") -> dict[str, Any] | None:
         # Scope by exact seat and conversation; another shop must never
         # replace the parent we need to validate.
         with self.lock, self.connect() as connection:
@@ -789,6 +789,14 @@ class StateDB:
                 # capture second. They must not replace that substantive turn.
                 transfer = bool(re.fullmatch(r"由\s*.+?\s*转交给\s*.+", str(event.get("content") or "").strip()))
                 candidates.append((ts, not transfer, event))
+        parent = tmall_parent_id(command_parent)
+        substantive_parent = any(item[1] and tmall_parent_id(item[2].get("original_msg_id") or item[2].get("msg_id")) == parent
+                                 for item in candidates) if parent else False
+        if substantive_parent:
+            # A platform transfer is not a new buyer question. Its AppBiz
+            # timestamp may be later than the original browser message even
+            # when the buyer message was captured afterwards.
+            candidates = [item for item in candidates if item[1]]
         return max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
 
     def upsert_local_projection(self, event: dict[str, Any]) -> tuple[str, bool]:
@@ -2714,7 +2722,7 @@ class BrainConnector:
                 }
             guard_tmall_auto = tmall_guard_scope(account) and meta.get("manual_direct") is not True
             if guard_tmall_auto:
-                latest = self.app.db.latest_tmall_buyer_event(account, buyer_id)
+                latest = self.app.db.latest_tmall_buyer_event(account, buyer_id, meta.get("takeover_parent_msg_id", ""))
                 reason = tmall_command_blocked(meta, latest)
                 if reason:
                     return {**base_result, "ok": False, "status": "blocked", "error": reason,
@@ -5672,7 +5680,7 @@ class StandaloneBridge:
             # have a route, otherwise sending fails safely.
             if tmall_guard_scope(body.get("tmall_account")):
                 meta = body.get("tmall_command_meta") or {}
-                latest = self.db.latest_tmall_buyer_event(body["tmall_account"], ccode)
+                latest = self.db.latest_tmall_buyer_event(body["tmall_account"], ccode, meta.get("takeover_parent_msg_id", ""))
                 reason = tmall_command_blocked(meta, latest)
                 if reason:
                     response = {"status": "blocked", "error": reason, "real_send": False,
