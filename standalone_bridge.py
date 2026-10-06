@@ -30,7 +30,7 @@ import psutil
 import websocket
 
 from app_version import VERSION
-from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, timestamp as tmall_timestamp, projection_status as tmall_projection_status
+from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, timestamp as tmall_timestamp, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence
 from brain_ws import (
     BrainEventChannel,
     BrainWsError,
@@ -785,8 +785,11 @@ class StateDB:
                 continue
             ts = tmall_timestamp(event.get("original_timestamp") or event.get("ts"))
             if ts and (event.get("original_msg_id") or event.get("msg_id")):
-                candidates.append((ts, event))
-        return max(candidates, key=lambda item: item[0])[1] if candidates else None
+                # Transfer notices can arrive after the buyer text in the same
+                # capture second. They must not replace that substantive turn.
+                transfer = bool(re.fullmatch(r"由\s*.+?\s*转交给\s*.+", str(event.get("content") or "").strip()))
+                candidates.append((ts, not transfer, event))
+        return max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
 
     def upsert_local_projection(self, event: dict[str, Any]) -> tuple[str, bool]:
         """Persist a center-side draft for local display without any delivery queue."""
@@ -2711,10 +2714,12 @@ class BrainConnector:
                 }
             guard_tmall_auto = tmall_guard_scope(account) and meta.get("manual_direct") is not True
             if guard_tmall_auto:
-                reason = tmall_command_blocked(meta, self.app.db.latest_tmall_buyer_event(account, buyer_id))
+                latest = self.app.db.latest_tmall_buyer_event(account, buyer_id)
+                reason = tmall_command_blocked(meta, latest)
                 if reason:
                     return {**base_result, "ok": False, "status": "blocked", "error": reason,
-                            "via": "tmall_parent_guard", "real_send": False}
+                            "via": "tmall_parent_guard", "real_send": False,
+                            "parent_guard": tmall_parent_guard_evidence(meta, latest)}
             request_id = "brain-command-" + hashlib.sha256(
                 command_id.encode("utf-8", "surrogatepass")
             ).hexdigest()
@@ -5666,12 +5671,12 @@ class StandaloneBridge:
             # Qianniu's UI cursor. The passive AppBiz observation must already
             # have a route, otherwise sending fails safely.
             if tmall_guard_scope(body.get("tmall_account")):
-                reason = tmall_command_blocked(
-                    body.get("tmall_command_meta") or {},
-                    self.db.latest_tmall_buyer_event(body["tmall_account"], ccode),
-                )
+                meta = body.get("tmall_command_meta") or {}
+                latest = self.db.latest_tmall_buyer_event(body["tmall_account"], ccode)
+                reason = tmall_command_blocked(meta, latest)
                 if reason:
-                    response = {"status": "blocked", "error": reason, "real_send": False}
+                    response = {"status": "blocked", "error": reason, "real_send": False,
+                                "parent_guard": tmall_parent_guard_evidence(meta, latest)}
                     self.db.mark_send_rejected(request_id, payload_hash, reason)
                     return response
             native_receipt = self.appbiz.send_text(ccode, content, pcsource)
