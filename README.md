@@ -218,3 +218,16 @@ py -3.10 tools\inject_runtime_webui.py runtime config.json browser_bridge.js
 原生发送前可从已验证 ABI 和该会话最近捕获的服务句柄恢复发送准备状态。原生接口接受后，状态查询失败保留“已提交、尚未确认”，避免误报未发送并重复提交。此变更的原生路径使用模拟测试，仍需 Windows 千牛实际验证。
 
 回归包含当天 43 条脱敏失败记录。请从此分支构建 1.6.8；旧客户端不包含上述最后一公里修复。
+
+
+### Windows 1.6.9 打包
+
+在 Windows x64 的源码目录运行（需 x64 Python 3.10+）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1
+```
+
+若已有验证过的原生适配器，可使用 `-AdapterPath D:\QianniuAIService\build\appbiz_adapter.dll`；否则脚本会调用现有 MSVC 构建脚本，需 Visual C++ x64 工具链。脚本在独立环境构建 EXE，输出升级 ZIP、源码提交号和 SHA256。
+
+这是升级包，保留现有 `config.json` 和 `runtime`，关闭旧助手后覆盖包内文件。它不包含千牛运行时、不改安装器。Windows 打包和真实发送仍需在 Windows 主机执行验证。

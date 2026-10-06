@@ -30,3 +30,6 @@ config.json
 *.backup-*
 *.pre-*
 *.tmp
+
+# Isolated Windows packaging environment
+.venv-windows-build/
