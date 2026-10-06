@@ -48,6 +48,24 @@ class TmallDeliveryTests(unittest.TestCase):
         r=self.brain.execute_command(self.command)
         self.assertEqual(r['error'],'tmall_command_parent_superseded')
         self.send.assert_not_called()
+        self.assertEqual(r['parent_guard']['latest_local_msg_id'], 'new-question')
+        self.assertEqual(r['parent_guard']['command_parent_msg_id'], 'qn-msg-v1|taobao|parent')
+
+    def test_late_transfer_notice_same_second_does_not_replace_buyer(self):
+        self.event('transfer', self.now, content='由 然然 转交给 燕燕')
+        self.assertEqual(self.db.latest_tmall_buyer_event(ACCOUNT, BUYER)['msg_id'], 'parent')
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
+
+    def test_transfer_is_superseded_by_buyer_in_same_second(self):
+        self.command['meta']['takeover_parent_msg_id']='qn-msg-v1|taobao|transfer'
+        self.event('transfer', self.now, content='由 雪晴 转交给 燕燕')
+        self.assertEqual(self.brain.execute_command(self.command)['error'], 'tmall_command_parent_superseded')
+        self.send.assert_not_called()
+
+    def test_transfer_alone_can_receive_first_response(self):
+        self.event('transfer', self.now+1, content='由 雪晴 转交给 燕燕')
+        self.command['meta'].update(takeover_parent_msg_id='qn-msg-v1|taobao|transfer', takeover_parent_ts=self.now+1)
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
 
     def test_missing_meta_blocks_only_authorized_shop(self):
         self.command['meta']={}
