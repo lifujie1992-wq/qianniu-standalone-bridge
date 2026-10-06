@@ -34,6 +34,28 @@ def epoch(value):
     return value
 
 
+
+NOTICE_REVISION = 'tmall-notice-contract-v1'
+TMALL_NOTICE_PATTERNS = (
+    ('shipping_status', re.compile(r'预计\d+小时内发货[，,|｜\s]+(?:预计[^？?\n]{1,35}送达|承诺\d+小时内发货)[。~～!！]*')),
+    ('refund_expired', re.compile(r'亲[，,]客服帮你申请的退款已过期[，,]请与客服重新沟通[。~～!！]*')),
+    ('refund_retention_status', re.compile(r'您已成功发送退款挽留方案[。！!]请密切关注消费者的反馈[，,]必要时进行服务跟进[，,]有助于提升挽留成功率哦[。~～!！]*')),
+    ('service_risk', re.compile(r'买家近期的咨询不满意风险高[，,]请做好用户接待[，,]及时解决问题[，,]可有效提升满意度[、，,]降低平台求助率[。~～!！]*')),
+)
+
+
+def notification_kind(event):
+    account = str(event.get('account') or '').split(':', 1)[0].split('：', 1)[0]
+    if event.get('shop_id') != 'tb_nick_联想官方旗舰店' and account != '联想官方旗舰店':
+        return ''
+    text = str(event.get('content') or '').strip()
+    if TRANSFER.fullmatch(text):
+        return 'transfer'
+    if any(pattern.fullmatch(text) for pattern in CONTEXT):
+        return 'service_reminder'
+    return next((kind for kind, pattern in TMALL_NOTICE_PATTERNS if pattern.fullmatch(text)), '')
+
+
 def classification(event):
     role = str(event.get("role") or "").strip().lower()
     if role in {"mall_cs", "assistant", "assistant_simulated", "seller", "self"}:
@@ -44,6 +66,8 @@ def classification(event):
     if event.get("type") == "nickname_update":
         return "context"
     content = str(event.get("content") or "").strip()
+    if notification_kind(event) not in {'', 'transfer'}:
+        return 'context'
     if (any(p.fullmatch(content) for p in CONTEXT)
             or content in {"为您推荐宝贝", "向您推荐宝贝", "邀请您评价"}
             or TPS_ASSET.fullmatch(content)):
