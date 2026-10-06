@@ -1,5 +1,6 @@
 """Last-mile deterministic guards for the authorized Tmall shop only."""
 import math
+import re
 import time
 
 
@@ -9,6 +10,15 @@ def in_scope(account):
 
 def parent_id(value):
     return str(value or "").removeprefix("qn-msg-v1|taobao|")
+
+
+def is_platform_context_notice(event):
+    # Exact platform chrome only; neither raw_type nor an image URL alone
+    # proves that an event is a system notification.
+    content = str(event.get("content") or "").strip()
+    return bool(re.fullmatch(r"当前用户来自\s*[:：]?\s*(?:商品详情页|店铺首页|订单详情页|购物车)[。]?", content)
+                or content in {"为您推荐宝贝", "向您推荐宝贝", "邀请您评价"}
+                or re.fullmatch(r"请尽快回复[，,]?\s*避免超时[。.!！]?", content))
 
 
 def timestamp(value):

@@ -30,7 +30,7 @@ import psutil
 import websocket
 
 from app_version import VERSION
-from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, timestamp as tmall_timestamp, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence, parent_id as tmall_parent_id
+from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, timestamp as tmall_timestamp, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence, parent_id as tmall_parent_id, is_platform_context_notice as tmall_platform_context_notice
 from brain_ws import (
     BrainEventChannel,
     BrainWsError,
@@ -781,6 +781,7 @@ class StateDB:
             event = json.loads(row["payload"])
             if (event.get("type") == "nickname_update" or event.get("incomplete")
                     or event.get("identity_uncertain") or event.get("brain_suppressed")
+                    or tmall_platform_context_notice(event)
                     or event.get("capture_mode") == "brain_projection"):
                 continue
             ts = tmall_timestamp(event.get("original_timestamp") or event.get("ts"))
