@@ -477,3 +477,38 @@ test('Tmall transfer emitted by a staff seat keeps a buyer-eligible parent witho
   assert.notEqual(row.nickname,'联想官方旗舰店:雪晴');
   assert.equal(row.original_msg_id,'tmall-staff-transfer');
 });
+
+test('native-only nickname backfill reads explicit cached login identity without replaying chat', async () => {
+  const buyer = '2212089943099.1-126446588.1#11001@cntaobao';
+  const account = '联想官方旗舰店:小山';
+  const cached = {...message(buyer, '2212089943099', '4337282500251.PNM', '你好，我买的随身WiFi用不了'), loginid: {nick: account}};
+  const b = loadBridge({asyncRpc: true, invoke(api) {
+    return api === 'util.GetUserNick' ? {result: {uid: '2212089943099.1', nick: 'dysileib'}} : {result: {list: []}};
+  }});
+  b.window._db.msgDataMap.set(buyer, [cached]);
+  const result = await b.window.__qn_standalone_backfill_nicknames([{account, buyer_id: buyer}]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].nickname, 'dysileib');
+  assert.equal(captured(b).length, 0);
+  assert.equal(captured(b, 'nickname_update')[0].account, account);
+  assert.equal(captured(b, 'nickname_update')[0].buyer_id, buyer);
+});
+
+test('native-only backfill cannot infer login account from target or buyer nickname', async () => {
+  const b = loadBridge({asyncRpc: true});
+  b.window._db.msgDataMap.set(NUMERIC_BUYER, [uidMessage('cached-no-login', {loginid: undefined})]);
+  const result = await b.window.__qn_standalone_backfill_nicknames([{account: 'seller', buyer_id: NUMERIC_BUYER}]);
+  assert.equal(result.length, 0);
+  assert.equal(captured(b, 'nickname_update').length, 0);
+});
+
+test('native-only backfill rejects a different or conflicting cached seller', async () => {
+  for (const accounts of [['other-shop'], ['seller', 'other-shop']]) {
+    const b = loadBridge({asyncRpc: true});
+    b.window._db.msgDataMap.set(NUMERIC_BUYER, accounts.map((account, i) => uidMessage('cached-' + i, {loginid: {nick: account}})));
+    const result = await b.window.__qn_standalone_backfill_nicknames([{account: 'seller', buyer_id: NUMERIC_BUYER}]);
+    assert.equal(result.length, 0);
+    assert.equal(captured(b, 'nickname_update').length, 0);
+    assert.equal(b.calls.some(call => call.api === 'util.GetUserNick'), false);
+  }
+});

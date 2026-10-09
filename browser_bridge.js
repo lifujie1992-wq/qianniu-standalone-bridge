@@ -975,6 +975,23 @@
     return nickPending[key] || Promise.resolve(cachedNickname(account, buyerId));
   }
 
+  function cachedLoginAccount(buyerId) {
+    // Native AppBiz capture does not necessarily produce a browser callback.
+    // Read explicit loginid from this exact conversation's cached messages;
+    // never infer the shop from the requested target or a sender nickname.
+    var value = localMessageValue(buyerId);
+    var rows = Array.isArray(value) ? value : [value];
+    var accounts = {};
+    rows.slice(-100).forEach(function (record) {
+      var detail = adaptLocalMessage(buyerId, record);
+      if (!detail || conversationIdOf(detail.cid || "") !== buyerId) return;
+      var account = nickOf(detail.loginid || detail.loginId || {});
+      if (account) accounts[account] = true;
+    });
+    var names = Object.keys(accounts);
+    return names.length === 1 ? names[0] : "";
+  }
+
   async function backfillNicknames(targets) {
     if (!Array.isArray(targets) || !targets.length) return [];
     await refreshNicknameSessions();
@@ -983,8 +1000,10 @@
     // Only touch targets belonging to this page's observed seller account.
     for (var i = 0; i < Math.min(targets.length, 100); i++) {
       var target = targets[i];
-      if (!target || !lastSellerNick || target.account !== lastSellerNick) continue;
+      if (!target) continue;
       var buyerId = String(target.buyer_id || "");
+      var seller = lastSellerNick || cachedLoginAccount(buyerId);
+      if (!seller || target.account !== seller) continue;
       var mdm = window._db && window._db.msgDataMap;
       var loaded = mdm instanceof Map ? mdm.has(buyerId) : mdm && Object.prototype.hasOwnProperty.call(mdm, buyerId);
       if (!loaded && !knownConversations[buyerId]) continue;
