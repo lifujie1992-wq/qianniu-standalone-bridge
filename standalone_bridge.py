@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import gzip
 import hashlib
 import html
 import json
@@ -19,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zlib
 from dataclasses import dataclass, field
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2158,7 +2160,7 @@ class BrainConnector:
             base + path,
             data=data,
             method=method,
-            headers=self._headers(),
+            headers={**self._headers(), "Accept-Encoding": "gzip"},
         )
         started = time.perf_counter()
         request_timeout = timeout or float(
@@ -2166,9 +2168,9 @@ class BrainConnector:
         )
         try:
             with urllib.request.urlopen(request, timeout=request_timeout) as response:
-                raw = response.read().decode("utf-8", "replace")
+                raw = self._read_http_response(response)
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:400]
+            detail = self._read_http_response(error)[:400]
             raise RuntimeError(f"大脑 HTTP {error.code}: {detail or error.reason}") from error
         finally:
             with self.lock:
@@ -2183,6 +2185,18 @@ class BrainConnector:
         if payload.get("ok") is False:
             raise RuntimeError(str(payload.get("error") or "大脑拒绝了请求"))
         return payload
+
+    @staticmethod
+    def _read_http_response(response: Any) -> str:
+        raw = response.read()
+        headers = getattr(response, "headers", None)
+        encoding = str(headers.get("Content-Encoding") or "").strip().lower() if headers else ""
+        if encoding == "gzip":
+            try:
+                raw = gzip.decompress(raw)
+            except (OSError, EOFError, zlib.error) as error:
+                raise RuntimeError("大脑返回了损坏的 gzip 数据") from error
+        return raw.decode("utf-8", "replace")
 
     def register(self) -> dict[str, Any]:
         with self.lock:
@@ -3060,8 +3074,29 @@ class BrainConnector:
                 "transport": transport,
                 **summary,
                 "event_acks": acknowledgements,
+                "business_rejected": sum(
+                    1 for item in acknowledgements
+                    if isinstance(item, dict) and item.get("status") == "rejected"
+                ),
             }
-        for event in events:
+        ack_by_id = {
+            str(item.get("event_id") or ""): item
+            for item in acknowledgements if isinstance(item, dict)
+        }
+        for row, event in zip(allowed_rows, events):
+            ack = ack_by_id.get(str(row["event_id"])) or {}
+            ack_status = str(ack.get("status") or "")
+            if ack_status in {"rejected", "error", "ignored", "context_traced"}:
+                if ack_status == "rejected":
+                    error = ack.get("error") if isinstance(ack.get("error"), dict) else {}
+                    self.record("event_rejected", "error", "大脑拒绝消息，未进入回复流程", {
+                        "event_id": str(row["event_id"]),
+                        "error_code": str(error.get("code") or ""),
+                        "error": str(error.get("message") or "")[:300],
+                    })
+                # A terminal upload ACK is not acceptance into the reply queue.
+                # Polling its nonexistent conversation only creates repeated 404s.
+                continue
             if str(event.get("role") or "").strip().lower() not in {"user", "buyer", "customer"}:
                 continue
             self.watch_draft(
@@ -3204,7 +3239,7 @@ class BrainConnector:
                     with self.lock:
                         self.last_event_upload_at = time.time()
                         self.last_error = ""
-                    self.record("events", "ok", f"大脑确认 {len(committed)} 条消息", {
+                    self.record("events", "ok", f"上报队列已处理 {len(committed)} 条消息", {
                         "event_ids": sorted(committed), "request_ms": self.last_request_ms,
                     })
                 backoff = 0.5

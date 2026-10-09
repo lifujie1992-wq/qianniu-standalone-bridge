@@ -1,0 +1,30 @@
+--- a/run_frontend_service.py
++++ b/run_frontend_service.py
+@@ -15,6 +15,7 @@
+ 
+ import argparse
+ import hmac
++import gzip
+ import json
+ import mimetypes
+ import os
+@@ -1490,6 +1491,7 @@
+                 self.backend_base + path,
+                 headers={
+                     "Accept": "application/json",
++                    "Accept-Encoding": "gzip",
+                     "X-Agent-Token": self.agent_token,
+                     "X-Agent-Id": self.agent_id,
+                     "X-Device-Id": self.device_id,
+@@ -1498,7 +1500,10 @@
+             )
+             try:
+                 with urlrequest.urlopen(req, timeout=timeout) as response:
+-                    payload = json.loads(response.read().decode("utf-8", "replace"))
++                    raw = response.read()
++                    if str(response.headers.get("Content-Encoding") or "").strip().lower() == "gzip":
++                        raw = gzip.decompress(raw)
++                    payload = json.loads(raw.decode("utf-8", "replace"))
+                 return payload if isinstance(payload, dict) else {}
+             except urlerror.HTTPError as exc:
+                 if int(exc.code) != 403 or attempt:
