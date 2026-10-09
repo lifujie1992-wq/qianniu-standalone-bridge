@@ -1,0 +1,211 @@
+--- a/run_frontend_service.py
++++ b/run_frontend_service.py
+@@ -392,6 +392,7 @@
+         self.shop_ai_takeover: dict[str, bool] = {}
+         self.auth_user: dict = {}
+         self.remote_cache: dict[str, dict] = {}
++        self._http_snapshot_cache: dict[tuple, tuple[str, dict]] = {}
+         self.inflight: set[str] = set()
+         self.backend_base = ""
+         self.agent_token = ""
+@@ -577,14 +578,15 @@
+         config_path: str = "",
+         identity_provider: SeatIdentityProvider | None = None,
+     ) -> None:
+-        self.backend_base = str(backend or "").rstrip("/")
+-        self.agent_token = str(agent_token or "").strip()
+-        self.agent_id = str(agent_id or "").strip()
+-        self.device_id = str(device_id or agent_id or "").strip()
+-        self.platform = str(platform or "pdd").strip().lower()
+-        self.config_path = str(config_path or "").strip()
+-        if identity_provider is not None:
+-            self.identity_provider = identity_provider
++        with self.lock:
++            self.backend_base = str(backend or "").rstrip("/")
++            self.agent_token = str(agent_token or "").strip()
++            self.agent_id = str(agent_id or "").strip()
++            self.device_id = str(device_id or agent_id or "").strip()
++            self.platform = str(platform or "pdd").strip().lower()
++            self.config_path = str(config_path or "").strip()
++            if identity_provider is not None:
++                self.identity_provider = identity_provider
+ 
+     def refresh_identity(self, *, force: bool = False) -> dict[str, str]:
+         provider = self.identity_provider
+@@ -1485,29 +1487,54 @@
+         }
+ 
+     def _remote_json(self, path: str, *, timeout: float = 20.0) -> dict:
++        snapshot = urlsplit(path).path in {"/api/sessions", "/api/seat/v1/bootstrap"}
+         for attempt in range(2):
+             self.refresh_identity(force=attempt > 0)
+-            req = urlrequest.Request(
+-                self.backend_base + path,
+-                headers={
+-                    "Accept": "application/json",
+-                    "Accept-Encoding": "gzip",
+-                    "X-Agent-Token": self.agent_token,
+-                    "X-Agent-Id": self.agent_id,
+-                    "X-Device-Id": self.device_id,
+-                },
+-                method="GET",
+-            )
++            with self.lock:
++                key = (self.backend_base, self.agent_token, self.agent_id, self.device_id, path)
++                cached = self._http_snapshot_cache.get(key) if snapshot else None
++            headers = {
++                "Accept": "application/json", "Accept-Encoding": "gzip",
++                "X-Agent-Token": key[1], "X-Agent-Id": key[2],
++                "X-Device-Id": key[3],
++            }
++            if cached:
++                headers["If-None-Match"] = cached[0]
++            req = urlrequest.Request(key[0] + path, headers=headers, method="GET")
+             try:
+                 with urlrequest.urlopen(req, timeout=timeout) as response:
+                     raw = response.read()
+                     if str(response.headers.get("Content-Encoding") or "").strip().lower() == "gzip":
+                         raw = gzip.decompress(raw)
+                     payload = json.loads(raw.decode("utf-8", "replace"))
+-                return payload if isinstance(payload, dict) else {}
++                    etag = str(response.headers.get("ETag") or "")
++                payload = payload if isinstance(payload, dict) else {}
++                if snapshot:
++                    with self.lock:
++                        if etag:
++                            # The validator is bound to URL and the exact seat identity.
++                            self._http_snapshot_cache[key] = (etag, self._clone(payload))
++                            while len(self._http_snapshot_cache) > 64:
++                                self._http_snapshot_cache.pop(next(iter(self._http_snapshot_cache)))
++                        else:
++                            self._http_snapshot_cache.pop(key, None)
++                return payload
+             except urlerror.HTTPError as exc:
++                if int(exc.code) == 304:
++                    tag = str(exc.headers.get("ETag") or "") if exc.headers else ""
++                    exc.close()
++                    if cached and (not tag or tag == cached[0]):
++                        return self._clone(cached[1])
++                    with self.lock:
++                        self._http_snapshot_cache.pop(key, None)
++                    if attempt == 0:
++                        continue
++                    raise RuntimeError("snapshot validation returned 304 without a matching local snapshot")
+                 if int(exc.code) != 403 or attempt:
+                     raise
++                exc.close()
++                with self.lock:
++                    self._http_snapshot_cache.pop(key, None)
+         return {}
+ 
+     def post_remote_json(self, path: str, payload: dict, *, timeout: float = 20.0) -> dict:
+@@ -1547,11 +1574,14 @@
+             if key in self.inflight:
+                 return
+             self.inflight.add(key)
++            scheduled_identity = (self.backend_base, self.agent_token, self.agent_id, self.device_id)
+ 
+         def refresh() -> None:
+             try:
+                 payload = self._remote_json(path)
+                 with self.lock:
++                    if scheduled_identity != (self.backend_base, self.agent_token, self.agent_id, self.device_id):
++                        return
+                     previous = self.remote_cache.get(path)
+                     changed = previous != payload
+                     self.remote_cache[path] = payload
+--- /dev/null
++++ b/test_gateway_traffic.py
+@@ -0,0 +1,92 @@
++import gzip,json,tempfile,threading,unittest
++from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
++from pathlib import Path
++from urllib import request as urlrequest,error as urlerror
++from unittest.mock import patch
++from run_frontend_service import LocalSeatState
++
++class GatewayTrafficTests(unittest.TestCase):
++    def setUp(self):
++        self.payload={'ok':True,'state':'ai','rows':['测试']*500};self.version='W/"one"';self.calls=[];self.deny=False
++        owner=self
++        class Handler(BaseHTTPRequestHandler):
++            def log_message(self,*args):pass
++            def do_GET(self):
++                owner.calls.append(dict(self.headers))
++                if owner.deny:self.send_response(403);self.end_headers();return
++                if self.headers.get('If-None-Match')==owner.version:
++                    self.send_response(304);self.send_header('ETag',owner.version);self.end_headers();return
++                body=json.dumps(owner.payload,ensure_ascii=False).encode()
++                compressed='gzip' in (self.headers.get('Accept-Encoding') or '')
++                if compressed:body=gzip.compress(body)
++                self.send_response(200);self.send_header('ETag',owner.version)
++                if compressed:self.send_header('Content-Encoding','gzip')
++                self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
++        self.server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
++        threading.Thread(target=self.server.serve_forever,daemon=True).start()
++        self.addCleanup(self.server.server_close);self.addCleanup(self.server.shutdown)
++        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
++        self.state=LocalSeatState(Path(self.temp.name)/'state.json')
++        self.url=f'http://127.0.0.1:{self.server.server_port}'
++        self.state.configure(backend=self.url,agent_token='test-a',agent_id='a')
++        p=patch('run_frontend_service.urlrequest.urlopen',side_effect=urlrequest.build_opener(urlrequest.ProxyHandler({})).open)
++        p.start();self.addCleanup(p.stop)
++    def test_gzip_negotiated(self):
++        self.assertEqual(self.state._remote_json('/api/sessions'),self.payload)
++        self.assertEqual(self.calls[-1].get('Accept-Encoding'),'gzip')
++    def test_304_keeps_payload_and_next_poll_returns_changed_state(self):
++        first=self.state._remote_json('/api/sessions');second=self.state._remote_json('/api/sessions')
++        self.assertEqual(first,second);self.assertEqual(self.calls[-1].get('If-None-Match'),self.version)
++        self.payload['state']='human';self.version='W/"two"'
++        self.assertEqual(self.state._remote_json('/api/sessions')['state'],'human')
++    def test_cache_cannot_mutate_returned_payload(self):
++        first=self.state._remote_json('/api/sessions');first['rows'].clear()
++        self.assertEqual(self.state._remote_json('/api/sessions')['rows'],self.payload['rows'])
++    def test_identity_change_never_uses_previous_validator(self):
++        self.state._remote_json('/api/sessions')
++        self.state.configure(backend=self.url,agent_token='test-b',agent_id='b')
++        self.state._remote_json('/api/sessions')
++        self.assertIsNone(self.calls[-1].get('If-None-Match'))
++    def test_permission_denied_never_returns_cached_success(self):
++        self.state._remote_json('/api/sessions');self.deny=True
++        with self.assertRaises(urlerror.HTTPError):self.state._remote_json('/api/sessions')
++    def test_bootstrap_also_revalidates_every_poll(self):
++        self.state._remote_json('/api/seat/v1/bootstrap');result=self.state._remote_json('/api/seat/v1/bootstrap')
++        self.assertEqual(result,self.payload);self.assertEqual(self.calls[-1].get('If-None-Match'),self.version)
++    def test_different_query_scope_never_reuses_validator(self):
++        self.state._remote_json('/api/sessions?scope=active')
++        self.state._remote_json('/api/sessions?scope=handoff')
++        self.assertIsNone(self.calls[-1].get('If-None-Match'))
++    def test_snapshot_cache_eviction_reloads_without_stale_validator(self):
++        for i in range(70):self.state._remote_json(f'/api/sessions?page={i}')
++        self.assertLessEqual(len(self.state._http_snapshot_cache),64)
++        self.state._remote_json('/api/sessions?page=0')
++        self.assertIsNone(self.calls[-1].get('If-None-Match'))
++
++    def test_commands_never_use_snapshot_validator(self):
++        self.state._remote_json('/api/bridge/v1/commands');self.state._remote_json('/api/bridge/v1/commands')
++        self.assertIsNone(self.calls[-1].get('If-None-Match'))
++    def test_old_identity_response_cannot_replace_current_state(self):
++        entered=threading.Event();release=threading.Event()
++        def fetch(path):entered.set();release.wait(2);return {'active_shop_ids':['old-shop'],'shops':[]}
++        self.state._remote_json=fetch
++        self.state.schedule_refresh('/api/seat/v1/bootstrap')
++        self.assertTrue(entered.wait(1))
++        self.state.configure(backend=self.url,agent_token='test-b',agent_id='b')
++        release.set()
++        for _ in range(100):
++            with self.state.lock:
++                if not self.state.inflight:break
++            threading.Event().wait(.005)
++        self.assertNotIn('/api/seat/v1/bootstrap',self.state.remote_cache)
++        self.assertNotIn('old-shop',self.state.active_shop_ids)
++
++    def test_concurrent_refresh_is_coalesced(self):
++        entered=threading.Event();release=threading.Event();count=[]
++        def fetch(path):count.append(path);entered.set();release.wait(2);return {}
++        self.state._remote_json=fetch
++        self.state.schedule_refresh('/api/sessions');self.assertTrue(entered.wait(1))
++        for i in range(100):self.state.schedule_refresh('/api/sessions')
++        self.assertEqual(len(count),1);release.set()
++
++if __name__=='__main__':unittest.main()
