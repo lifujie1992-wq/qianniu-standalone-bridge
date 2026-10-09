@@ -1257,6 +1257,8 @@ class StateDB:
         self,
         request_id: str,
         payload_hash: str,
+        *,
+        note: str = "",
     ) -> dict[str, Any]:
         now = time.time()
         response = {
@@ -1266,6 +1268,8 @@ class StateDB:
             "submitted": True,
             "confirmed": False,
         }
+        if note:
+            response["error_user"] = note
         with self.lock, self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
@@ -2716,12 +2720,15 @@ class BrainConnector:
                 **({"tmall_account": account, "tmall_command_meta": meta} if guard_tmall_auto else {}),
             }, brain_authorized=True)
             status = str(response.get("status") or "unknown")
+            tmall_receipt = tmall_guard_scope(account)
             return {
                 **base_result,
                 **response,
-                "ok": status in {"in_flight", "submitted", "confirmed"},
+                "ok": (response.get("ok", True) is True and status in {"submitted", "confirmed"})
+                if tmall_receipt else status in {"in_flight", "submitted", "confirmed"},
                 "via": "qianniu_appbiz",
-                "real_send": response.get("real_send", True),
+                "real_send": response.get("real_send", status in {"submitted", "confirmed"})
+                if tmall_receipt else response.get("real_send", True),
                 "command_wall_ms": round((time.perf_counter() - started) * 1000.0, 2),
             }
         if command_type == "open_chat":
@@ -4928,6 +4935,13 @@ class AppBizSendAdapter:
             0.0,
             float(self.app.config.get("appbiz_callback_wait_seconds", 2.0)),
         )
+        if tmall_guard_scope(tmall_account):
+            # Cancelling the native receipt discards subsequent callbacks. Keep
+            # it through the existing confirmation window, including delayed
+            # explicit failures; the sender pool keeps other buyers independent.
+            wait_seconds = max(wait_seconds, min(60.0, max(0.0, float(
+                self.app.config.get("send_confirmation_timeout_seconds", 15.0)
+            ))))
         deadline = time.monotonic() + wait_seconds
         started = time.monotonic()
         while self.script is not None and time.monotonic() <= deadline:
@@ -5693,7 +5707,13 @@ class StandaloneBridge:
         except Exception as error:
             self.db.mark_send_rejected(request_id, payload_hash, str(error))
             raise
-        response = self.db.mark_send_submitted(request_id, payload_hash)
+        unconfirmed_note = ""
+        if (tmall_guard_scope(body.get("tmall_account"))
+                and isinstance(native_receipt, dict)
+                and (native_receipt.get("callback_received") is not True
+                     or native_receipt.get("result_code") != 0)):
+            unconfirmed_note = "千牛未返回有效发送确认，需要人工核对消息是否发出；当前不会自动重发"
+        response = self.db.mark_send_submitted(request_id, payload_hash, note=unconfirmed_note)
         if (
             isinstance(native_receipt, dict)
             and native_receipt.get("callback_received") is True
