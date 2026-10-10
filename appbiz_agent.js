@@ -68,7 +68,8 @@ if (!serviceVtable.add(0x90).readPointer().equals(serviceSendText)) {
 }
 const helperPath = __APPBIZ_ADAPTER_PATH__;
 const selectedServiceHint = __SELECTED_SERVICE__;
-const SERVICE_CCACHE_TTL_MS = 120000;
+// Retain bounded passive routes; legacy callers still enforce 120s on send.
+const SERVICE_CCACHE_TTL_MS = 8 * 60 * 60 * 1000;
 const SERVICE_CCACHE_MAX = 256;
 const MESSAGE_SIZE = 584;
 const MESSAGE_CCODE_OFFSET = 8;
@@ -371,16 +372,16 @@ rpc.exports = {
       helper_loaded: helperModule !== null,
     };
   },
-  preparesend(ccode) {
+  preparesend(ccode, centralExecution) {
     // Passive cached route validation only: no GetNewMsg or native send call.
     const route = serviceByCcode.get(String(ccode));
-    if (!route || Date.now() - route.seen_at_ms > 120000) return {ok: false};
+    if (!route || (!centralExecution && Date.now() - route.seen_at_ms > 120000)) return {ok: false};
     return {ok: selectService(route.service, 'singlemsg_getnewmsg')};
   },
-  sendtext(arg1, arg2, arg3, receiptToken) {
+  sendtext(arg1, arg2, arg3, receiptToken, centralExecution) {
     const ccode = String(arg1);
     const route = serviceByCcode.get(ccode);
-    if (!route || Date.now() - route.seen_at_ms > 120000) {
+    if (!route || (!centralExecution && Date.now() - route.seen_at_ms > 120000)) {
       throw new Error('Qianniu has no recent GetNewMsg context for the target ccode');
     }
     if (!selectService(route.service, 'singlemsg_getnewmsg')) {

@@ -34,22 +34,22 @@ class TmallHandoffSyncTests(unittest.TestCase):
         self.state(handoff=True,handoff_reason='服务端转人工')
         control=self.db.session_control(ACCOUNT,BUYER)
         self.assertEqual(control['handoff_source'],'brain');self.assertEqual(control['handoff_reason'],'服务端转人工')
-    def test_local_manual_pause_is_preserved(self):
+    def test_server_resume_replaces_stale_local_manual_pause(self):
         self.db.set_session_control(ACCOUNT,BUYER,'human','人工接管','manual')
         self.state(handoff=False,ai_takeover_enabled=True)
-        self.assertEqual(self.db.session_control(ACCOUNT,BUYER)['handoff_source'],'manual')
+        self.assertEqual(self.db.session_control(ACCOUNT,BUYER)['ai_mode'],'ai')
         result=self.brain.execute_command(self.command(handoff_notice=True))
-        self.assertFalse(result['ok']);self.app.send_text.assert_not_called()
-    def test_only_authorized_final_notice_can_pass_handoff(self):
+        self.assertTrue(result['ok']);self.app.send_text.assert_called_once()
+    def test_central_send_command_executes_despite_local_handoff_snapshot(self):
         self.state(handoff=True)
-        self.assertFalse(self.brain.execute_command(self.command())['ok'])
-        self.app.send_text.assert_not_called()
+        self.assertTrue(self.brain.execute_command(self.command())['ok'])
+        self.app.send_text.assert_called_once()
         self.assertTrue(self.brain.execute_command(self.command(handoff_notice=True))['ok'])
         self.assertEqual(self.db.session_control(ACCOUNT,BUYER)['ai_mode'],'human')
-    def test_notice_still_requires_fresh_parent(self):
+    def test_notice_does_not_require_local_freshness(self):
         self.state(handoff=True);cmd=self.command(handoff_notice=True);cmd['meta']['expires_at_ms']=1
-        self.assertEqual(self.brain.execute_command(cmd)['error'],'tmall_command_expired')
-        self.app.send_text.assert_not_called()
+        self.assertTrue(self.brain.execute_command(cmd)['ok'])
+        self.app.send_text.assert_called_once()
     def test_keywords_do_not_independently_pause_tmall(self):
         app=StandaloneBridge.__new__(StandaloneBridge);app.config={'delivery_enabled':True};app.db=self.db
         app.delivery=SimpleNamespace(wakeup=threading.Event());app.context=SimpleNamespace(enqueue=Mock())

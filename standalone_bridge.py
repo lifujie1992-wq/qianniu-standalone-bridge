@@ -168,7 +168,9 @@ def suggested_handoff_reason(event: dict[str, Any]) -> str:
 
 
 def brain_event_suppression_reason(event: dict[str, Any]) -> str:
-    """Exclude platform chrome while preserving real buyer-uploaded images."""
+    """Other shops retain filtering; Tmall sends raw platform input to brain."""
+    if tmall_guard_scope(event.get("account")):
+        return ""
     content = str(event.get("content") or "").strip()
     media_values = {
         str(event.get(key) or "").strip()
@@ -366,7 +368,7 @@ def normalize_native_frame(raw: str) -> list[dict[str, Any]]:
             row.get("messageId") or row.get("msgid") or mcode.get("messageId") or mcode.get("msgid") or ""
         ).strip()
         content = content_value(row)
-        if not message_id or not content:
+        if not message_id:
             continue
         from_id = row.get("fromid") or row.get("fromId") or {}
         to_id = row.get("toid") or row.get("toId") or {}
@@ -377,6 +379,8 @@ def normalize_native_frame(raw: str) -> list[dict[str, Any]]:
         login = row.get("loginid") or row.get("loginId") or {}
         seller_target = party_value(login, "targetId", "userid", "uid")
         seller_nick = party_value(login, "nick", "display")
+        if not content and not tmall_guard_scope(seller_nick):
+            continue
         is_self = bool(row.get("isself")) or bool(seller_target and from_target == seller_target)
         buyer_id = to_target if is_self else from_target
         buyer_nick = to_nick if is_self else from_nick
@@ -400,9 +404,17 @@ def normalize_native_frame(raw: str) -> list[dict[str, Any]]:
             "original_timestamp": timestamp_value,
             "source": "qianniu_standalone_native",
             "capture_mode": "native_callback",
+            **({"raw_message": row} if tmall_guard_scope(seller_nick) else {}),
             "raw_type": str(row.get("msgtype") or row.get("templateId") or ""),
         }))
     return output
+
+
+class ConfirmedSendRejection(RuntimeError):
+    """Transport proved this attempt did not send; retry cannot duplicate it."""
+    def __init__(self, message: str, *, retryable: bool = True):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass
@@ -1260,6 +1272,15 @@ class StateDB:
             )
             return True, None
 
+    def mark_send_unknown(self, request_id: str, payload_hash: str, error: str) -> dict[str, Any]:
+        response = {"ok": False, "request_id": request_id, "status": "unknown",
+                    "confirmed": False, "real_send": False, "error": error[:500],
+                    "error_user": "发送结果未确认，需要核对千牛发送回显；不会盲目重发"}
+        with self.lock, self.connect() as connection:
+            connection.execute("UPDATE sends SET status='unknown',response=?,updated_at=? WHERE request_id=? AND payload_hash=? AND status='in_flight'",
+                               (json_text(response), time.time(), request_id, payload_hash))
+        return response
+
     def mark_send_submitted(
         self,
         request_id: str,
@@ -1532,7 +1553,7 @@ class StateDB:
                 except (TypeError, ValueError):
                     continue
                 if (
-                    payload.get("brain_suppressed")
+                    (payload.get("brain_suppressed") and not tmall_guard_scope(payload.get("account")))
                     or brain_event_suppression_reason(payload)
                     or str(payload.get("capture_mode") or "") == "brain_projection"
                     or str(payload.get("source") or "") == "brain_shadow"
@@ -2479,7 +2500,7 @@ class BrainConnector:
         if handoff:
             normalized_reason = str(reason or "大脑判断需要人工介入")[:200]
             if (current["ai_mode"] == "human" and current["handoff_source"] != "brain"
-                    and not (tmall_guard_scope(account) and current["handoff_source"] in {"automatic", "brain_pause"})):
+                    and not tmall_guard_scope(account)):
                 return False
             if (
                 current["ai_mode"] == "human"
@@ -2492,7 +2513,7 @@ class BrainConnector:
             )
             return True
         if (current["ai_mode"] == "human" and (current["handoff_source"] == "brain"
-                or (tmall_guard_scope(account) and current["handoff_source"] == "automatic"))):
+                or (tmall_guard_scope(account) and current["handoff_source"] in {"automatic", "manual"}))):
             self.app.db.set_session_control(account, buyer_id, "ai", "", "brain")
             return True
         return False
@@ -2650,6 +2671,21 @@ class BrainConnector:
             "command_id": command_id, "request_ms": self.last_request_ms,
         })
 
+    def set_tmall_session_mode(self, account: str, buyer_id: str, mode: str, reason: str = "") -> dict[str, Any]:
+        if mode not in {"human", "ai"} or not account or not buyer_id:
+            raise ValueError("account, buyer_id and human/ai mode required")
+        event_id = "qn-control-v1|" + uuid.uuid4().hex
+        result = self.request("POST", "/api/bridge/v1/events", {
+            "agent_id": self.agent_id(), "events": [{
+                "event_id": event_id, "platform": "taobao", "type": "session_control",
+                "account": account, "buyer_id": buyer_id, "mode": mode, "reason": reason,
+            }],
+        })
+        ack = next((ack for ack in result.get("event_acks", []) if ack.get("event_id") == event_id), {})
+        if ack.get("status") != "session_control_applied" or ack.get("committed") is not True:
+            raise RuntimeError("大脑未确认会话接管状态，请重试；本机没有独立修改发送规则")
+        return self.app.db.set_session_control(account, buyer_id, mode, reason, "brain")
+
     def execute_command(self, command: dict[str, Any]) -> dict[str, Any]:
         command_id = str(command.get("id") or command.get("command_id") or "").strip()
         command_type = str(command.get("type") or "send_text").strip().lower()
@@ -2695,7 +2731,8 @@ class BrainConnector:
                     self.app.db.set_session_control(account, buyer_id, "human", reason, "brain_pause")
             return {**base_result, "ok": True, "status": "applied", "changed": changed, "real_send": False}
         if command_type == "send_text":
-            if not self.app.config.get("brain_ai_reply_enabled", True):
+            central_tmall = tmall_guard_scope(account)
+            if not central_tmall and not self.app.config.get("brain_ai_reply_enabled", True):
                 return {
                     **base_result,
                     "ok": False,
@@ -2704,13 +2741,13 @@ class BrainConnector:
                     "error_user": "本机已暂停 AI 自动回复",
                     "real_send": False,
                 }
-            safety = outbound_safety_result(content)
+            safety = {} if central_tmall else outbound_safety_result(content)
             if safety:
                 return {**base_result, **safety}
             control = self.app.db.session_control(account, buyer_id)
             handoff_notice = (tmall_guard_scope(account) and meta.get("handoff_notice") is True
                               and control["handoff_source"] in {"brain", "automatic"})
-            if control["ai_mode"] == "human" and not handoff_notice:
+            if not central_tmall and control["ai_mode"] == "human" and not handoff_notice:
                 return {
                     **base_result,
                     "ok": False,
@@ -2721,14 +2758,6 @@ class BrainConnector:
                     "real_send": False,
                     "handoff_reason": control["handoff_reason"],
                 }
-            guard_tmall_auto = tmall_guard_scope(account) and meta.get("manual_direct") is not True
-            if guard_tmall_auto:
-                latest = self.app.db.latest_tmall_buyer_event(account, buyer_id, meta.get("takeover_parent_msg_id", ""), meta.get("takeover_parent_msg_ids", ()))
-                reason = tmall_command_blocked(meta, latest)
-                if reason:
-                    return {**base_result, "ok": False, "status": "blocked", "error": reason,
-                            "via": "tmall_parent_guard", "real_send": False,
-                            "parent_guard": tmall_parent_guard_evidence(meta, latest)}
             request_id = "brain-command-" + hashlib.sha256(
                 command_id.encode("utf-8", "surrogatepass")
             ).hexdigest()
@@ -2736,7 +2765,7 @@ class BrainConnector:
                 "request_id": request_id,
                 "buyer_cid": buyer_id,
                 "content": content,
-                **({"tmall_account": account, "tmall_command_meta": meta} if guard_tmall_auto else {}),
+                **({"tmall_account": account, "tmall_command_meta": meta} if central_tmall else {}),
             }, brain_authorized=True)
             status = str(response.get("status") or "unknown")
             tmall_receipt = tmall_guard_scope(account)
@@ -5002,23 +5031,24 @@ class AppBizSendAdapter:
 
     def send_text(self, ccode: str, content: str, pcsource: str, *, tmall_account: str = "") -> dict[str, Any]:
         if not self.app.config.get("appbiz_send_abi_validated", False):
-            raise RuntimeError("AppBiz send ABI has not passed a tagged acceptance test")
+            raise ConfirmedSendRejection("AppBiz send ABI has not passed a tagged acceptance test", retryable=False)
         if tmall_guard_scope(tmall_account) and self.script is not None and not self.route_ready:
             exports = getattr(self.script, "exports_sync", None)
             if callable(getattr(exports, "status", None)):
                 self.refresh_status()
             if not self.route_ready and callable(getattr(exports, "preparesend", None)):
-                exports.preparesend(ccode)
+                exports.preparesend(ccode, True)
                 self.refresh_status()
         if not self.route_ready or self.script is None:
-            raise RuntimeError(self.last_error or "AppBiz send service is not selected")
+            raise ConfirmedSendRejection(self.last_error or "AppBiz send service is not selected")
         token = ((self.pid & 0xFFFFFFFF) << 32) | (self.next_send_token & 0xFFFFFFFF)
         self.next_send_token = (self.next_send_token + 1) & 0xFFFFFFFF
         if self.next_send_token == 0:
             self.next_send_token = 1
-        result = int(self.script.exports_sync.sendtext(ccode, content, pcsource, str(token)))
+        send_args = (ccode, content, pcsource, str(token))
+        result = int(self.script.exports_sync.sendtext(*send_args, True) if tmall_guard_scope(tmall_account) else self.script.exports_sync.sendtext(*send_args))
         if result != 0:
-            raise RuntimeError(f"AppBiz adapter rejected send with code {result}")
+            raise ConfirmedSendRejection(f"AppBiz adapter rejected send with code {result}")
         # Once the native call accepted the message, a telemetry/read failure
         # must not re-label it as unsent or make another send safe.
         if tmall_guard_scope(tmall_account):
@@ -5073,11 +5103,11 @@ class AppBizSendAdapter:
                 pass
         if callback_received and result_code not in {0, -2147483648}:
             if result_code == 5:
-                raise RuntimeError(
+                raise ConfirmedSendRejection(
                     "Qianniu MessageSDK rejected send: conversation context is not ready "
                     "(result code 5, CheckConvExist_error)"
                 )
-            raise RuntimeError(f"Qianniu MessageSDK rejected send with result code {result_code}")
+            raise ConfirmedSendRejection(f"Qianniu MessageSDK rejected send with result code {result_code}")
         return {
             "native_submitted": True,
             "callback_received": callback_received,
@@ -5424,13 +5454,12 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             try:
                 body = self.read_json()
                 mode = str(body.get("mode") or "").strip().lower()
-                control = self.app.db.set_session_control(
-                    str(body.get("account") or ""),
-                    str(body.get("buyer_id") or ""),
-                    mode,
-                    str(body.get("reason") or ("人工接管" if mode == "human" else "")),
-                    "manual",
-                )
+                account = str(body.get("account") or "")
+                buyer_id = str(body.get("buyer_id") or "")
+                reason = str(body.get("reason") or ("人工接管" if mode == "human" else ""))
+                control = (self.app.brain.set_tmall_session_mode(account, buyer_id, mode, reason)
+                           if tmall_guard_scope(account)
+                           else self.app.db.set_session_control(account, buyer_id, mode, reason, "manual"))
                 self.app.brain.record(
                     "handoff",
                     "warn" if mode == "human" else "ok",
@@ -5440,6 +5469,8 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 self.send_json(200, {"ok": True, "control": control})
             except ValueError as error:
                 self.send_json(400, {"ok": False, "error": str(error)})
+            except (OSError, RuntimeError) as error:
+                self.send_json(502, {"ok": False, "error": str(error)})
             return
         if path == "/api/v1/reply":
             if not self.workbench_authorized():
@@ -5725,7 +5756,7 @@ class StandaloneBridge:
                     float(self.config.get("brain_handoff_ttl_seconds", 3600.0)),
                 )
                 control = self.db.session_control(account, buyer_id)
-            if control["ai_mode"] == "human":
+            if control["ai_mode"] == "human" and not tmall_guard_scope(account):
                 normalized.update({
                     "handoff": True,
                     "handoff_reason": control["handoff_reason"],
@@ -5762,7 +5793,8 @@ class StandaloneBridge:
     def send_text(
         self, body: dict[str, Any], *, brain_authorized: bool = False
     ) -> dict[str, Any]:
-        if not self.config.get("send_enabled", False):
+        central_tmall = brain_authorized and tmall_guard_scope(body.get("tmall_account"))
+        if not central_tmall and not self.config.get("send_enabled", False):
             raise RuntimeError("real sending is disabled by configuration")
         if not brain_authorized:
             raise RuntimeError("real sending requires a backend brain command")
@@ -5790,21 +5822,30 @@ class StandaloneBridge:
             # Never fetch new messages to prepare a send: GetNewMsg can advance
             # Qianniu's UI cursor. The passive AppBiz observation must already
             # have a route, otherwise sending fails safely.
-            if tmall_guard_scope(body.get("tmall_account")):
-                meta = body.get("tmall_command_meta") or {}
-                latest = self.db.latest_tmall_buyer_event(body["tmall_account"], ccode, meta.get("takeover_parent_msg_id", ""), meta.get("takeover_parent_msg_ids", ()))
-                reason = tmall_command_blocked(meta, latest)
-                if reason:
-                    response = {"status": "blocked", "error": reason, "real_send": False,
-                                "parent_guard": tmall_parent_guard_evidence(meta, latest)}
-                    self.db.mark_send_rejected(request_id, payload_hash, reason)
-                    return response
-            if tmall_guard_scope(body.get("tmall_account")):
-                native_receipt = self.appbiz.send_text(ccode, content, pcsource, tmall_account=body["tmall_account"])
-            else:
-                native_receipt = self.appbiz.send_text(ccode, content, pcsource)
+            attempts = 0
+            while True:
+                attempts += 1
+                try:
+                    native_receipt = (self.appbiz.send_text(ccode, content, pcsource, tmall_account=body["tmall_account"])
+                                      if central_tmall else self.appbiz.send_text(ccode, content, pcsource))
+                    break
+                except ConfirmedSendRejection as error:
+                    if not central_tmall or not error.retryable or attempts >= 3:
+                        raise
+                    # Same request remains in_flight throughout these attempts.
+                    # Only proven rejection permits another native call.
+                    self.stop_event.wait(min(0.5 * attempts, 1.0))
+        except ConfirmedSendRejection as error:
+            response = self.db.mark_send_rejected(request_id, payload_hash, str(error))
+            if not central_tmall:
+                raise
+            return {**response, "real_send": False, "send_attempts": attempts,
+                    "failure_class": "confirmed_native_rejection", "retry_exhausted": error.retryable}
         except Exception as error:
-            self.db.mark_send_rejected(request_id, payload_hash, str(error))
+            if central_tmall:
+                self.db.mark_send_unknown(request_id, payload_hash, str(error))
+            else:
+                self.db.mark_send_rejected(request_id, payload_hash, str(error))
             raise
         unconfirmed_note = ""
         if (tmall_guard_scope(body.get("tmall_account"))

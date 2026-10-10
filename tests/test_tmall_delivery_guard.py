@@ -51,31 +51,29 @@ class TmallDeliveryTests(unittest.TestCase):
     def test_new_verified_buyer_sender_still_supersedes_older_parent(self):
         self.event('new', self.now, role='unknown', identity_uncertain=True,
                    sender_uid='4007146934.1', login_uid='126446588.1')
-        self.assertEqual(self.brain.execute_command(self.command)['error'], 'tmall_command_parent_superseded')
-        self.send.assert_not_called()
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
+        self.send.assert_called()
 
     def test_actual_staff_sender_cannot_become_buyer_parent(self):
         self.event('staff', self.now + 1, sender_uid='126446588.1', login_uid='126446588')
         self.assertEqual(self.db.latest_tmall_buyer_event(ACCOUNT, BUYER)['msg_id'], 'parent')
 
-    def test_unknown_without_sender_proof_remains_ineligible(self):
+    def test_client_does_not_reclassify_central_command_parent(self):
         self.event('parent', self.now, role='unknown', identity_uncertain=True)
-        self.assertFalse(self.brain.execute_command(self.command)['real_send'])
-        self.send.assert_not_called()
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
+        self.send.assert_called()
 
-    def test_expired_never_calls_sender(self):
+    def test_expired_metadata_does_not_veto_central_command(self):
         self.command['meta']['expires_at_ms']=1
         r=self.brain.execute_command(self.command)
-        self.assertEqual(r['error'],'tmall_command_expired')
-        self.assertFalse(r['real_send']); self.send.assert_not_called()
+        self.assertTrue(r['real_send'])
+        self.send.assert_called()
 
-    def test_new_question_supersedes_parent_including_same_second(self):
+    def test_new_question_does_not_veto_central_command(self):
         self.event('new-question', self.now)
         r=self.brain.execute_command(self.command)
-        self.assertEqual(r['error'],'tmall_command_parent_superseded')
-        self.send.assert_not_called()
-        self.assertEqual(r['parent_guard']['latest_local_msg_id'], 'new-question')
-        self.assertEqual(r['parent_guard']['command_parent_msg_id'], 'qn-msg-v1|taobao|parent')
+        self.assertTrue(r['real_send'])
+        self.send.assert_called()
 
     def test_late_transfer_notice_same_second_does_not_replace_buyer(self):
         self.event('transfer', self.now, content='由 然然 转交给 燕燕')
@@ -85,8 +83,8 @@ class TmallDeliveryTests(unittest.TestCase):
     def test_transfer_is_superseded_by_buyer_in_same_second(self):
         self.command['meta']['takeover_parent_msg_id']='qn-msg-v1|taobao|transfer'
         self.event('transfer', self.now, content='由 雪晴 转交给 燕燕')
-        self.assertEqual(self.brain.execute_command(self.command)['error'], 'tmall_command_parent_superseded')
-        self.send.assert_not_called()
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
+        self.send.assert_called()
 
     def test_transfer_alone_can_receive_first_response(self):
         self.event('transfer', self.now+1, content='由 雪晴 转交给 燕燕')
@@ -111,9 +109,8 @@ class TmallDeliveryTests(unittest.TestCase):
         self.event('transfer',self.now+10,content='由 雪晴 转交给 燕燕')
         self.event('real-new-question',self.now+1)
         r=self.brain.execute_command(self.command)
-        self.assertEqual(r['error'],'tmall_command_parent_superseded')
-        self.assertEqual(r['parent_guard']['latest_local_msg_id'],'real-new-question')
-        self.send.assert_not_called()
+        self.assertTrue(r['real_send'])
+        self.send.assert_called()
 
     def test_product_page_origin_does_not_replace_reported_buyer_image(self):
         self.event('parent',self.now,content='https://img.alicdn.com/imgextra/buyer-amp.jpg',
@@ -128,9 +125,8 @@ class TmallDeliveryTests(unittest.TestCase):
         self.event('new-image',self.now+2,content='https://img.alicdn.com/imgextra/buyer.jpg',
                    raw_type='105',message_type='image')
         r=self.brain.execute_command(self.command)
-        self.assertEqual(r['error'],'tmall_command_parent_superseded')
-        self.assertEqual(r['parent_guard']['latest_local_msg_id'],'new-image')
-        self.send.assert_not_called()
+        self.assertTrue(r['real_send'])
+        self.send.assert_called()
 
     def test_exact_platform_context_notices_do_not_replace_real_question(self):
         for i,text in enumerate(('为您推荐宝贝','向您推荐宝贝','邀请您评价','请尽快回复，避免超时')):
@@ -141,10 +137,10 @@ class TmallDeliveryTests(unittest.TestCase):
         for text in ('当前用户来自 商品详情页是什么意思？','请尽快回复我','这张图片是怎么回事','帮我推荐宝贝'):
             self.assertFalse(is_platform_context_notice({'content':text,'raw_type':'129'}))
 
-    def test_missing_meta_blocks_only_authorized_shop(self):
+    def test_missing_parent_metadata_does_not_veto_execution(self):
         self.command['meta']={}
-        self.assertEqual(self.brain.execute_command(self.command)['error'],'tmall_command_parent_missing')
-        self.send.assert_not_called()
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
+        self.send.assert_called_once()
         self.command['account']='其他淘宝店:客服'
         self.assertTrue(self.brain.execute_command(self.command)['real_send'])
         self.assertFalse(in_scope('cs_123'))
@@ -161,7 +157,7 @@ class TmallDeliveryTests(unittest.TestCase):
         self.assertEqual(self.db.latest_tmall_buyer_event(ACCOUNT,BUYER)['msg_id'],'parent')
         self.assertTrue(self.brain.execute_command(self.command)['real_send'])
 
-    def test_late_new_question_is_checked_again_before_native_send(self):
+    def test_late_new_question_cannot_veto_native_execution(self):
         bridge=StandaloneBridge.__new__(StandaloneBridge)
         bridge.config={'send_enabled':True}; bridge.db=self.db
         bridge.appbiz=SimpleNamespace(send_text=Mock())
@@ -169,7 +165,7 @@ class TmallDeliveryTests(unittest.TestCase):
         self.event('new-question', self.now+1)
         r=bridge.send_text({'request_id':'race','buyer_cid':BUYER,'content':'旧回复',
                            'tmall_account':ACCOUNT,'tmall_command_meta':self.command['meta']},brain_authorized=True)
-        self.assertEqual(r['status'],'blocked'); bridge.appbiz.send_text.assert_not_called()
+        self.assertEqual(r['status'],'submitted'); bridge.appbiz.send_text.assert_called_once()
 
     def test_other_seat_or_buyer_cannot_change_local_parent(self):
         self.event('other-buyer',self.now+1,buyer_id='other')

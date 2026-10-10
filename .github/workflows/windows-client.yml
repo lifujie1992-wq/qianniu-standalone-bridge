@@ -1,0 +1,37 @@
+name: Windows client package
+on:
+  push:
+    branches: [fix/tmall-client-message-guards-20261006]
+    paths:
+      - app_version.py
+      - .github/workflows/windows-client.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QN_BRAIN_SERVER_URL: http://127.0.0.1:1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Python regression tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Browser bridge regression tests
+        run: node --test tests/browser_bridge_contract.test.js
+      - name: Build EXE and native adapter
+        shell: pwsh
+        run: ./tools/build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QianniuAIService-windows-x64
+          path: delivery/windows-*/QianniuAIService-*-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30

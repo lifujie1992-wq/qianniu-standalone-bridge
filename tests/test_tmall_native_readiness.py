@@ -23,7 +23,7 @@ class NativeReadinessTests(unittest.TestCase):
         cold={'candidate_count':1,'selected_service':'','selection_reason':''}
         exports.status.side_effect=[cold,{'candidate_count':1,'selected_service':'0x1','selection_reason':'singlemsg_getnewmsg'},{'candidate_count':1,'selected_service':'0x1','selection_reason':'singlemsg_getnewmsg'}]
         adapter.send_text('buyer#1@cntaobao','答复','test',tmall_account='联想官方旗舰店:燕燕')
-        exports.preparesend.assert_called_once_with('buyer#1@cntaobao')
+        exports.preparesend.assert_called_once_with('buyer#1@cntaobao', True)
         exports.sendtext.assert_called_once()
 
     def test_no_observed_route_still_rejects_without_native_send(self):

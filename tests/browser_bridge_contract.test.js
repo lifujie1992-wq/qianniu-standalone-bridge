@@ -587,7 +587,7 @@ test('other shops do not get the Tmall raw-evidence contract', async () => {
 });
 
 
-test('Tmall history backfill cannot evict a pending live customer message', async () => {
+test('Tmall history burst preserves every raw event and the pending live message', async () => {
   const b = loadBridge({asyncRpc:true});
   const account = '联想官方旗舰店:燕燕';
   const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
@@ -599,7 +599,7 @@ test('Tmall history backfill cannot evict a pending live customer message', asyn
   }
   await settle();
   const pending = JSON.parse(b.window.localStorage.getItem('qn_standalone_v1_pending_events'));
-  assert.equal(pending.length, 500);
+  assert.equal(pending.length, 601);
   assert.ok(pending.some(envelope => envelope.payload.msg_id === 'live-pending'));
 });
 

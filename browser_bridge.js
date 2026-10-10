@@ -12,7 +12,7 @@
   }
   window.__qn_standalone_bridge_v1_installed = true;
 
-  var BRIDGE_VERSION = "qn-standalone-browser-v11-tmall-entry-context";
+  var BRIDGE_VERSION = "qn-standalone-browser-v12-tmall-central-delivery";
   // Message-source switches, written by the injector from config.json. The
   // three extra sources mirror what the commercial agent does inside the page:
   // observing imsdk.invoke (conversation discovery only), mirroring the client's
@@ -254,7 +254,7 @@
   function writeOutboxNow() {
     try {
       if (window.localStorage) {
-        var batch = outboxOrder.slice(-MAX_OUTBOX).map(function (id) { return outbox[id]; });
+        var batch = outboxOrder.map(function (id) { return outbox[id]; });
         window.localStorage.setItem(OUTBOX_KEY, JSON.stringify(batch));
       }
       return true;
@@ -283,19 +283,15 @@
       outbox[id] = { type: "chat_event", event_id: id, payload: row };
       if (nicknamePending) outbox[id].nickname_pending = true;
       outboxOrder.push(id);
-      while (outboxOrder.length > MAX_OUTBOX) {
-        var dropIndex = 0;
-        if (tmallGuardScope(row.account)) {
-          // Historical backfill must never displace a pending live message.
-          // Keep the existing transport bound and other shops' queue policy.
-          var historyIndex = outboxOrder.findIndex(function (pendingId) {
-            var pending = outbox[pendingId] && outbox[pendingId].payload;
-            return pending && tmallGuardScope(pending.account)
-              && pending.capture_mode === "history_snapshot";
-          });
-          if (historyIndex >= 0) dropIndex = historyIndex;
-        }
-        var old = outboxOrder.splice(dropIndex, 1)[0];
+      // Tmall raw input must survive bursts. Keep every unacknowledged Tmall
+      // envelope; the original 500-entry policy still bounds other shops.
+      var otherIds = outboxOrder.filter(function (pendingId) {
+        var pending = outbox[pendingId] && outbox[pendingId].payload;
+        return pending && !tmallGuardScope(pending.account);
+      });
+      while (otherIds.length > MAX_OUTBOX) {
+        var old = otherIds.shift();
+        outboxOrder.splice(outboxOrder.indexOf(old), 1);
         delete outbox[old];
         diagnostics.outbox_overflow_dropped += 1;
       }
@@ -1200,7 +1196,7 @@
     depth = depth || 0;
     if (!obj || depth > 8) return;
     if (Array.isArray(obj)) {
-      for (var i = 0; i < Math.min(obj.length, 100); i++) walkDetails(obj[i], out, depth + 1);
+      for (var i = 0; i < (tmallGuardScope(lastSellerNick) ? obj.length : Math.min(obj.length, 100)); i++) walkDetails(obj[i], out, depth + 1);
       return;
     }
     if (typeof obj !== "object") return;
@@ -1427,6 +1423,7 @@
     });
     // Nested source objects were merged above. Remove them from the adapted
     // copy so walkDetails cannot emit the same cache row a second time.
+    if (tmallGuardScope(lastSellerNick)) merged.raw_cache_record = record;
     delete merged.originalData;
     delete merged.originData;
     delete merged.originBanamaMessage;
@@ -1445,7 +1442,8 @@
     var value = localMessageValue(ccode);
     if (!value) return { details: 0, captured: 0, sent: 0, ccodes: [] };
     var rows = Array.isArray(value) ? value : [value];
-    var adapted = rows.slice(-100).map(function (record) { return adaptLocalMessage(ccode, record); });
+    var historyRows = tmallGuardScope(lastSellerNick) ? rows : rows.slice(-100);
+    var adapted = historyRows.map(function (record) { return adaptLocalMessage(ccode, record); });
     var transferHistory = 0;
     adapted.forEach(function (detail) {
       if (!detail || conversationIdOf(detail.cid || "") !== ccode) return;
