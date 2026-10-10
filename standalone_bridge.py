@@ -3099,6 +3099,9 @@ class BrainConnector:
                 continue
             if str(event.get("role") or "").strip().lower() not in {"user", "buyer", "customer"}:
                 continue
+            if event.get("capture_mode") == "history_snapshot" and tmall_guard_scope(event.get("account")):
+                # Transfer history only supplies context; it has no reply job.
+                continue
             self.watch_draft(
                 str(event.get("account") or ""),
                 str(event.get("buyer_id") or ""),

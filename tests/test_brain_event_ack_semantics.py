@@ -32,3 +32,10 @@ class EventAckTests(unittest.TestCase):
             brain,rows=self.brain(d,'error',False,True)
             self.assertEqual(brain.upload_events(rows),set())
             brain.watch_draft.assert_not_called()
+
+    def test_tmall_transfer_history_context_does_not_start_draft_polling(self):
+        with tempfile.TemporaryDirectory() as d:
+            brain,rows=self.brain(d,'context_updated',True,False)
+            rows[0]['payload'].update(account='联想官方旗舰店:燕燕',capture_mode='history_snapshot')
+            self.assertEqual(brain.upload_events(rows),{'e1'})
+            brain.watch_draft.assert_not_called()
