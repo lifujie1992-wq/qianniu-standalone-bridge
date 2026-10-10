@@ -12,7 +12,7 @@
   }
   window.__qn_standalone_bridge_v1_installed = true;
 
-  var BRIDGE_VERSION = "qn-standalone-browser-v8-tmall-guards";
+  var BRIDGE_VERSION = "qn-standalone-browser-v9-tmall-transfer-history";
   // Message-source switches, written by the injector from config.json. The
   // three extra sources mirror what the commercial agent does inside the page:
   // observing imsdk.invoke (conversation discovery only), mirroring the client's
@@ -1014,7 +1014,7 @@
   }
   window.__qn_standalone_backfill_nicknames = backfillNicknames;
 
-  function normalizeDetail(detail, sellerHint, captureMode) {
+  function normalizeDetail(detail, sellerHint, captureMode, transferHistory) {
     if (!detail || typeof detail !== "object") return null;
     var product = extractProduct(detail);
     var contextOrder = extractOrder(detail);
@@ -1093,10 +1093,20 @@
     var tsRaw = detail.sendTime || detail.sortTimeMicrosecond || detail.ts || 0;
     var hasOriginalTimestamp = Number(tsRaw) > 0;
     var ts = timestampSeconds(tsRaw);
+    if (transferHistory && tmallGuardScope(seller) && hasOriginalTimestamp
+        && ts * 1000 < transferHistory) {
+      captureMode = "history_snapshot";
+    }
     var historyCapture = /GetRemoteHisMsg|GetLocalHisMsg|history_snapshot|event-remote:|event-local-db:|poll:/.test(String(captureMode || ""));
     if (historyCapture && hasOriginalTimestamp && (ts * 1000) < STARTED_AT_MS - RECOVERY_WINDOW_MS) {
-      diagnostics.stale_history_skipped += 1;
-      return null;
+      if (transferHistory && tmallGuardScope(seller)) {
+        // A live transfer needs earlier buyer context, without replaying it as
+        // a new question. The server's history_snapshot path never queues it.
+        captureMode = "history_snapshot";
+      } else {
+        diagnostics.stale_history_skipped += 1;
+        return null;
+      }
     }
     var incomplete = !msgId || !hasOriginalTimestamp;
     if (incomplete && tmallGuardScope(seller)) captureMode = "history_snapshot";
@@ -1198,7 +1208,7 @@
     });
   }
 
-  function emitChatPayload(payload, sellerHint, captureMode) {
+  function emitChatPayload(payload, sellerHint, captureMode, transferHistory) {
     var result = { details: 0, captured: 0, sent: 0, ccodes: [] };
     try {
       // A duplicate callback may be the first activity after sleep/network
@@ -1211,7 +1221,7 @@
       // walkDetails only returns individual message-shaped records.
       result.details = details.length;
       details.forEach(function (detail) {
-        var row = normalizeDetail(detail, sellerHint, captureMode);
+        var row = normalizeDetail(detail, sellerHint, captureMode, transferHistory);
         if (!row) return;
         var immediate = tmallGuardScope(row.account);
         var queuedId = queueEnvelope(row, !immediate && !row.nickname && !!row.account);
@@ -1413,13 +1423,33 @@
     if (!value) return { details: 0, captured: 0, sent: 0, ccodes: [] };
     var rows = Array.isArray(value) ? value : [value];
     var adapted = rows.slice(-100).map(function (record) { return adaptLocalMessage(ccode, record); });
+    var transferHistory = 0;
+    adapted.forEach(function (detail) {
+      if (!detail || conversationIdOf(detail.cid || "") !== ccode) return;
+      var seller = nickOf(detail.loginid || detail.loginId || {}) || lastSellerNick;
+      var text = extractText(detail);
+      var originalTime = Number(detail.sendTime || detail.sortTimeMicrosecond || detail.ts || 0);
+      var stamp = timestampSeconds(originalTime) * 1000;
+      if (tmallGuardScope(seller) && originalTime > 0
+        && stamp >= STARTED_AT_MS - RECOVERY_WINDOW_MS && stamp <= Date.now() + 30000
+        && /^由\s*.+?\s*转交给\s*.+$/.test(text)) {
+        transferHistory = Math.max(transferHistory, stamp);
+      }
+    });
+    if (transferHistory) {
+      adapted.sort(function (a, b) {
+        return timestampSeconds(a && (a.sendTime || a.sortTimeMicrosecond || a.ts))
+          - timestampSeconds(b && (b.sendTime || b.sortTimeMicrosecond || b.ts));
+      });
+    }
     diagnostics.msgdb_last_arrlen = rows.length;
     diagnostics.msgdb_last_reason = adapted.length ? "adapted_local_cache" : "empty_local_cache";
     diagnostics.msgdb_dump = JSON.stringify(diagnosticShape(adapted.slice(-1), 0)).slice(0, 3000);
     var result = emitChatPayload(
       { source: "msgDataMap", ccode: ccode, data: adapted },
       lastSellerNick,
-      "event-local-db:im.singlemsg.onReceiveNewMsg"
+      "event-local-db:im.singlemsg.onReceiveNewMsg",
+      transferHistory
     );
     diagnostics.msgdb_last_normalized = !!(result && result.captured);
     if (result && result.captured) diagnostics.local_db_hits += result.captured;

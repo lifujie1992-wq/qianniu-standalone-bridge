@@ -512,3 +512,54 @@ test('native-only backfill rejects a different or conflicting cached seller', as
     assert.equal(b.calls.some(call => call.api === 'util.GetUserNick'), false);
   }
 });
+
+test('transfer cache preserves an older buyer question as context before the live notice', () => {
+  const account = '联想官方旗舰店:燕燕';
+  const bridge = loadBridge();
+  const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
+  const question = uidMessage('old-pre-transfer', {...common, summary: '设备怎么打开', sendTime: Date.now()-6*60*1000});
+  const notice = uidMessage('live-transfer', {...common, summary: '由 服务助手 转交给 燕燕', sendTime: Date.now()});
+  bridge.window._db.msgDataMap.set(NUMERIC_BUYER, [question, notice]);
+  bridge.window.__qn_standalone_self_heal('transfer-history-test');
+  const events = captured(bridge);
+  const old = events.find(event => event.msg_id === 'old-pre-transfer');
+  assert.ok(old, 'buyer question visible in Qianniu must not be dropped');
+  assert.equal(old.capture_mode, 'history_snapshot');
+  assert.equal(old.content, '设备怎么打开');
+  assert.equal(old.buyer_id, NUMERIC_BUYER);
+  assert.equal(old.account, account);
+  assert.ok(events.findIndex(event => event.msg_id === 'old-pre-transfer') < events.findIndex(event => event.msg_id === 'live-transfer'));
+  assert.equal(bridge.invokeCalls, 0);
+});
+
+test('transfer context marking preserves a newer buyer question and does not enable other shops', () => {
+  for (const account of ['联想官方旗舰店:燕燕', '普通淘宝店:客服']) {
+    const bridge = loadBridge();
+    const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
+    const now = Date.now();
+    bridge.window._db.msgDataMap.set(NUMERIC_BUYER, [
+      uidMessage('older', {...common, summary: '物联卡是什么', sendTime: now-6*60*1000}),
+      uidMessage('transfer', {...common, summary: '由 服务助手 转交给 燕燕', sendTime: now}),
+      uidMessage('newer', {...common, summary: '怎么续费', sendTime: now+1000}),
+    ]);
+    bridge.window.__qn_standalone_self_heal('transfer-context-boundaries');
+    const events = captured(bridge);
+    const newer = events.find(event => event.msg_id === 'newer');
+    assert.ok(newer);
+    assert.equal(newer.capture_mode, 'event-local-db:im.singlemsg.onReceiveNewMsg');
+    if (account.startsWith('联想')) assert.equal(events.find(event => event.msg_id === 'older').capture_mode, 'history_snapshot');
+    else assert.equal(events.some(event => event.msg_id === 'older'), false);
+  }
+});
+
+test('an old cached transfer cannot enable historical recovery', () => {
+  const bridge = loadBridge();
+  const account = '联想官方旗舰店:燕燕';
+  const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
+  bridge.window._db.msgDataMap.set(NUMERIC_BUYER, [
+    uidMessage('old-q', {...common, summary: '设备怎么打开', sendTime: Date.now()-7*60*1000}),
+    uidMessage('old-notice', {...common, summary: '由 服务助手 转交给 燕燕', sendTime: Date.now()-6*60*1000}),
+  ]);
+  bridge.window.__qn_standalone_self_heal('stale-transfer-context');
+  assert.equal(captured(bridge).length, 0);
+});
