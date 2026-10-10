@@ -103,3 +103,17 @@ class TmallContextEvidenceTests(unittest.TestCase):
         self.assertEqual(
             result["order_info"]["raw_context"]["items"], payload["items"]["value"]
         )
+
+    def test_transport_failure_is_published_as_unknown_not_empty(self):
+        app = self.app(None)
+        app.browser.execute.side_effect = RuntimeError("Qianniu imsdk unavailable")
+        with patch("standalone_bridge.time.sleep"):
+            result = ContextEnricher(app).fetch("123456789", account=ACCOUNT)
+        self.assertEqual(result["local_context_lookup"]["status"], "error_unknown")
+        self.assertIn(
+            "Qianniu imsdk unavailable", result["local_context_lookup"]["error"]
+        )
+        self.assertFalse(result["order_info"]["context_received"])
+        self.assertEqual(
+            result["order_info"]["raw_context"]["buyer_encrypt_id"], "123456789"
+        )

@@ -12,6 +12,7 @@ and binds them to the account, buyer, requested order and lookup trace/time.
 Invocation success with business failure or unknown schema no longer reports
 confirmed empty orders. An understood empty response never asserts no_orders.
 Requested-order caches cannot reuse the general buyer-order result.
+Transport exceptions are published as error_unknown rather than only logged locally.
 Other shops retain their existing role filters, response status and caches.
 
 No additional active chat-history polling was introduced. App version remains
@@ -19,6 +20,6 @@ No additional active chat-history polling was introduced. App version remains
 no EXE is produced. Actual Windows UI and real order/card tool integration were
 not exercised by these synthetic tests.
 
-Validation: client Tmall unittest suite 114 passed; browser contract 32 passed;
+Validation: client Tmall unittest suite 115 passed; browser contract 32 passed;
 backend extraction/context/evidence tests 65 passed. Existing full standalone
 suite cannot import Win32 UI code on macOS without Windows stubs.

@@ -4047,11 +4047,23 @@ class ContextEnricher:
         history_orders: list[dict[str, Any]] = []
         for attempt in range(1 + self.EMPTY_ORDER_RETRIES):
             # 店铺/历史订单与订单重试无关，只在第一次尝试里并行取。
-            snapshot = self._fetch_once(
-                encrypt_id, biz_order_id,
-                include_shop and attempt == 0,
-                include_history and attempt == 0,
-            )
+            try:
+                snapshot = self._fetch_once(
+                    encrypt_id, biz_order_id,
+                    include_shop and attempt == 0,
+                    include_history and attempt == 0,
+                )
+            except Exception as error:
+                if not tmall_guard_scope(account):
+                    raise
+                # Publish lookup failure to the brain too; a local diagnostic
+                # alone would leave it unable to distinguish absence from error.
+                snapshot = {
+                    "trace_id": uuid.uuid4().hex, "items": [], "orders": [],
+                    "shop": {}, "history_orders": [], "items_ok": False,
+                    "orders_ok": False, "errors": [str(error)[:500]],
+                    "raw_context": {}, "ret_code": "", "raw_order_count": 0,
+                }
             if tmall_guard_scope(account):
                 # Invocation success does not prove MTop business success or
                 # an understood empty-order response. Preserve evidence below.
