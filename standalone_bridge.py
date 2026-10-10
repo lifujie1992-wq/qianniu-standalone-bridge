@@ -34,6 +34,7 @@ import websocket
 from app_version import VERSION
 from taobao_message_contract import select_parent as tmall_select_parent
 from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence
+from tmall_delivery_guard import delivery_identity_view as tmall_delivery_identity_view
 from brain_ws import (
     BrainEventChannel,
     BrainWsError,
@@ -777,7 +778,10 @@ class StateDB:
                 "ORDER BY created_at ASC, rowid ASC",
                 (account, buyer_id),
             ).fetchall()
-        return tmall_select_parent([json.loads(row["payload"]) for row in rows], command_parent, batch_ids)
+        return tmall_select_parent(
+            [tmall_delivery_identity_view(json.loads(row["payload"])) for row in rows],
+            command_parent, batch_ids,
+        )
 
     def upsert_local_projection(self, event: dict[str, Any]) -> tuple[str, bool]:
         """Persist a center-side draft for local display without any delivery queue."""

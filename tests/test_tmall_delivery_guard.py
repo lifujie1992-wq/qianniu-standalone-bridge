@@ -37,6 +37,32 @@ class TmallDeliveryTests(unittest.TestCase):
         self.assertTrue(self.brain.execute_command(self.command)['real_send'])
         self.send.assert_called_once()
 
+    def test_verified_buyer_sender_overrides_uncertain_capture_for_delivery(self):
+        self.event('parent', self.now, role='unknown', identity_uncertain=True,
+                   sender_uid='4007146934', login_uid='126446588.1')
+        self.assertTrue(self.brain.execute_command(self.command)['real_send'])
+        self.send.assert_called_once()
+        with self.db.connect() as connection:
+            import json
+            row = json.loads(connection.execute('SELECT payload FROM events').fetchone()['payload'])
+        self.assertEqual(row['role'], 'unknown')
+        self.assertTrue(row['identity_uncertain'])
+
+    def test_new_verified_buyer_sender_still_supersedes_older_parent(self):
+        self.event('new', self.now, role='unknown', identity_uncertain=True,
+                   sender_uid='4007146934.1', login_uid='126446588.1')
+        self.assertEqual(self.brain.execute_command(self.command)['error'], 'tmall_command_parent_superseded')
+        self.send.assert_not_called()
+
+    def test_actual_staff_sender_cannot_become_buyer_parent(self):
+        self.event('staff', self.now + 1, sender_uid='126446588.1', login_uid='126446588')
+        self.assertEqual(self.db.latest_tmall_buyer_event(ACCOUNT, BUYER)['msg_id'], 'parent')
+
+    def test_unknown_without_sender_proof_remains_ineligible(self):
+        self.event('parent', self.now, role='unknown', identity_uncertain=True)
+        self.assertFalse(self.brain.execute_command(self.command)['real_send'])
+        self.send.assert_not_called()
+
     def test_expired_never_calls_sender(self):
         self.command['meta']['expires_at_ms']=1
         r=self.brain.execute_command(self.command)
