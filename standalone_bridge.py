@@ -3810,7 +3810,7 @@ class ContextEnricher:
         if not self.app.config.get("context_enrich_enabled", True):
             return
         role = str(event.get("role") or "user").strip().lower()
-        if role not in {"user", "buyer", "customer"}:
+        if role not in {"user", "buyer", "customer"} and not tmall_guard_scope(event.get("account")):
             return
         encrypt_id = self.buyer_encrypt_id(event)
         if not encrypt_id:
@@ -4036,7 +4036,7 @@ class ContextEnricher:
 
     def fetch(self, encrypt_id: str, biz_order_id: str = "", account: str = "") -> dict[str, Any]:
         account = str(account or "").strip()
-        cache_key = (account, encrypt_id)
+        cache_key = (account, encrypt_id + ("|" + biz_order_id if tmall_guard_scope(account) and biz_order_id else ""))
         attempts: list[dict[str, Any]] = []
         found: dict[str, Any] | None = None
         # 店铺信息在会话期间基本不变：命中缓存就不再重复调用 MTop，只做一次。
@@ -4052,6 +4052,15 @@ class ContextEnricher:
                 include_shop and attempt == 0,
                 include_history and attempt == 0,
             )
+            if tmall_guard_scope(account):
+                # Invocation success does not prove MTop business success or
+                # an understood empty-order response. Preserve evidence below.
+                raw_orders = snapshot.get("raw_context", {}).get("orders")
+                code = self._mtop_ret_code(raw_orders)
+                lists = self.collect_lists(raw_orders, {"orders", "orderList", "list"})
+                if (code and not all(part.strip().startswith("SUCCESS") for part in code.split(","))) or not lists:
+                    snapshot["orders_ok"] = False
+                    snapshot["errors"].append(code or "unrecognized_order_response")
             attempts.append(snapshot)
             if attempt == 0:
                 shop = dict(snapshot.get("shop") or {}) or dict(cached_shop or {})
@@ -4125,10 +4134,22 @@ class ContextEnricher:
             "order_count": len(orders),
             "total_order_count": len(orders),
         }
+        if tmall_guard_scope(account):
+            order_info["raw_context"] = {
+                **dict(last_attempt.get("raw_context") or {}),
+                "account": account,
+                "buyer_encrypt_id": encrypt_id,
+                "requested_order_id": biz_order_id,
+                "provider": "qianniu_standalone_mtop",
+                "trace_id": trace_id,
+                "lookup_at_ms": int(time.time() * 1000),
+            }
+            # An empty API result is not evidence that this buyer has no order.
+            order_info["empty_response_only"] = status == "confirmed_empty"
         if status != "error_unknown":
             order_info.update({
                 "context_received": True,
-                "no_orders": status == "confirmed_empty",
+                "no_orders": status == "confirmed_empty" and not tmall_guard_scope(account),
                 "ambiguous": len(orders) > 1,
                 "order_status": status,
                 "orders_from_cache": from_cache,
@@ -4282,6 +4303,11 @@ class ContextEnricher:
             "errors": errors,
             "raw_order_count": raw_order_count,
             "ret_code": ret_code,
+            "raw_context": {
+                "items": items_result.get("value"),
+                "orders": orders_result.get("value"),
+                "history_orders": history_result.get("value") if include_history else None,
+            },
         }
 
     @classmethod

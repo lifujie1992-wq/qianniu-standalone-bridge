@@ -602,3 +602,18 @@ test('Tmall history backfill cannot evict a pending live customer message', asyn
   assert.equal(pending.length, 500);
   assert.ok(pending.some(envelope => envelope.payload.msg_id === 'live-pending'));
 });
+
+test('Tmall retains entry order and product fields from the individual raw message', () => {
+  const b=loadBridge();
+  const raw=uidMessage('entry-context',{loginid:{nick:'联想官方旗舰店:燕燕'},toid:{nick:'联想官方旗舰店:燕燕'},entryContext:{orderId:'1234567890123456789',product:{sku:'unknown-field'}}});
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(raw);
+  assert.deepEqual(captured(b)[0].raw_message.entryContext,raw.entryContext);
+});
+
+test('Tmall uploads rich entry context even without a text summary', () => {
+  const b=loadBridge();
+  const raw=uidMessage('entry-empty',{loginid:{nick:'联想官方旗舰店:燕燕'},toid:{nick:'联想官方旗舰店:燕燕'},summary:'',content:'',entryContext:{orderId:'1234567890123456789'}});
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(raw);
+  assert.equal(captured(b).length,1);
+  assert.equal(captured(b)[0].raw_message.entryContext.orderId,'1234567890123456789');
+});

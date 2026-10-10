@@ -12,7 +12,7 @@
   }
   window.__qn_standalone_bridge_v1_installed = true;
 
-  var BRIDGE_VERSION = "qn-standalone-browser-v10-tmall-raw-evidence";
+  var BRIDGE_VERSION = "qn-standalone-browser-v11-tmall-entry-context";
   // Message-source switches, written by the injector from config.json. The
   // three extra sources mirror what the commercial agent does inside the page:
   // observing imsdk.invoke (conversation discovery only), mirroring the client's
@@ -1035,7 +1035,6 @@
     var content = extractText(detail);
     if (imageUrl && !isProduct) content = imageUrl;
     if (!content && productImage) content = "咨询商品";
-    if (!content) return null;
     var fromid = detail.fromid || detail.fromId || {};
     var toid = detail.toid || detail.toId || {};
     var fromNick = nickOf(fromid);
@@ -1047,6 +1046,7 @@
     // loginid is the authoritative current account. Without it, an outbound
     // message can make fromid look like the buyer and reverse the session.
     var seller = textOf(loginNick || sellerHint || lastSellerNick || "");
+    if (!content && !tmallGuardScope(seller)) return null;
     var role = "user";
     var buyer = "";
     if (seller && fromNick && fromNick === seller) {
@@ -1151,6 +1151,10 @@
     };
     if (tmallGuardScope(seller)) {
       // Observed identifiers, not an instruction for the brain to trust role.
+      // Individual platform message only: include entry product/order fields
+      // the normalized projection cannot anticipate. Never capture the window.
+      try { row.raw_message = JSON.parse(JSON.stringify(detail)); }
+      catch (error) { row.raw_message_error = String(error); }
       row.sender_uid = partyUid(fromid);
       row.recipient_uid = partyUid(toid);
       row.login_uid = partyUid(loginid);

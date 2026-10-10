@@ -1,0 +1,24 @@
+Scope: taobao / 联想官方旗舰店 only. No Pinduoduo business behavior changes.
+
+The bridge preserves each received platform message as raw_message, including
+entry product/order fields even when there is no text summary. The brain stores
+this evidence in whitebox.tmall_raw_event; it remains separate from derived roles.
+This server patch preserves evidence, it does not itself derive facts from unknown
+schemas or remove legacy sending restrictions.
+
+Tmall ContextEnricher handles transfer/system events with a buyer identifier,
+keeps raw MTop product/order/history response fields in order_info.raw_context,
+and binds them to the account, buyer, requested order and lookup trace/time.
+Invocation success with business failure or unknown schema no longer reports
+confirmed empty orders. An understood empty response never asserts no_orders.
+Requested-order caches cannot reuse the general buyer-order result.
+Other shops retain their existing role filters, response status and caches.
+
+No additional active chat-history polling was introduced. App version remains
+1.6.13; browser capture revision is v11. Source needs a Windows build/install;
+no EXE is produced. Actual Windows UI and real order/card tool integration were
+not exercised by these synthetic tests.
+
+Validation: client Tmall unittest suite 114 passed; browser contract 32 passed;
+backend extraction/context/evidence tests 65 passed. Existing full standalone
+suite cannot import Win32 UI code on macOS without Windows stubs.
