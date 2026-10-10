@@ -12,7 +12,7 @@
   }
   window.__qn_standalone_bridge_v1_installed = true;
 
-  var BRIDGE_VERSION = "qn-standalone-browser-v9-tmall-transfer-history";
+  var BRIDGE_VERSION = "qn-standalone-browser-v10-tmall-raw-evidence";
   // Message-source switches, written by the injector from config.json. The
   // three extra sources mirror what the commercial agent does inside the page:
   // observing imsdk.invoke (conversation discovery only), mirroring the client's
@@ -1099,9 +1099,9 @@
     }
     var historyCapture = /GetRemoteHisMsg|GetLocalHisMsg|history_snapshot|event-remote:|event-local-db:|poll:/.test(String(captureMode || ""));
     if (historyCapture && hasOriginalTimestamp && (ts * 1000) < STARTED_AT_MS - RECOVERY_WINDOW_MS) {
-      if (transferHistory && tmallGuardScope(seller)) {
-        // A live transfer needs earlier buyer context, without replaying it as
-        // a new question. The server's history_snapshot path never queues it.
+      if (tmallGuardScope(seller)) {
+        // Retain available history as context. Business relevance is decided
+        // by the server, regardless of whether this cache contains a transfer.
         captureMode = "history_snapshot";
       } else {
         diagnostics.stale_history_skipped += 1;
@@ -1138,6 +1138,14 @@
       captured_at_ms: Date.now(),
       raw_type: textOf(detail.templateId || detail.templateid || detail.msgType || detail.type || ""),
     };
+    if (tmallGuardScope(seller)) {
+      // Observed identifiers, not an instruction for the brain to trust role.
+      row.sender_uid = partyUid(fromid);
+      row.recipient_uid = partyUid(toid);
+      row.login_uid = partyUid(loginid);
+      row.sender_nick = fromNick;
+      row.recipient_nick = toNick;
+    }
     if (loginNick) row.seller_identity_source = "loginid";
     if (contextOrder.order_id) {
       row.order_id = contextOrder.order_id;

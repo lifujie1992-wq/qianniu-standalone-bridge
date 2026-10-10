@@ -552,7 +552,7 @@ test('transfer context marking preserves a newer buyer question and does not ena
   }
 });
 
-test('an old cached transfer cannot enable historical recovery', () => {
+test('old Tmall cache stays available as context without triggering live replay', () => {
   const bridge = loadBridge();
   const account = '联想官方旗舰店:燕燕';
   const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
@@ -561,5 +561,26 @@ test('an old cached transfer cannot enable historical recovery', () => {
     uidMessage('old-notice', {...common, summary: '由 服务助手 转交给 燕燕', sendTime: Date.now()-6*60*1000}),
   ]);
   bridge.window.__qn_standalone_self_heal('stale-transfer-context');
-  assert.equal(captured(bridge).length, 0);
+  const rows = captured(bridge);
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every(row => row.capture_mode === 'history_snapshot'));
+});
+
+
+test('Tmall uploads observed sender evidence even when role cannot be resolved', () => {
+  const b=loadBridge();
+  const raw=uidMessage('raw-identity',{loginid:{nick:'联想官方旗舰店:燕燕',uid:'126446588.1'},fromid:{uid:'4007146934.1',nick:'真实买家'},toid:{nick:'联想官方旗舰店:燕燕',uid:'126446588.1'}});
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(raw);
+  const row=captured(b)[0];
+  assert.equal(row.sender_uid,'4007146934.1');
+  assert.equal(row.login_uid,'126446588.1');
+  assert.equal(row.sender_nick,'真实买家');
+  assert.equal(row.recipient_nick,'联想官方旗舰店:燕燕');
+});
+
+test('other shops do not get the Tmall raw-evidence contract', async () => {
+  const b=loadBridge();
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('other-raw'));
+  await settle();
+  assert.equal(captured(b)[0].sender_uid,undefined);
 });

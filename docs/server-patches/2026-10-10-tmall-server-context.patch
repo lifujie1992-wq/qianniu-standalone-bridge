@@ -1,0 +1,1247 @@
+diff --git a/pdd_brain/auto_send.py b/pdd_brain/auto_send.py
+--- a/pdd_brain/auto_send.py
++++ b/pdd_brain/auto_send.py
+@@ -255,6 +255,9 @@
+                 from pdd_brain.tmall_reply_quality import context_role
+                 if context_role(item) != 'user':
+                     continue
++                item_queue = (item.whitebox or {}).get('shadow_queue') or {}
++                if item_queue.get('auto_send_eligible') is False:
++                    continue
+             item_ts = runtime._normalize_ts(item.ts)
+             # 时序抖动容忍：桥接投递顺序与消息 ts 可能互相矛盾（2026-10-01
+             # 4331969420114 案例：连发两条互相判 stale 导致全部静默）。
+@@ -425,6 +428,12 @@
+         if row.role != "assistant_simulated" or row.parent_msg_id not in aliases:
+             continue
+         box = row.whitebox or {}
++        continuation = (message.whitebox or {}).get('input_context') or {}
++        if (_tmall_notice_scope(message.account)
++                and continuation.get('tmall_transfer_continuation')
++                and (box.get('tmall_reply_quality') or {}).get('reason') == 'transfer_first_response'):
++            # A receipt acknowledges the handoff; it has not answered the buyer.
++            continue
+         if box.get("auto_send_ok") or box.get("auto_send_status") in {"accepted", "sent", "delivered"}:
+             return True
+         if box.get("auto_send_status") == "pending":
+@@ -626,7 +635,7 @@
+                         "status": "suppressed",
+                         "error": f"conversation ownership: {ownership.get('reason')}",
+                     }
+-        if not decision and not full_shop_send and final_decision.get("allowed_to_send") is False:
++        if not decision and (not full_shop_send or _tmall_notice_scope(message.account)) and final_decision.get("allowed_to_send") is False:
+             decision = {
+                 "attempted": False,
+                 "ok": False,
+diff --git a/pdd_brain/bridge_routes.py b/pdd_brain/bridge_routes.py
+--- a/pdd_brain/bridge_routes.py
++++ b/pdd_brain/bridge_routes.py
+@@ -575,8 +575,17 @@
+                 event_acks.append({"event_id": event_id, "status": "nickname_updated" if changed else "duplicate",
+                                    "committed": True, "retryable": False})
+                 continue
++            tmall_origin = {}
++            tmall_sender_role = ''
++            if tmall_event:
++                from .tmall_conversation import raw_event, sender_role
++                tmall_origin = raw_event(item)
++                tmall_sender_role, _ = sender_role({
++                    'account': item_account, 'buyer_id': item.get('buyer_id'),
++                    'whitebox': {'tmall_raw_event': tmall_origin},
++                })
+             unknown_tmall_identity = tmall_event and str(item.get("role") or "") == "unknown"
+-            if str(item.get("role") or "") not in {"user", "mall_cs"} and not unknown_tmall_identity:
++            if str(item.get("role") or "") not in {"user", "mall_cs"} and not unknown_tmall_identity and not tmall_event:
+                 event_acks.append({
+                     "event_id": event_id,
+                     "status": "ignored",
+@@ -600,8 +609,8 @@
+                 )
+                 if tmall_event and capture_mode == "history_snapshot":
+                     capture_disposition, capture_reason = "context", "tmall_transfer_history_snapshot"
+-                if tmall_event and (item.get("incomplete") or item.get("identity_uncertain")
+-                                    or unknown_tmall_identity
++                if tmall_event and (item.get("incomplete")
++                                    or ((item.get("identity_uncertain") or unknown_tmall_identity) and tmall_sender_role != "user")
+                                     or not _tmall_valid_timestamp(item.get("ts"))
+                                     or ("original_timestamp" in item and not _tmall_valid_timestamp(item.get("original_timestamp")))):
+                     capture_disposition, capture_reason = "context", "tmall_incomplete_or_unknown_identity"
+@@ -619,7 +628,7 @@
+                 source = f"bridge:{agent_id}"
+                 if platform:
+                     source = f"bridge:{platform}:{agent_id}"
+-                role = "user" if unknown_tmall_identity else str(item.get("role") or "user")
++                role = "user" if tmall_event and str(item.get("role") or "") not in {"user", "mall_cs"} else str(item.get("role") or "user")
+                 nick = str(item.get("buyer_nick") or item.get("nickname") or "").strip()
+                 if unknown_tmall_identity:
+                     nick = ""
+@@ -701,6 +710,19 @@
+                     episode_break=bool(item.get("episode_break")),
+                     received_at_ms=captured_at_ms,
+                 )
++                if tmall_event:
++                    msg.whitebox = dict(msg.whitebox or {})
++                    msg.whitebox['tmall_raw_event'] = tmall_origin
++                    from .tmall_reply_quality import context_role
++                    derived_role = context_role(msg)
++                    if derived_role == 'mall_cs':
++                        msg.role = role = 'mall_cs'
++                        msg.nickname = ''
++                        msg.staff_name = str(tmall_origin.get('sender_nick') or tmall_origin.get('staff_name') or msg.staff_name or account)
++                    if derived_role != 'user' and not is_taobao_transfer_notice(msg.content):
++                        capture_disposition, capture_reason = 'context', 'tmall_server_context_event'
++                    if str(item.get('role') or '') == 'system':
++                        capture_disposition, capture_reason = 'context', 'tmall_server_system_event'
+                 standalone_transfer_notice = bool(
+                     platform == "taobao" and is_taobao_transfer_notice(msg.content)
+                 )
+@@ -736,7 +758,14 @@
+                         "auto_send_eligible": False,
+                         "capture_mode": capture_mode,
+                     }
++                keep_tmall_literal = False
++                if tmall_event:
++                    from .tmall_conversation import retain_literal_chat
++                    keep_tmall_literal = retain_literal_chat(msg)
+                 msg.content = runtime._sanitize_chat_content(msg.content)
++                if keep_tmall_literal and not msg.content:
++                    msg.content = raw_content
++                    msg.whitebox['tmall_raw_literal_accept'] = True
+                 # Native buyer messages with a platform message id are chat,
+                 # even when their text equals an IPC handshake token. Keep the
+                 # protocol noise filter intact for untrusted frames and shops.
+@@ -768,7 +797,7 @@
+                     continue
+                 from .taobao_message_contract import notification_kind
+                 scoped_notice = notification_kind({'content': msg.content, 'account': msg.account}) if platform == 'taobao' and role == 'user' else ''
+-                if platform == "taobao" and (is_taobao_system_reminder(msg.content) or scoped_notice not in {'', 'transfer'}):
++                if platform == "taobao" and not tmall_event and (is_taobao_system_reminder(msg.content) or scoped_notice not in {'', 'transfer'}):
+                     platform_notices_ignored += 1
+                     event_acks.append({
+                         "event_id": event_id,
+@@ -990,7 +1019,8 @@
+                     "auth_ms": round((auth_finished - request_started) * 1000.0, 3),
+                     "agent_id": agent_id,
+                 }
+-                inserted = runtime.STORE.ingest(msg)
++                inserted = (runtime.STORE.ingest(msg, increment_unread=(derived_role == "user"))
++                            if tmall_event else runtime.STORE.ingest(msg))
+                 dirty_after = getattr(runtime.STORE, "_dirty_session_versions", {}).get(session_key)
+                 state_updated = dirty_after != dirty_before
+                 if state_updated:
+@@ -1264,7 +1294,19 @@
+         except Exception as exc:
+             with runtime.STATE_LOCK:
+                 runtime.STORE.status["last_error"] = f"bridge shadow enqueue: {exc}"
++    # Both ingress and delivery check this seam: late history and early history
++    # with a first response in flight converge on one durable continuation claim.
++    from .tmall_conversation import enqueue_history_resume
++    tmall_resumes = []
++    for key in persistence_session_keys:
++        session = runtime.STORE.sessions.get(key)
++        if session is not None:
++            resumed = enqueue_history_resume(session.account, session.buyer_id)
++            if resumed:
++                tmall_resumes.append(resumed)
+     enqueue_finished = time.perf_counter()
++    if tmall_resumes:
++        result['tmall_context_resumes'] = tmall_resumes
+     result["ingested_local"] = ingested
+     result["context_updated"] = context_updated
+     result["capture_discarded"] = capture_discarded
+diff --git a/pdd_brain/shadow/context_stage.py b/pdd_brain/shadow/context_stage.py
+--- a/pdd_brain/shadow/context_stage.py
++++ b/pdd_brain/shadow/context_stage.py
+@@ -1980,6 +1980,15 @@
+     with owner._detached_session(account, buyer_id) as sess:
+         if not sess:
+             raise RuntimeError("session not found")
++        from ..tmall_conversation import in_scope as extraction_scope, ordered_messages, extraction_trace
++        extraction_enabled = extraction_scope(account, runtime._platform_from_account(account))
++        if extraction_enabled:
++            # _detached_session yields a private snapshot. No live/store ordering changes.
++            sess.messages = ordered_messages(sess.messages)
++            from ..tmall_conversation import timestamp as original_time
++            for event in sess.messages:
++                if original_time(event) > 0:
++                    event.ts = int(original_time(event))
+         target_index = next(
+             (
+                 i
+@@ -2711,6 +2720,8 @@
+             "latest_question": latest_question,
+             "taobao_transfer": transfer_trace,
+             "tmall_transfer_continuation": transfer_continuation,
++            **({'tmall_conversation_extraction': extraction_trace(sess.messages[episode_start:target_index + 1], target)}
++               if extraction_enabled else {}),
+             "current_message_is_product_card": bool(
+                 str(chat_product.get("msg_id") or "").strip() == str(target.msg_id or "").strip()
+                 and chat_product.get("product_id")
+diff --git a/pdd_brain/shadow/delivery_stage.py b/pdd_brain/shadow/delivery_stage.py
+--- a/pdd_brain/shadow/delivery_stage.py
++++ b/pdd_brain/shadow/delivery_stage.py
+@@ -398,6 +398,13 @@
+     events = [{"msg_id": row.msg_id, "content": row.content,
+                "role": context_role(row), "ts": row.ts, "whitebox": row.whitebox or {}}
+               for row in getattr(session, "messages", [])]
++    if (trace.get('input_context') or {}).get('tmall_transfer_continuation'):
++        from ..taobao_transfer import is_taobao_transfer_notice
++        original = next((row for row in getattr(session, 'messages', []) if row.msg_id == msg_id), None)
++        if original is not None and is_taobao_transfer_notice(original.content):
++            trace['tmall_reply_parent_guard'] = {'reason': 'transfer_continuation_live_notice_parent',
++                                               'resolved_parent_msg_id': msg_id, 'applied': False}
++            return msg_id
+     parent, cohort = verified_batch_parent(events, msg_id, batch.get("questions"))
+     if cohort:
+         trace["tmall_reply_parent_guard"] = {
+@@ -1180,6 +1187,9 @@
+         PIPELINE_METRICS.record(
+             "delivery_send", (time.perf_counter() - send_started) * 1000.0, ok=True
+         )
++    if succeeded and (trace.get('tmall_reply_quality') or {}).get('reason') == 'transfer_first_response':
++        from ..tmall_conversation import enqueue_history_resume
++        enqueue_history_resume(account, buyer_id)
+     if generated_handoff and auto_send_result.get("status") != "already_handed_off":
+         from capabilities.sticky_handoff import FEATURE as STICKY_HANDOFF_FEATURE
+         from capabilities.sticky_handoff import mode as sticky_handoff_mode
+diff --git a/pdd_brain/shadow/tools_stage.py b/pdd_brain/shadow/tools_stage.py
+--- a/pdd_brain/shadow/tools_stage.py
++++ b/pdd_brain/shadow/tools_stage.py
+@@ -442,6 +442,8 @@
+         "taobao_transfer": context.get("taobao_transfer") or {},
+         **({"tmall_reply_context": context["tmall_reply_context"],
+              "latest_question": context.get("latest_question") or "",
++             "tmall_transfer_continuation": context.get("tmall_transfer_continuation") or {},
++             "tmall_conversation_extraction": context.get("tmall_conversation_extraction") or {},
+              "product_profile": context.get("product_profile") or {}}
+            if context.get("tmall_reply_context") else {}),
+         "current_message_is_product_card": bool(context.get("current_message_is_product_card")),
+diff --git a/pdd_brain/shadow_worker.py b/pdd_brain/shadow_worker.py
+--- a/pdd_brain/shadow_worker.py
++++ b/pdd_brain/shadow_worker.py
+@@ -2976,6 +2976,11 @@
+             metadata["pipeline_trace"] = trace.snapshot()
+         if not repository.mark_brain_result_delivered(job_id, dispatcher_id):
+             raise RuntimeError("brain result delivery lease was lost")
++        if ((row.get('result_payload') or {}).get('tmall_reply_quality') or {}).get('reason') == 'transfer_first_response':
++            # Enqueue only after the first job releases its active lease; the
++            # repository otherwise deduplicates the refresh into that old job.
++            from .tmall_conversation import enqueue_history_resume
++            enqueue_history_resume(str(row.get('account') or ''), str(row.get('buyer_id') or ''))
+ 
+     @staticmethod
+     def _message_received_at_ms(message: Any) -> Tuple[int, str]:
+diff --git a/pdd_brain/store.py b/pdd_brain/store.py
+--- a/pdd_brain/store.py
++++ b/pdd_brain/store.py
+@@ -1926,8 +1926,12 @@
+             and str(native_short.get("original_msg_id") or "")
+                 == str(msg.msg_id or "").removeprefix("qn-msg-v1|taobao|")
+         )
++        accepted_tmall_literal = False
++        if (msg.whitebox or {}).get('tmall_raw_literal_accept'):
++            from .tmall_conversation import retain_literal_chat
++            accepted_tmall_literal = retain_literal_chat(msg)
+         msg.content = (
+-            original_content if (accepted_literal or accepted_native_short) and not sanitized_content
++            original_content if (accepted_literal or accepted_native_short or accepted_tmall_literal) and not sanitized_content
+             else sanitized_content
+         )
+         if not msg.content:
+@@ -1954,7 +1958,16 @@
+                 "matched_accepted_send": False,
+                 "reason": "unmatched_client_send_event",
+             }
+-        if runtime._platform_from_account(msg.account) == "taobao":
++        from .tmall_conversation import in_scope as tmall_in_scope
++        tmall_raw = (msg.whitebox or {}).get("tmall_raw_event") or {}
++        retain_tmall_context = bool(
++            isinstance(tmall_raw, dict)
++            and tmall_in_scope(msg.account, runtime._platform_from_account(msg.account))
++            and tmall_raw.get("account") == msg.account
++            and tmall_raw.get("buyer_id") == msg.buyer_id
++            and tmall_raw.get("platform") == "taobao"
++        )
++        if runtime._platform_from_account(msg.account) == "taobao" and not retain_tmall_context:
+             original_content = msg.content
+             cleaned_content, removed_reminders = strip_taobao_system_reminders(original_content)
+             if removed_reminders:
+@@ -2025,7 +2038,7 @@
+             return False
+         # PDD official/system tips ride the same bridge agent and are often
+         # mislabeled user/mall_cs. Drop them before unread/shadow/handoff.
+-        if runtime._is_pdd_platform_system_message(
++        if not retain_tmall_context and runtime._is_pdd_platform_system_message(
+             msg.content, role=str(msg.role or ""), template_name=str(msg.template_name or "")
+         ):
+             if record_event:
+diff --git a/pdd_brain/tmall_reply_quality.py b/pdd_brain/tmall_reply_quality.py
+--- a/pdd_brain/tmall_reply_quality.py
++++ b/pdd_brain/tmall_reply_quality.py
+@@ -61,6 +61,10 @@
+         return 'system'
+     if text in {'为您推荐宝贝', '向您推荐宝贝', '邀请您评价'} or is_taobao_transfer_notice(text) or is_taobao_system_reminder(text):
+         return 'system'
++    from .tmall_conversation import sender_role
++    identified, _ = sender_role(row)
++    if identified:
++        return identified
+     info = _get(row, 'order_info', {}) or {}
+     staff = str(_get(row, 'staff_name') or info.get('reported_staff_nick') or '')
+     account = str(_get(row, 'account') or '')
+diff --git a/tests/test_shadow_queue_slo.py b/tests/test_shadow_queue_slo.py
+--- a/tests/test_shadow_queue_slo.py
++++ b/tests/test_shadow_queue_slo.py
+@@ -428,7 +428,7 @@
+     assert message.whitebox["platform_notice"]["ai_eligible"] is False
+ 
+ 
+-def test_taobao_system_reminder_is_ignored_before_ingest_or_shadow(tmp_path, monkeypatch):
++def test_tmall_system_reminder_is_retained_as_context_without_shadow(tmp_path, monkeypatch):
+     class FakeHub:
+         @staticmethod
+         def resolve_agent_id(_token, claimed_agent_id, **_kwargs):
+@@ -480,22 +480,15 @@
+         response = app.api_bridge_events()
+ 
+     payload = response.get_json()
+-    assert payload["accepted"] == 0
+-    assert payload["ingested_local"] == 0
+-    assert payload["platform_notices_ignored"] == 1
+-    assert payload["shadow_queued"] == 0
+-    assert payload["event_acks"] == [{
+-        "event_id": "event-4249642340225.PNM",
+-        "msg_id": "4249642340225.PNM",
+-        "status": "ignored",
+-        "committed": True,
+-        "retryable": False,
+-        "reason": "taobao_system_reminder",
+-    }]
++    # Tmall retains raw platform context; it must not queue a buyer response.
++    assert payload['accepted'] == 1
++    assert payload['ingested_local'] == 1
++    assert payload['platform_notices_ignored'] == 0
++    assert payload['shadow_queued'] == 0
+     assert enqueued == []
+-    assert store.find_message(
+-        event["account"], event["buyer_id"], event["msg_id"]
+-    ) is None
++    saved = store.find_message(event['account'], event['buyer_id'], event['msg_id'])
++    assert saved.whitebox['tmall_raw_event']['content'] == event['content']
++    assert saved.whitebox['shadow_queue']['auto_send_eligible'] is False
+ 
+ 
+ def test_bridge_product_source_context_updates_memory_without_shadow_enqueue(tmp_path, monkeypatch):
+diff --git a/pdd_brain/tmall_conversation.py b/pdd_brain/tmall_conversation.py
+new file mode 100644
+--- /dev/null
++++ b/pdd_brain/tmall_conversation.py
+@@ -0,0 +1,289 @@
++"""Server-owned projection of raw Tmall events; persisted records remain unchanged."""
++
++from __future__ import annotations
++import re
++from collections.abc import Mapping
++from typing import Any
++
++FEATURE = "tmall_conversation_extraction_v1"
++
++
++def get(row: Any, key: str, default: Any = "") -> Any:
++    return (
++        row.get(key, default)
++        if isinstance(row, Mapping)
++        else getattr(row, key, default)
++    )
++
++
++def in_scope(account: str, platform: str = "taobao") -> bool:
++    return (
++        platform == "taobao"
++        and re.split(r"[:：]", str(account or "").removeprefix("tb_nick_"), maxsplit=1)[
++            0
++        ]
++        == "联想官方旗舰店"
++    )
++
++
++def raw_event(item: dict) -> dict:
++    """Allowlisted evidence, never credentials or an entire SDK/window dump."""
++    keys = (
++        "platform",
++        "account",
++        "buyer_id",
++        "content",
++        "original_msg_id",
++        "original_timestamp",
++        "ts",
++        "capture_mode",
++        "source",
++        "raw_type",
++        "incomplete",
++        "identity_uncertain",
++        "sender_uid",
++        "recipient_uid",
++        "login_uid",
++        "sender_nick",
++        "recipient_nick",
++        "staff_name",
++    )
++    result = {
++        k: item[k]
++        for k in keys
++        if k in item and isinstance(item[k], (str, int, float, bool))
++    }
++    result["reported_role"] = str(item.get("role") or "")
++    return result
++
++
++def sender_role(row: Any) -> tuple[str, str]:
++    """Concrete sender evidence wins over textual heuristics; empty = legacy fallback."""
++    account = str(get(row, "account"))
++    if not in_scope(account):
++        return "", ""
++    box = get(row, "whitebox", {}) or {}
++    raw = box.get("tmall_raw_event") or {}
++    if not isinstance(raw, dict) or not in_scope(
++        str(raw.get("account")), str(raw.get("platform"))
++    ):
++        return "", ""
++    if str(raw.get("account")) != account or str(raw.get("buyer_id")) != str(
++        get(row, "buyer_id")
++    ):
++        return "", ""
++
++    def uid(value):
++        value = str(value or "")
++        return value.split(".")[0] if re.fullmatch(r"\d+(?:\.\d+)?", value) else ""
++
++    sender = uid(raw.get("sender_uid"))
++    login = uid(raw.get("login_uid"))
++    buyer = re.match(r"^(\d+)\.", str(get(row, "buyer_id")))
++    nick = str(raw.get("sender_nick") or raw.get("staff_name") or "")
++    if (
++        (sender and login and sender == login)
++        or (":" in nick or "：" in nick)
++        and re.split(r"[:：]", nick, maxsplit=1)[0] == "联想官方旗舰店"
++    ):
++        return "mall_cs", "sender_identity"
++    if sender and buyer and sender == buyer.group(1):
++        return "user", "sender_identity"
++    if raw.get("identity_uncertain") or raw.get("reported_role") in {
++        "system",
++        "unknown",
++    }:
++        return "system", "identity_unresolved"
++    return "", ""
++
++
++def timestamp(row: Any) -> float:
++    box = get(row, "whitebox", {}) or {}
++    raw = box.get("tmall_raw_event") or {}
++    try:
++        value = float(raw.get("original_timestamp") or get(row, "ts") or 0)
++        return value / 1000 if value > 1e11 else value
++    except (TypeError, ValueError, AttributeError):
++        return 0
++
++
++def ordered_messages(messages: list[Any]) -> list[Any]:
++    """Sort a detached view only; missing timestamps keep the original order."""
++    if any(timestamp(row) <= 0 for row in messages):
++        return list(messages)
++    return sorted(messages, key=timestamp)
++
++
++def extraction_trace(messages: list[Any], target: Any) -> dict:
++    from .tmall_reply_quality import context_role
++
++    return {
++        "feature": FEATURE,
++        "target_msg_id": get(target, "msg_id"),
++        "order": "original_message_time",
++        "events": [
++            {
++                "msg_id": get(row, "msg_id"),
++                "role": context_role(row),
++                "identity_source": sender_role(row)[1] or "legacy_identity_or_template",
++                "original_timestamp": timestamp(row),
++            }
++            for row in messages
++        ][-100:],
++    }
++
++
++def claim_history_resume(session: Any, now: float, max_age: float = 120) -> dict:
++    """One continuation of a first-response-only transfer, never a historical replay."""
++    if (
++        not session
++        or not in_scope(get(session, "account"))
++        or get(session, "ai_takeover_override", None) is False
++        or str(get(session, "handoff_reason")).startswith("manual")
++    ):
++        return {}
++    from .taobao_transfer import is_taobao_transfer_notice
++    from .tmall_reply_quality import context_role, pending_transfer_question
++
++    rows = ordered_messages(list(get(session, "messages", []) or []))
++    for i in range(len(rows) - 1, -1, -1):
++        notice = rows[i]
++        if not is_taobao_transfer_notice(get(notice, "content")):
++            continue
++        if not 0 <= now - timestamp(notice) <= max_age:
++            return {}
++        nid = get(notice, "msg_id")
++        receipt_texts = {
++            re.sub(r"[\s~～。]+", "", str(get(r, "content")))
++            for r in rows
++            if get(r, "role") == "assistant_simulated"
++            and get(r, "parent_msg_id") == nid
++            and ((get(r, "whitebox", {}) or {}).get("tmall_reply_quality") or {}).get(
++                "reason"
++            )
++            == "transfer_first_response"
++        }
++        after = rows[i + 1 :]
++        # A newer buyer turn or a genuine staff reply owns the next action.
++        for row in after:
++            role = context_role(row)
++            if role == "user":
++                return {}
++            if (
++                role == "mall_cs"
++                and re.sub(r"[\s~～。]+", "", str(get(row, "content")))
++                not in receipt_texts
++                and get(row, "source") != "self-send"
++                and not str(get(row, "msg_id")).startswith("self-brain-")
++            ):
++                return {}
++        receipts = []
++        for row in rows:
++            if (
++                get(row, "role") != "assistant_simulated"
++                or get(row, "parent_msg_id") != nid
++            ):
++                continue
++            box = get(row, "whitebox", {}) or {}
++            if (box.get("tmall_reply_quality") or {}).get(
++                "reason"
++            ) == "transfer_first_response":
++                receipts.append(row)
++            elif get(row, "shadow_status") == "succeeded":
++                return {}
++        if not receipts:
++            return {}
++        pending = pending_transfer_question(rows[:i], notice)
++        if not pending:
++            return {}
++        box = dict(get(notice, "whitebox", {}) or {})
++        key = str(pending["msg_id"])
++        if (box.get("tmall_context_resume") or {}).get("question_msg_id") == key:
++            return {}
++        box["tmall_context_resume"] = {
++            "feature": FEATURE,
++            "question_msg_id": key,
++            "claimed_at": now,
++        }
++        notice.whitebox = box
++        return {"parent_msg_id": nid, "question_msg_id": key}
++    return {}
++
++
++def enqueue_history_resume(account: str, buyer_id: str) -> dict:
++    if not in_scope(account):
++        return {}
++    import time
++    from .runtime import runtime
++
++    if not runtime.CONFIG.get("shadow_enabled"):
++        return {}
++    with runtime.STATE_LOCK:
++        session = runtime.STORE.sessions.get(runtime.STORE.key(account, buyer_id))
++        plan = claim_history_resume(
++            session,
++            time.time(),
++            float(runtime.CONFIG.get("shadow_live_message_max_age_seconds") or 120),
++        )
++        if not plan:
++            return {}
++        runtime.STORE.mark_session_dirty(account, buyer_id)
++    key = runtime.STORE.key(account, buyer_id)
++    runtime.STORE.save(dirty_only=True, session_keys={key}, concurrent=True)
++    try:
++        result = runtime.SHADOW_WORKER.enqueue(
++            account,
++            buyer_id,
++            plan["parent_msg_id"],
++            force=True,
++            regeneration_source="system_context_refresh",
++        )
++    except Exception as exc:
++        result = {"ok": False, "status": "enqueue_failed", "error": type(exc).__name__}
++    if isinstance(result, dict) and (
++        result.get("ok") is False or result.get("status") == "already_queued"
++    ):
++        with runtime.STATE_LOCK:
++            notice = runtime.STORE.find_message(
++                account, buyer_id, plan["parent_msg_id"]
++            )
++            if notice:
++                notice.whitebox.pop("tmall_context_resume", None)
++                runtime.STORE.mark_session_dirty(account, buyer_id)
++        runtime.STORE.save(dirty_only=True, session_keys={key}, concurrent=True)
++    return {**plan, "enqueue": result}
++
++
++def retain_literal_chat(row: Any) -> bool:
++    """Trusted raw records remain available; protocol frames still fail closed."""
++    box = get(row, "whitebox", {}) or {}
++    raw = box.get("tmall_raw_event") or {}
++    if not in_scope(get(row, "account")) or not in_scope(
++        raw.get("account"), raw.get("platform")
++    ):
++        return False
++    original_id = str(raw.get("original_msg_id") or "")
++    stored_id = str(get(row, "msg_id")).removeprefix("qn-msg-v1|taobao|")
++    mode = str(raw.get("capture_mode") or "")
++    source = str(raw.get("source") or "")
++    trusted = (
++        source == "qianniu_standalone_browser"
++        and mode.startswith(("event:", "event-local-db:", "poll:", "history_snapshot"))
++    ) or (
++        source == "qianniu_appbiz_on_message_arrive"
++        and mode == "appbiz_native_callback"
++    )
++    text = str(get(row, "content")).strip()
++    literal = (
++        text.lower() in {"hi", "ok"}
++        or re.fullmatch(r"\d{3,30}", text)
++        or re.fullmatch(r"https?://\S+", text)
++    )
++    return bool(
++        trusted
++        and literal
++        and "#" in str(get(row, "buyer_id"))
++        and "@" in str(get(row, "buyer_id"))
++        and re.fullmatch(r"\d{10,20}\.PNM", original_id)
++        and original_id == stored_id
++    )
+diff --git a/tests/test_tmall_conversation_extraction.py b/tests/test_tmall_conversation_extraction.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_tmall_conversation_extraction.py
+@@ -0,0 +1,614 @@
++import time
++import pytest
++from test_tmall_reply_context import install_store, ACCOUNT
++
++
++def test_late_history_is_used_before_transfer_without_mutating_store(
++    tmp_path, monkeypatch
++):
++    app, store = install_store(tmp_path, monkeypatch)
++    now = int(time.time())
++    notice = app.ChatMessage(
++        msg_id="transfer",
++        account=ACCOUNT,
++        buyer_id="buyer",
++        role="user",
++        content="由 服务助手 转交给 燕燕",
++        ts=now,
++    )
++    store.ingest(notice)
++    question = app.ChatMessage(
++        msg_id="question",
++        account=ACCOUNT,
++        buyer_id="buyer",
++        role="user",
++        content="电池要怎么装",
++        ts=now - 5,
++    )
++    question.whitebox = {
++        "shadow_queue": {
++            "eligible": False,
++            "auto_send_eligible": False,
++            "capture_mode": "history_snapshot",
++        }
++    }
++    store.ingest(question)
++    before = [m.msg_id for m in store.sessions[store.key(ACCOUNT, "buyer")].messages]
++    context = app.ShadowWorker()._build_context(ACCOUNT, "buyer", "transfer")
++    assert context["latest_question"] == "电池要怎么装"
++    assert context["message_batch"]["questions"][0]["msg_id"] == "question"
++    assert before == [
++        m.msg_id for m in store.sessions[store.key(ACCOUNT, "buyer")].messages
++    ]
++
++
++def test_raw_sender_identity_precedes_legacy_text_heuristics(tmp_path, monkeypatch):
++    app, store = install_store(tmp_path, monkeypatch)
++    now = int(time.time())
++    msg = app.ChatMessage(
++        msg_id="buyer",
++        account=ACCOUNT,
++        buyer_id="1000000000001.1-126446588.1#11001@cntaobao",
++        role="user",
++        content="亲亲，麻烦您提供设备号，这句话什么意思",
++        ts=now,
++    )
++    msg.whitebox = {
++        "tmall_raw_event": {
++            "platform": "taobao",
++            "account": ACCOUNT,
++            "buyer_id": msg.buyer_id,
++            "sender_uid": "1000000000001",
++            "content": msg.content,
++            "original_timestamp": now,
++            "reported_role": "user",
++        }
++    }
++    store.ingest(msg)
++    c = app.ShadowWorker()._build_context(ACCOUNT, msg.buyer_id, "buyer")
++    assert c["message_batch"]["questions"][0]["content"] == msg.content
++
++
++def test_staff_sender_is_context_even_when_reported_as_user(tmp_path, monkeypatch):
++    app, store = install_store(tmp_path, monkeypatch)
++    now = int(time.time())
++    msg = app.ChatMessage(
++        msg_id="staff",
++        account=ACCOUNT,
++        buyer_id="buyer",
++        role="user",
++        content="明天给您补发配件",
++        ts=now,
++    )
++    msg.whitebox = {
++        "tmall_raw_event": {
++            "platform": "taobao",
++            "account": ACCOUNT,
++            "buyer_id": "buyer",
++            "sender_nick": "联想官方旗舰店:雪晴",
++            "content": msg.content,
++            "original_timestamp": now,
++            "reported_role": "user",
++        }
++    }
++    store.ingest(msg)
++    c = app.ShadowWorker()._build_context(ACCOUNT, "buyer", "staff")
++    assert c["message_batch"]["questions"] == []
++
++
++def test_pdd_context_keeps_existing_order(tmp_path, monkeypatch):
++    app, store = install_store(tmp_path, monkeypatch)
++    app.SHOP_REGISTRY.onboard(
++        {"shop_id": "pdd-test", "shop_name": "PDD", "accounts": ["cs_1:2"]}
++    )
++    now = int(time.time())
++    for mid, ts in [("first", now), ("second", now - 5)]:
++        store.ingest(
++            app.ChatMessage(
++                msg_id=mid,
++                account="cs_1:2",
++                buyer_id="buyer",
++                role="user",
++                content="电池要怎么装",
++                ts=ts,
++            )
++        )
++    c = app.ShadowWorker()._build_context("cs_1:2", "buyer", "first")
++    assert not c.get("tmall_conversation_extraction")
++
++
++def test_history_resume_is_claimed_once_and_does_not_resume_paused_conversation(
++    tmp_path, monkeypatch
++):
++    from pdd_brain.tmall_conversation import claim_history_resume
++
++    app, store = install_store(tmp_path, monkeypatch)
++    now = int(time.time())
++    for mid, role, text, ts in [
++        ("transfer", "user", "由 服务助手 转交给 燕燕", now),
++        ("question", "user", "电池要怎么装", now - 5),
++    ]:
++        store.ingest(
++            app.ChatMessage(
++                msg_id=mid,
++                account=ACCOUNT,
++                buyer_id="buyer",
++                role=role,
++                content=text,
++                ts=ts,
++            )
++        )
++    ack = app.ChatMessage(
++        msg_id="ack",
++        parent_msg_id="transfer",
++        account=ACCOUNT,
++        buyer_id="buyer",
++        role="assistant_simulated",
++        content="亲，已接到您的咨询，我先看一下前面的聊天记录，接着帮您处理。",
++        ts=now + 1,
++        shadow_status="succeeded",
++    )
++    ack.whitebox = {"tmall_reply_quality": {"reason": "transfer_first_response"}}
++    store.ingest(ack)
++    session = store.sessions[store.key(ACCOUNT, "buyer")]
++    session.ai_takeover_override = False
++    assert not claim_history_resume(session, now + 2)
++    session.ai_takeover_override = None
++    assert claim_history_resume(session, now + 2)["question_msg_id"] == "question"
++    assert not claim_history_resume(session, now + 3)
++
++
++def test_live_api_keeps_raw_events_and_uses_server_sender_identity(
++    tmp_path, monkeypatch
++):
++    import app
++    from test_bridge_ingress_guards import _install_bridge_state, _post_events
++
++    store = _install_bridge_state(tmp_path, monkeypatch)
++    app.SHOP_REGISTRY.onboard(
++        {
++            "shop_id": "tb_nick_联想官方旗舰店",
++            "shop_name": "联想官方旗舰店",
++            "accounts": [ACCOUNT],
++        }
++    )
++    jobs = []
++    monkeypatch.setitem(app.CONFIG, "shadow_enabled", True)
++    monkeypatch.setattr(
++        app.SHADOW_WORKER,
++        "enqueue",
++        lambda *a, **kw: jobs.append((a, kw)) or {"ok": True},
++    )
++    buyer = "1000000000001.1-126446588.1#11001@cntaobao"
++    now = int(time.time())
++    events = [
++        {
++            "event_id": mid,
++            "msg_id": mid,
++            "account": ACCOUNT,
++            "buyer_id": buyer,
++            "platform": "taobao",
++            "role": role,
++            "content": text,
++            "ts": now,
++            "original_timestamp": now,
++            "sender_uid": uid,
++            "sender_nick": nick,
++            "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
++            "identity_uncertain": True,
++        }
++        for mid, role, text, uid, nick in [
++            ("buyer", "unknown", "电池要怎么装", "1000000000001", "dysileib"),
++            ("staff", "user", "明天给您补发配件", "123", "联想官方旗舰店:雪晴"),
++            ("system", "system", "邀请您评价", "", ""),
++        ]
++    ]
++    payload = _post_events(events)
++    assert payload["ingested_local"] == 3, payload
++    assert [job[0][-1] for job in jobs] == ["buyer"]
++    for event in events:
++        msg = store.find_message(ACCOUNT, buyer, event["msg_id"])
++        assert msg.whitebox["tmall_raw_event"]["content"] == event["content"]
++        assert msg.whitebox["tmall_raw_event"]["reported_role"] == event["role"]
++
++
++def test_real_ingress_worker_delivery_resumes_after_first_response(
++    tmp_path, monkeypatch
++):
++    import app
++    from pdd_brain.shadow import worker as pipeline
++    from test_bridge_ingress_guards import _install_bridge_state, _post_events
++
++    store = _install_bridge_state(tmp_path, monkeypatch)
++    app.SHOP_REGISTRY.onboard(
++        {
++            "shop_id": "tb_nick_联想官方旗舰店",
++            "shop_name": "联想官方旗舰店",
++            "accounts": [ACCOUNT],
++        }
++    )
++    worker = app.ShadowWorker()
++    monkeypatch.setattr(app, "SHADOW_WORKER", worker)
++    jobs = []
++    sends = []
++    monkeypatch.setattr(
++        worker, "enqueue", lambda *a, **kw: jobs.append((a, kw)) or {"ok": True}
++    )
++    monkeypatch.setattr(
++        app,
++        "_maybe_auto_send_shadow_reply",
++        lambda m: sends.append((m.parent_msg_id, m.content))
++        or {"ok": True, "attempted": True, "status": "accepted"},
++    )
++    monkeypatch.setitem(app.CONFIG, "shadow_enabled", True)
++    now = int(time.time())
++    base = {
++        "account": ACCOUNT,
++        "buyer_id": "buyer",
++        "platform": "taobao",
++        "role": "user",
++    }
++    notice = {
++        **base,
++        "event_id": "notice",
++        "msg_id": "notice",
++        "content": "由 服务助手 转交给 燕燕",
++        "ts": now,
++    }
++    question = {
++        **base,
++        "event_id": "old-question",
++        "msg_id": "old-question",
++        "content": "物联卡是什么",
++        "ts": now - 5,
++        "capture_mode": "history_snapshot",
++    }
++    _post_events([notice])
++    first, _ = pipeline.process(worker, ACCOUNT, "buyer", "notice")
++    assert first["tmall_reply_quality"]["reason"] == "transfer_first_response"
++    _post_events([question])
++    assert len(jobs) == 2, jobs
++    assert jobs[-1][1] == {
++        "force": True,
++        "regeneration_source": "system_context_refresh",
++    }
++    data, _ = pipeline.process(
++        worker,
++        ACCOUNT,
++        "buyer",
++        "notice",
++        force=True,
++        regeneration_source="system_context_refresh",
++    )
++    assert data["tmall_reply_quality"]["reason"] == "sim_card_definition"
++    assert (
++        data["input_context"]["tmall_transfer_continuation"]["msg_id"] == "old-question"
++    )
++    assert len(sends) == 2 and sends[-1][0] == "notice"
++    assert "物联卡" in sends[-1][1] and "聊天记录" not in sends[-1][1]
++    _post_events([question])
++    assert len(jobs) == 2
++    session = store.sessions[store.key(ACCOUNT, "buyer")]
++    assert session.messages[0].content == "由 服务助手 转交给 燕燕"
++
++
++def test_receipt_is_not_an_answer_but_substantive_send_still_deduplicates(
++    tmp_path, monkeypatch
++):
++    from pdd_brain.auto_send import _buyer_turn_already_sent
++    from types import SimpleNamespace
++
++    app, store = install_store(tmp_path, monkeypatch)
++    original = app.ChatMessage(
++        msg_id="notice",
++        account=ACCOUNT,
++        buyer_id="buyer",
++        role="user",
++        content="由 服务助手 转交给 燕燕",
++        ts=int(time.time()),
++    )
++    receipt = app.ChatMessage(
++        msg_id="receipt",
++        account=ACCOUNT,
++        buyer_id="buyer",
++        role="assistant_simulated",
++        parent_msg_id="notice",
++        content="已接到您的咨询",
++        ts=original.ts,
++    )
++    receipt.whitebox = {
++        "auto_send_ok": True,
++        "tmall_reply_quality": {"reason": "transfer_first_response"},
++    }
++    outgoing = app.ChatMessage(
++        msg_id="reply",
++        account=ACCOUNT,
++        buyer_id="buyer",
++        role="assistant_simulated",
++        parent_msg_id="notice",
++        content="物联卡用于设备联网",
++        ts=original.ts,
++    )
++    outgoing.whitebox = {
++        "input_context": {"tmall_transfer_continuation": {"msg_id": "old"}}
++    }
++    session = SimpleNamespace(messages=[original, receipt])
++    assert not _buyer_turn_already_sent(outgoing, session)
++    receipt.whitebox["tmall_reply_quality"]["reason"] = "sim_card_definition"
++    assert _buyer_turn_already_sent(outgoing, session)
++
++
++@pytest.mark.parametrize(
++    "blocking", ["new_buyer", "human_answer", "expired", "other_shop", "manual_pause"]
++)
++def test_continuation_never_overrides_new_turn_or_human(
++    tmp_path, monkeypatch, blocking
++):
++    from pdd_brain.tmall_conversation import claim_history_resume
++
++    app, store = install_store(tmp_path, monkeypatch)
++    now = int(time.time())
++    for mid, role, text, ts in [
++        ("q", "user", "电池要怎么装", now - 5),
++        ("n", "user", "由 服务助手 转交给 燕燕", now),
++        ("ack", "assistant_simulated", "已接到您的咨询", now + 1),
++    ]:
++        msg = app.ChatMessage(
++            msg_id=mid,
++            account=ACCOUNT,
++            buyer_id="buyer",
++            role=role,
++            content=text,
++            ts=ts,
++        )
++        if mid == "ack":
++            msg.parent_msg_id = "n"
++            msg.shadow_status = "succeeded"
++            msg.whitebox = {
++                "tmall_reply_quality": {"reason": "transfer_first_response"}
++            }
++        store.ingest(msg)
++    session = store.sessions[store.key(ACCOUNT, "buyer")]
++    if blocking in {"new_buyer", "human_answer"}:
++        store.ingest(
++            app.ChatMessage(
++                msg_id="new",
++                account=ACCOUNT,
++                buyer_id="buyer",
++                role="user" if blocking == "new_buyer" else "mall_cs",
++                content="我来处理",
++                ts=now + 2,
++                staff_name="燕燕",
++            )
++        )
++    elif blocking == "other_shop":
++        session.account = "cs_1:2"
++    elif blocking == "manual_pause":
++        session.ai_takeover_override = False
++    assert not claim_history_resume(
++        session, now + 121 if blocking == "expired" else now + 3
++    )
++
++
++@pytest.mark.parametrize("account,blocked", [(ACCOUNT, True), ("cs_1:2", False)])
++def test_full_shop_permission_respects_tmall_no_reply_and_keeps_pdd_legacy(
++    tmp_path, monkeypatch, account, blocked
++):
++    from pdd_brain.auto_send import _maybe_auto_send_shadow_reply
++
++    app, store = install_store(tmp_path, monkeypatch)
++    if account != "联想官方旗舰店:燕燕":
++        app.SHOP_REGISTRY.onboard(
++            {"shop_id": "pdd-test", "shop_name": "PDD", "accounts": [account]}
++        )
++    now = int(time.time())
++    store.ingest(
++        app.ChatMessage(
++            msg_id="q",
++            account=account,
++            buyer_id="buyer",
++            role="user",
++            content="客户问题",
++            ts=now,
++        )
++    )
++    reply = app.ChatMessage(
++        msg_id="r",
++        parent_msg_id="q",
++        account=account,
++        buyer_id="buyer",
++        role="assistant_simulated",
++        content="这条不应发送",
++        ts=now,
++    )
++    reply.whitebox = {"final_decision": {"allowed_to_send": False}}
++    monkeypatch.setattr(app, "_full_shop_ai_reply_enabled", lambda *a: True)
++    monkeypatch.setattr(app.CAPABILITIES.routing, "peek_settings", lambda *a: {})
++    monkeypatch.setattr(app, "_own_takeover_guard_locked", lambda *a, **kw: (True, ""))
++    sends = []
++    monkeypatch.setattr(
++        app,
++        "send_text",
++        lambda *a, **kw: sends.append((a, kw)) or {"ok": True, "status": "accepted"},
++    )
++    result = _maybe_auto_send_shadow_reply(reply)
++    assert bool(sends) is not blocked
++    if blocked:
++        assert result["status"] == "suppressed" and not result["attempted"]
++
++
++def test_external_delivery_retries_continuation_after_releasing_original_job(
++    tmp_path, monkeypatch
++):
++    from pdd_brain.tmall_conversation import enqueue_history_resume
++
++    app, store = install_store(tmp_path, monkeypatch)
++    now = int(time.time())
++    for mid, role, text, ts in [
++        ("n", "user", "由 服务助手 转交给 燕燕", now),
++        ("q", "user", "物联卡是什么", now - 5),
++        ("ack", "assistant_simulated", "已接到您的咨询", now + 1),
++    ]:
++        msg = app.ChatMessage(
++            msg_id=mid,
++            account=ACCOUNT,
++            buyer_id="buyer",
++            role=role,
++            content=text,
++            ts=ts,
++        )
++        if mid == "ack":
++            msg.parent_msg_id = "n"
++            msg.shadow_status = "succeeded"
++            msg.whitebox = {
++                "tmall_reply_quality": {"reason": "transfer_first_response"}
++            }
++        store.ingest(msg)
++    monkeypatch.setitem(app.CONFIG, "shadow_enabled", True)
++    worker = app.ShadowWorker()
++    monkeypatch.setattr(app, "SHADOW_WORKER", worker)
++    released = []
++    calls = []
++    monkeypatch.setattr(
++        worker,
++        "enqueue",
++        lambda *a, **kw: calls.append((a, kw))
++        or {"ok": True, "status": "queued" if released else "already_queued"},
++    )
++    enqueue_history_resume(ACCOUNT, "buyer")
++    assert not store.find_message(ACCOUNT, "buyer", "n").whitebox.get(
++        "tmall_context_resume"
++    )
++    monkeypatch.setattr(worker, "_result_already_applied", lambda row: True)
++
++    class Repo:
++        def mark_brain_result_delivered(self, *a):
++            released.append(True)
++            return True
++
++    worker._dispatch_result(
++        Repo(),
++        {
++            "job_id": "first-job",
++            "account": ACCOUNT,
++            "buyer_id": "buyer",
++            "msg_id": "n",
++            "result_payload": {
++                "tmall_reply_quality": {"reason": "transfer_first_response"}
++            },
++        },
++    )
++    assert len(calls) == 2 and released
++    assert (
++        store.find_message(ACCOUNT, "buyer", "n").whitebox["tmall_context_resume"][
++            "question_msg_id"
++        ]
++        == "q"
++    )
++
++
++@pytest.mark.parametrize("text", ["hi", "ok", "12345678", "https://example.com/help"])
++def test_raw_literal_chat_is_kept_by_real_ingress_and_store(
++    tmp_path, monkeypatch, text
++):
++    import app
++    from test_bridge_ingress_guards import _install_bridge_state, _post_events
++
++    store = _install_bridge_state(tmp_path, monkeypatch)
++    app.SHOP_REGISTRY.onboard(
++        {
++            "shop_id": "tb_nick_联想官方旗舰店",
++            "shop_name": "联想官方旗舰店",
++            "accounts": [ACCOUNT],
++        }
++    )
++    event = {
++        "event_id": "qn-msg-v1|taobao|2026101000001.PNM",
++        "msg_id": "qn-msg-v1|taobao|2026101000001.PNM",
++        "original_msg_id": "2026101000001.PNM",
++        "account": ACCOUNT,
++        "buyer_id": "1000000000001.1-126446588.1#11001@cntaobao",
++        "platform": "taobao",
++        "role": "user",
++        "content": text,
++        "ts": int(time.time()),
++        "source": "qianniu_standalone_browser",
++        "capture_mode": "event-local-db:im.singlemsg.onReceiveNewMsg",
++    }
++    payload = _post_events([event])
++    assert payload["ingested_local"] == 1, payload
++    assert (
++        store.find_message(ACCOUNT, event["buyer_id"], event["msg_id"]).content == text
++    )
++
++
++def test_original_timestamp_restores_history_when_ingest_time_is_clamped(
++    tmp_path, monkeypatch
++):
++    app, store = install_store(tmp_path, monkeypatch)
++    now = int(time.time())
++    for mid, text, original in [
++        ("notice", "由 服务助手 转交给 燕燕", now),
++        ("question", "物联卡是什么", now - 5),
++    ]:
++        row = app.ChatMessage(
++            msg_id=mid,
++            account=ACCOUNT,
++            buyer_id="buyer",
++            role="user",
++            content=text,
++            ts=now,
++        )
++        row.whitebox = {
++            "tmall_raw_event": {
++                "platform": "taobao",
++                "account": ACCOUNT,
++                "buyer_id": "buyer",
++                "original_timestamp": original,
++            }
++        }
++        store.ingest(row)
++    context = app.ShadowWorker()._build_context(ACCOUNT, "buyer", "notice")
++    assert context["latest_question"] == "物联卡是什么"
++    assert store.find_message(ACCOUNT, "buyer", "question").ts == now
++
++
++def test_enqueue_failure_releases_claim_for_retry(tmp_path, monkeypatch):
++    from pdd_brain.tmall_conversation import enqueue_history_resume
++
++    app, store = install_store(tmp_path, monkeypatch)
++    now = int(time.time())
++    for mid, role, text, ts in [
++        ("n", "user", "由 服务助手 转交给 燕燕", now),
++        ("q", "user", "物联卡是什么", now - 5),
++        ("ack", "assistant_simulated", "已接到您的咨询", now + 1),
++    ]:
++        row = app.ChatMessage(
++            msg_id=mid,
++            account=ACCOUNT,
++            buyer_id="buyer",
++            role=role,
++            content=text,
++            ts=ts,
++        )
++        if mid == "ack":
++            row.parent_msg_id = "n"
++            row.shadow_status = "succeeded"
++            row.whitebox = {
++                "tmall_reply_quality": {"reason": "transfer_first_response"}
++            }
++        store.ingest(row)
++    monkeypatch.setitem(app.CONFIG, "shadow_enabled", True)
++    monkeypatch.setattr(
++        app.SHADOW_WORKER,
++        "enqueue",
++        lambda *a, **kw: {"ok": False, "status": "queue_unavailable"},
++    )
++    assert enqueue_history_resume(ACCOUNT, "buyer")["enqueue"]["ok"] is False
++    assert not store.find_message(ACCOUNT, "buyer", "n").whitebox.get(
++        "tmall_context_resume"
++    )
++    monkeypatch.setattr(
++        app.SHADOW_WORKER, "enqueue", lambda *a, **kw: {"ok": True, "status": "queued"}
++    )
++    assert enqueue_history_resume(ACCOUNT, "buyer")["enqueue"]["status"] == "queued"
