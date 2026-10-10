@@ -336,11 +336,12 @@ diff --git a/pdd_brain/tmall_conversation.py b/pdd_brain/tmall_conversation.py
 new file mode 100644
 --- /dev/null
 +++ b/pdd_brain/tmall_conversation.py
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,294 @@
 +"""Server-owned projection of raw Tmall events; persisted records remain unchanged."""
 +
 +from __future__ import annotations
 +import re
++import math
 +from collections.abc import Mapping
 +from typing import Any
 +
@@ -441,7 +442,11 @@ new file mode 100644
 +    raw = box.get("tmall_raw_event") or {}
 +    try:
 +        value = float(raw.get("original_timestamp") or get(row, "ts") or 0)
-+        return value / 1000 if value > 1e11 else value
++        if not math.isfinite(value) or value <= 0:
++            return 0
++        while value > 1e11:
++            value /= 1000
++        return value
 +    except (TypeError, ValueError, AttributeError):
 +        return 0
 +
@@ -630,7 +635,7 @@ diff --git a/tests/test_tmall_conversation_extraction.py b/tests/test_tmall_conv
 new file mode 100644
 --- /dev/null
 +++ b/tests/test_tmall_conversation_extraction.py
-@@ -0,0 +1,614 @@
+@@ -0,0 +1,639 @@
 +import time
 +import pytest
 +from test_tmall_reply_context import install_store, ACCOUNT
@@ -1245,3 +1250,28 @@ new file mode 100644
 +        app.SHADOW_WORKER, "enqueue", lambda *a, **kw: {"ok": True, "status": "queued"}
 +    )
 +    assert enqueue_history_resume(ACCOUNT, "buyer")["enqueue"]["status"] == "queued"
++
++
++@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, "invalid"])
++def test_invalid_raw_timestamp_keeps_safe_stored_view(value):
++    from pdd_brain.tmall_conversation import ordered_messages, timestamp
++
++    row = {"ts": 100, "whitebox": {"tmall_raw_event": {"original_timestamp": value}}}
++    assert timestamp(row) == 0
++    assert ordered_messages([row]) == [row]
++
++
++@pytest.mark.parametrize("scale", [1, 1000, 1000000, 1000000000])
++def test_original_timestamp_units_are_normalized(scale):
++    from pdd_brain.tmall_conversation import timestamp
++
++    assert (
++        timestamp(
++            {
++                "whitebox": {
++                    "tmall_raw_event": {"original_timestamp": 1791630000 * scale}
++                }
++            }
++        )
++        == 1791630000
++    )
