@@ -647,7 +647,7 @@ class LauncherLifecycleTests(unittest.TestCase):
                     patch.object(launcher, "start_process", return_value=process), \
                     patch.object(launcher, "kill_tree", return_value=True) as kill_tree, \
                     patch.object(launcher, "message_box"), \
-                    patch.object(launcher.time, "time", side_effect=[0.0, 26.0]):
+                    patch.object(launcher.time, "time", side_effect=[0.0, 41.0]):
                 self.assertEqual(launcher.start_all(), 5)
             kill_tree.assert_called_once_with(12345)
             self.assertFalse((state / "standalone_bridge.pid").exists())

@@ -1,3 +1,4 @@
+from contextlib import closing
 import tempfile
 import time
 import unittest
@@ -42,7 +43,7 @@ class TmallDeliveryTests(unittest.TestCase):
                    sender_uid='4007146934', login_uid='126446588.1')
         self.assertTrue(self.brain.execute_command(self.command)['real_send'])
         self.send.assert_called_once()
-        with self.db.connect() as connection:
+        with closing(self.db.connect()) as connection, connection:
             import json
             row = json.loads(connection.execute('SELECT payload FROM events').fetchone()['payload'])
         self.assertEqual(row['role'], 'unknown')
