@@ -2466,6 +2466,7 @@ class SendIdempotencyTests(unittest.TestCase):
         bridge.stop_event = threading.Event()
         bridge.appbiz = SimpleNamespace(thread=Mock())
         bridge.native = SimpleNamespace(thread=Mock())
+        bridge.brain = SimpleNamespace(stop_event_channel=Mock())
         bridge.stop()
         self.assertTrue(bridge.stop_event.is_set())
         bridge.appbiz.thread.join.assert_called_once_with(timeout=3.0)

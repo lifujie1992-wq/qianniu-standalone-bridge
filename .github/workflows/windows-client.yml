@@ -1,4 +1,4 @@
-name: Windows client package
+name: Windows client package # native Windows regression gate
 on:
   push:
     branches: [fix/tmall-client-message-guards-20261006]

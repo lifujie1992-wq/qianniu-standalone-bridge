@@ -552,7 +552,7 @@ class StateDB:
 
     def prune_old_events(self, retention_seconds: float = RETENTION_SECONDS) -> int:
         cutoff = time.time() - max(0.0, retention_seconds)
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             events_cursor = connection.execute(
                 """
                 DELETE FROM events
@@ -572,7 +572,7 @@ class StateDB:
         return int(events_cursor.rowcount or 0) + int(brain_cursor.rowcount or 0)
 
     def _initialize(self) -> None:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS events (
@@ -724,7 +724,7 @@ class StateDB:
             normalized["nickname"] = self.cached_nickname(account, buyer_id)
         event_id = normalized["event_id"]
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             existing = connection.execute(
                 "SELECT payload,revision,status,created_at FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -784,7 +784,7 @@ class StateDB:
             return event_id, True
 
     def latest_tmall_buyer_event(self, account: str, buyer_id: str, command_parent: str = "", batch_ids=()) -> dict[str, Any] | None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT payload FROM events WHERE json_extract(payload,'$.account')=? "
                 "AND json_extract(payload,'$.buyer_id')=? "
@@ -801,7 +801,7 @@ class StateDB:
         normalized = normalize_event(event)
         event_id = normalized["event_id"]
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             existing = connection.execute(
                 "SELECT payload,revision,created_at FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -834,7 +834,7 @@ class StateDB:
             return event_id, True
 
     def claim_pending(self, limit: int = 100) -> list[dict[str, Any]]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
                 "SELECT event_id,payload,revision FROM events WHERE status='pending' ORDER BY updated_at LIMIT ?",
@@ -852,7 +852,7 @@ class StateDB:
             ]
 
     def pending(self, limit: int = 100) -> list[dict[str, Any]]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT event_id,payload,revision FROM events WHERE status='pending' ORDER BY updated_at LIMIT ?",
                 (limit,),
@@ -863,7 +863,7 @@ class StateDB:
         ]
 
     def mark_delivered(self, event_id: str, revision: str) -> bool:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             cursor = connection.execute(
                 """
                 UPDATE events SET status='delivered', delivered_at=?, last_error=''
@@ -877,7 +877,7 @@ class StateDB:
             return changed
 
     def mark_failed(self, rows: list[dict[str, Any]], error: str) -> None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             for row in rows:
                 connection.execute(
                     """
@@ -890,21 +890,21 @@ class StateDB:
                 self._invalidate_session_cache()
 
     def counts(self) -> dict[str, int]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute("SELECT status,COUNT(*) AS count FROM events GROUP BY status").fetchall()
         result = {"pending": 0, "delivered": 0}
         result.update({row["status"]: int(row["count"]) for row in rows})
         return result
 
     def event_status(self, event_id: str) -> str:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT status FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
         return str(row["status"]) if row else ""
 
     def brain_suppressed_message_ids(self, limit: int = WORKBENCH_EVENT_LIMIT) -> set[str]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT payload FROM events ORDER BY updated_at DESC LIMIT ?",
                 (max(1, min(limit, 100000)),),
@@ -927,7 +927,7 @@ class StateDB:
         return message_ids
 
     def brain_handoff_controls(self) -> dict[tuple[str, str], str]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT account,buyer_id,reason,source FROM session_controls
@@ -948,7 +948,7 @@ class StateDB:
                 and now_mono - self._session_cache_at < WORKBENCH_SESSION_CACHE_SECONDS
             ):
                 return [dict(item) for item in self._session_cache]
-            with self.connect() as connection:
+            with closing(self.connect()) as connection, connection:
                 rows = connection.execute(
                     "SELECT payload,status FROM events ORDER BY created_at DESC LIMIT ?",
                     (WORKBENCH_EVENT_LIMIT,),
@@ -1067,7 +1067,7 @@ class StateDB:
             raise ValueError("mode must be ai or human")
         now = time.time()
         expires_at = now + max(60.0, float(ttl_seconds)) if mode == "human" and ttl_seconds else 0.0
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute(
                 """
                 INSERT INTO session_controls(account,buyer_id,mode,reason,source,updated_at,expires_at)
@@ -1092,7 +1092,7 @@ class StateDB:
     def session_control(self, account: str, buyer_id: str) -> dict[str, Any]:
         account = str(account or "").strip()
         buyer_id = str(buyer_id or "").strip()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 """
                 SELECT mode,reason,source,updated_at,expires_at FROM session_controls
@@ -1130,7 +1130,7 @@ class StateDB:
         target = str(buyer_id or "").strip()
         if not target:
             return ""
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT payload FROM events ORDER BY updated_at DESC LIMIT 1000"
             ).fetchall()
@@ -1146,7 +1146,7 @@ class StateDB:
     def workbench_messages(
         self, account: str, buyer_id: str, limit: int = 300
     ) -> list[dict[str, Any]]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT event_id,payload,status FROM events ORDER BY created_at DESC LIMIT ?",
                 (WORKBENCH_MESSAGE_LIMIT,),
@@ -1232,7 +1232,7 @@ class StateDB:
         return messages[-max(1, min(limit, 1000)):]
 
     def get_send(self, request_id: str) -> sqlite3.Row | None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             return connection.execute(
                 "SELECT * FROM sends WHERE request_id=?", (request_id,)
             ).fetchone()
@@ -1244,7 +1244,7 @@ class StateDB:
         buyer_cid: str,
         content: str,
     ) -> tuple[bool, sqlite3.Row | None]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT * FROM sends WHERE request_id=?", (request_id,)
@@ -1276,7 +1276,7 @@ class StateDB:
         response = {"ok": False, "request_id": request_id, "status": "unknown",
                     "confirmed": False, "real_send": False, "error": error[:500],
                     "error_user": "发送结果未确认，需要核对千牛发送回显；不会盲目重发"}
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("UPDATE sends SET status='unknown',response=?,updated_at=? WHERE request_id=? AND payload_hash=? AND status='in_flight'",
                                (json_text(response), time.time(), request_id, payload_hash))
         return response
@@ -1298,7 +1298,7 @@ class StateDB:
         }
         if note:
             response["error_user"] = note
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """
@@ -1330,7 +1330,7 @@ class StateDB:
             "confirmed": False,
             "error": error[:500],
         }
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             cursor = connection.execute(
                 """
                 UPDATE sends SET status='rejected',response=?,updated_at=?
@@ -1350,7 +1350,7 @@ class StateDB:
     def expire_unconfirmed_sends(self, timeout_seconds: float, now: float | None = None) -> int:
         current = time.time() if now is None else now
         cutoff = current - max(1.0, timeout_seconds)
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT request_id,response FROM sends
@@ -1393,7 +1393,7 @@ class StateDB:
         observed_at = event_timestamp(event) or time.time()
         lower_bound = observed_at - max(1.0, max_age_seconds)
         upper_bound = observed_at + 5.0
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
@@ -1459,7 +1459,7 @@ class StateDB:
             "confirmed": True,
             "confirmation_source": "messagesdk_callback",
         }
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             cursor = connection.execute(
                 """
                 UPDATE sends
@@ -1479,7 +1479,7 @@ class StateDB:
             return json.loads(existing["response"])
 
     def send_counts(self) -> dict[str, int]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT status,COUNT(*) AS count FROM sends GROUP BY status"
             ).fetchall()
@@ -1487,7 +1487,7 @@ class StateDB:
 
     def enqueue_brain_event(self, event_id: str) -> bool:
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             event = connection.execute(
                 "SELECT revision FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -1516,7 +1516,7 @@ class StateDB:
 
     def max_event_rowid(self) -> int:
         """Row watermark of the newest locally stored event."""
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT COALESCE(MAX(rowid), 0) FROM events"
             ).fetchone()
@@ -1535,7 +1535,7 @@ class StateDB:
         """
         now = time.time()
         queued = 0
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT e.event_id,e.revision,e.payload
@@ -1574,7 +1574,7 @@ class StateDB:
         if not enrichment:
             return False
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT payload,revision FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -1603,7 +1603,7 @@ class StateDB:
             return True
 
     def event_payload(self, event_id: str) -> dict[str, Any] | None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT payload FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -1623,7 +1623,7 @@ class StateDB:
         encoded = json_text(normalized)
         revision = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT revision FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -1646,7 +1646,7 @@ class StateDB:
 
     def claim_brain_events(self, min_age_seconds: float, limit: int = 100) -> list[dict[str, Any]]:
         cutoff = time.time() - max(0.0, min_age_seconds)
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
                 """
@@ -1680,7 +1680,7 @@ class StateDB:
         error: str = "",
     ) -> None:
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             for row in rows:
                 event_id = str(row["event_id"])
                 revision = str(row["revision"])
@@ -1704,7 +1704,7 @@ class StateDB:
                     )
 
     def brain_event_counts(self) -> dict[str, Any]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT status,COUNT(*) AS count FROM brain_events GROUP BY status"
             ).fetchall()
@@ -1730,7 +1730,7 @@ class StateDB:
             semantic.pop(key, None)
         payload_hash = hashlib.sha256(json_text(semantic).encode("utf-8")).hexdigest()
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT * FROM brain_commands WHERE command_id=?", (command_id,)
@@ -1761,7 +1761,7 @@ class StateDB:
         return True, dict(row)
 
     def store_brain_command_result(self, command_id: str, result: dict[str, Any]) -> None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute(
                 """
                 UPDATE brain_commands
@@ -1772,7 +1772,7 @@ class StateDB:
             )
 
     def fail_brain_command_report(self, command_id: str, error: str) -> None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute(
                 """
                 UPDATE brain_commands
@@ -1784,7 +1784,7 @@ class StateDB:
 
     def acknowledge_brain_command(self, command_id: str) -> None:
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute(
                 """
                 UPDATE brain_commands
@@ -1795,7 +1795,7 @@ class StateDB:
             )
 
     def pending_brain_command_results(self, limit: int = 20) -> list[dict[str, Any]]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT command_id,result FROM brain_commands
@@ -1809,7 +1809,7 @@ class StateDB:
         ]
 
     def brain_command_counts(self) -> dict[str, int]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT status,COUNT(*) AS count FROM brain_commands GROUP BY status"
             ).fetchall()
@@ -1818,7 +1818,7 @@ class StateDB:
         return result
 
     def recent_brain_commands(self, limit: int = 20) -> list[dict[str, Any]]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT command_id,payload,status,result,attempts,last_error,created_at,updated_at

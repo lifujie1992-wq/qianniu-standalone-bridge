@@ -6,7 +6,7 @@ try:
 except ModuleNotFoundError:
     from taobao_message_contract import select_parent, verified_batch_parent, message_id
 
-CASES=json.loads((Path(__file__).parent/'fixtures/tmall_failed_turns_sanitized.json').read_text())
+CASES=json.loads((Path(__file__).parent/'fixtures/tmall_failed_turns_sanitized.json').read_text(encoding='utf-8'))
 
 class FailedTurnReplayTests(unittest.TestCase):
     pass
