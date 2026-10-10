@@ -637,7 +637,8 @@ class LauncherLifecycleTests(unittest.TestCase):
             (state / launcher.PASSIVE_UPGRADE_MARKER).write_text("installed", encoding="ascii")
             process = Mock(pid=12345)
             process.poll.return_value = None
-            config = {"config_defaults_revision": 1, "dock_enabled": False}
+            config = {"config_defaults_revision": CONFIG_DEFAULTS_REVISION,
+                      "dock_enabled": False, "auto_update_check_enabled": False}
             with patch.object(launcher, "app_root", return_value=root), \
                     patch.object(launcher, "load_config_silent", return_value=config), \
                     patch.object(launcher, "ensure_device_identity", return_value=True), \

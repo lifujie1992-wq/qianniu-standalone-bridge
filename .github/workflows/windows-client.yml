@@ -3,7 +3,13 @@ on:
   push:
     branches: [fix/tmall-client-message-guards-20261006]
     paths:
-      - app_version.py
+      - '*.py'
+      - '*.js'
+      - 'tests/**'
+      - 'tools/**'
+      - 'native/**'
+      - requirements.txt
+      - workbench.html
       - .github/workflows/windows-client.yml
   workflow_dispatch:
 permissions:
