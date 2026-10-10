@@ -308,6 +308,7 @@ test('UID lookup is coalesced, messages wait for nick, and later messages use ca
   receive(uidMessage('resolve-2'));
   assert.equal(captured(b).length, 0);
   await settle();
+  await settle();
   const pending = JSON.parse(b.window.localStorage.getItem('qn_standalone_v1_pending_events'));
   assert.equal(pending.filter(e => e.nickname_pending).length, 2);
   await settle();
@@ -583,4 +584,21 @@ test('other shops do not get the Tmall raw-evidence contract', async () => {
   b.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('other-raw'));
   await settle();
   assert.equal(captured(b)[0].sender_uid,undefined);
+});
+
+
+test('Tmall history backfill cannot evict a pending live customer message', async () => {
+  const b = loadBridge({asyncRpc:true});
+  const account = '联想官方旗舰店:燕燕';
+  const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('live-pending', common));
+  for (let batch = 0; batch < 6; batch++) {
+    b.window._db.msgDataMap.set(NUMERIC_BUYER, Array.from({length:100}, (_, i) =>
+      uidMessage(`history-${batch}-${i}`, {...common, sendTime:Date.now()-7*60*1000})));
+    b.window.__qn_standalone_self_heal('history-capacity');
+  }
+  await settle();
+  const pending = JSON.parse(b.window.localStorage.getItem('qn_standalone_v1_pending_events'));
+  assert.equal(pending.length, 500);
+  assert.ok(pending.some(envelope => envelope.payload.msg_id === 'live-pending'));
 });

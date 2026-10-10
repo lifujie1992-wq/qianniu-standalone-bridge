@@ -284,7 +284,18 @@
       if (nicknamePending) outbox[id].nickname_pending = true;
       outboxOrder.push(id);
       while (outboxOrder.length > MAX_OUTBOX) {
-        var old = outboxOrder.shift();
+        var dropIndex = 0;
+        if (tmallGuardScope(row.account)) {
+          // Historical backfill must never displace a pending live message.
+          // Keep the existing transport bound and other shops' queue policy.
+          var historyIndex = outboxOrder.findIndex(function (pendingId) {
+            var pending = outbox[pendingId] && outbox[pendingId].payload;
+            return pending && tmallGuardScope(pending.account)
+              && pending.capture_mode === "history_snapshot";
+          });
+          if (historyIndex >= 0) dropIndex = historyIndex;
+        }
+        var old = outboxOrder.splice(dropIndex, 1)[0];
         delete outbox[old];
         diagnostics.outbox_overflow_dropped += 1;
       }
