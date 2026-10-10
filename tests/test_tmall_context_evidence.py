@@ -117,3 +117,17 @@ class TmallContextEvidenceTests(unittest.TestCase):
         self.assertEqual(
             result["order_info"]["raw_context"]["buyer_encrypt_id"], "123456789"
         )
+
+    def test_same_buyer_burst_reuses_lookup_without_mutating_evidence(self):
+        app = self.app(response([{"bizOrderId": "1234567890123456789"}]))
+        enricher = ContextEnricher(app)
+        first = enricher.fetch("123456789", account=ACCOUNT)
+        first["order_info"]["raw_context"]["buyer_encrypt_id"] = "mutated"
+        second = enricher.fetch("123456789", account=ACCOUNT)
+        self.assertEqual(app.browser.execute.call_count, 1)
+        self.assertEqual(
+            second["order_info"]["raw_context"]["buyer_encrypt_id"], "123456789"
+        )
+        self.assertTrue(second["context_enrich"]["snapshot_cache"])
+        enricher.fetch("123456789", "1234567890123456789", ACCOUNT)
+        self.assertEqual(app.browser.execute.call_count, 2)

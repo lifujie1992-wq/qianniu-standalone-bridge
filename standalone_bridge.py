@@ -4,6 +4,7 @@ import argparse
 import ctypes
 import gzip
 import hashlib
+from copy import deepcopy
 import html
 import json
 import logging
@@ -3776,6 +3777,7 @@ class ContextEnricher:
         self.last_buyer_encrypt_id = ""
         self.order_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self.shop_cache: dict[str, dict[str, Any]] = {}
+        self.context_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
     def start(self) -> None:
         self.thread.start()
@@ -4037,6 +4039,15 @@ class ContextEnricher:
     def fetch(self, encrypt_id: str, biz_order_id: str = "", account: str = "") -> dict[str, Any]:
         account = str(account or "").strip()
         cache_key = (account, encrypt_id + ("|" + biz_order_id if tmall_guard_scope(account) and biz_order_id else ""))
+        if tmall_guard_scope(account):
+            # Transfer/history bursts share one buyer lookup, while every raw
+            # platform event is still persisted and uploaded independently.
+            with self.lock:
+                cached = self.context_cache.get(cache_key)
+                if cached and time.monotonic() < cached["expires"]:
+                    result = deepcopy(cached["value"])
+                    result["context_enrich"]["snapshot_cache"] = True
+                    return result
         attempts: list[dict[str, Any]] = []
         found: dict[str, Any] | None = None
         # 店铺信息在会话期间基本不变：命中缓存就不再重复调用 MTop，只做一次。
@@ -4229,6 +4240,14 @@ class ContextEnricher:
             enrichment["history_order_count"] = len(history_orders)
             order_info.setdefault("history_order_count", len(history_orders))
             enrichment["order_context"].setdefault("history_order_count", len(history_orders))
+        if tmall_guard_scope(account):
+            with self.lock:
+                self.context_cache[cache_key] = {
+                    "expires": time.monotonic() + (2.0 if status == "error_unknown" else 10.0),
+                    "value": deepcopy(enrichment),
+                }
+                while len(self.context_cache) > 512:
+                    self.context_cache.pop(next(iter(self.context_cache)))
         return enrichment
 
     def _fetch_once(

@@ -15,11 +15,14 @@ Requested-order caches cannot reuse the general buyer-order result.
 Transport exceptions are published as error_unknown rather than only logged locally.
 Other shops retain their existing role filters, response status and caches.
 
+Buyer/account/requested-order lookup bursts reuse a deep-copied snapshot for
+10 seconds (2 seconds for failures), preserving the original lookup timestamp.
+The snapshot cache is bounded to 512 entries. Raw events remain separate.
 No additional active chat-history polling was introduced. App version remains
 1.6.13; browser capture revision is v11. Source needs a Windows build/install;
 no EXE is produced. Actual Windows UI and real order/card tool integration were
 not exercised by these synthetic tests.
 
-Validation: client Tmall unittest suite 115 passed; browser contract 32 passed;
+Validation: client Tmall unittest suite 116 passed; browser contract 32 passed;
 backend extraction/context/evidence tests 65 passed. Existing full standalone
 suite cannot import Win32 UI code on macOS without Windows stubs.
