@@ -23,6 +23,7 @@ from config_defaults import DEFAULT_WORKBENCH_PORT, apply_operational_defaults
 from device_identity import (
     atomic_write_json,
     brain_workstation_token,
+    http_header_value,
     set_brain_workstation_token,
 )
 
@@ -92,6 +93,23 @@ def needs_setup(config: dict) -> bool:
         value = str(config.get(key) or "").strip()
         if not value or value in PLACEHOLDER_VALUES:
             return True
+    header_fields = (
+        ("brain_agent_token", "大脑工位令牌"),
+        ("brain_agent_id", "大脑工位 ID"),
+        ("gateway_agent_id", "本地网关 ID"),
+        ("gateway_agent_token", "本地网关令牌"),
+    )
+    if bool(config.get("brain_enabled", False)) and not str(
+        config.get("brain_agent_token") or ""
+    ).strip():
+        return True
+    for key, label in header_fields:
+        value = str(config.get(key) or "").strip()
+        if value:
+            try:
+                http_header_value(value, label)
+            except ValueError:
+                return True
     return False
 
 
@@ -108,6 +126,10 @@ def validate_brain_settings(server_url: str, token: str) -> str:
         return "大脑地址不能包含用户名或密码。"
     if not token.strip():
         return "请填写大脑工位令牌。"
+    try:
+        http_header_value(token, "大脑工位令牌")
+    except ValueError as error:
+        return str(error)
     return ""
 
 
@@ -129,9 +151,9 @@ def test_brain_connection(config: dict, timeout: float = 5.0) -> None:
         method="POST",
         headers={
             "Content-Type": "application/json; charset=utf-8",
-            "X-Agent-Token": token,
-            "X-Agent-Id": str(config.get("brain_agent_id") or ""),
-            "X-Device-Id": str(config.get("device_id") or ""),
+            "X-Agent-Token": http_header_value(token, "大脑工位令牌"),
+            "X-Agent-Id": http_header_value(config.get("brain_agent_id"), "大脑工位 ID"),
+            "X-Device-Id": http_header_value(config.get("device_id"), "设备标识"),
         },
     )
     try:

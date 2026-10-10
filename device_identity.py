@@ -24,6 +24,16 @@ class DeviceIdentityError(RuntimeError):
     pass
 
 
+def http_header_value(value: Any, field: str) -> str:
+    """Return a value safe for Python's HTTP/1 header encoder."""
+    text = str(value or "").strip()
+    try:
+        text.encode("ascii")
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{field} 只能包含 ASCII 字符，请重新填写") from error
+    return text
+
+
 @dataclass(frozen=True)
 class DeviceIdentityResult:
     device_id: str
@@ -124,8 +134,8 @@ def _request_migration(
         data=body,
         method="POST",
         headers={
-            "X-Agent-Token": token,
-            "X-Device-Id": old_device_id,
+            "X-Agent-Token": http_header_value(token, "大脑工位令牌"),
+            "X-Device-Id": http_header_value(old_device_id, "设备标识"),
             "Content-Type": "application/json",
         },
     )

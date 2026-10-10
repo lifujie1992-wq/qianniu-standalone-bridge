@@ -48,6 +48,7 @@ from device_identity import (
     DeviceIdentityError,
     atomic_write_json,
     brain_workstation_token,
+    http_header_value,
     prepare_device_identity,
     set_brain_workstation_token,
 )
@@ -1960,9 +1961,11 @@ class DeliveryWorker:
             method="POST",
             headers={
                 "Content-Type": "application/json; charset=utf-8",
-                "X-Agent-Token": str(cfg.get("gateway_agent_token") or ""),
-                "X-Agent-Id": str(cfg.get("gateway_agent_id") or ""),
-                "X-Device-Id": str(cfg.get("device_id") or cfg.get("gateway_agent_id") or ""),
+                "X-Agent-Token": http_header_value(cfg.get("gateway_agent_token"), "本地网关令牌"),
+                "X-Agent-Id": http_header_value(cfg.get("gateway_agent_id"), "本地网关 ID"),
+                "X-Device-Id": http_header_value(
+                    cfg.get("device_id") or cfg.get("gateway_agent_id"), "设备标识"
+                ),
             },
         )
         with urllib.request.urlopen(
@@ -2265,10 +2268,12 @@ class BrainConnector:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
-            "X-Agent-Token": brain_workstation_token(self.app.config),
-            "X-Agent-Id": self.agent_id(),
-            "X-Device-Id": str(
-                self.app.config.get("device_id") or self.agent_id()
+            "X-Agent-Token": http_header_value(
+                brain_workstation_token(self.app.config), "大脑工位令牌"
+            ),
+            "X-Agent-Id": http_header_value(self.agent_id(), "大脑工位 ID"),
+            "X-Device-Id": http_header_value(
+                self.app.config.get("device_id") or self.agent_id(), "设备标识"
             ),
         }
 

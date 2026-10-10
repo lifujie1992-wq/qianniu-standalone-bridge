@@ -48,6 +48,7 @@ import time
 from typing import Any, Callable, Optional
 
 from app_version import VERSION
+from device_identity import http_header_value
 
 
 log = logging.getLogger("qianniu.bridge")
@@ -456,11 +457,11 @@ class BrainEventChannel:
 
         headers = {
             # WS uses Bearer auth, unlike the X-Agent-Token header on HTTP.
-            "Authorization": f"Bearer {self.token}",
-            "X-Agent-Id": self.agent_id,
-            "X-Device-Id": self.device_id or self.agent_id,
-            "X-Platform": self.platform,
-            "User-Agent": self.user_agent,
+            "Authorization": f"Bearer {http_header_value(self.token, '大脑工位令牌')}",
+            "X-Agent-Id": http_header_value(self.agent_id, "大脑工位 ID"),
+            "X-Device-Id": http_header_value(self.device_id or self.agent_id, "设备标识"),
+            "X-Platform": http_header_value(self.platform, "平台标识"),
+            "User-Agent": http_header_value(self.user_agent, "客户端标识"),
         }
         kwargs: dict[str, Any] = {
             "max_size": MAX_FRAME_BYTES,
