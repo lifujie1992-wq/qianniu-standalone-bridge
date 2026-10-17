@@ -639,7 +639,6 @@
     }
     async function selectSession(session, open = false) {
       state.current = session; state.lastNewest = ''; state.lastMessageRevision = '';
-      el('buyerName').textContent = session.buyer_nick || session.buyer_id;
       renderSessionMode();
       el('replyInput').disabled = false;
       renderSessions(); await loadMessages(true); updateSendButton(); renderEvidence();
@@ -653,6 +652,7 @@
       el('aiModeButton').disabled = !current || state.controlBusy;
       el('humanModeButton').disabled = !current || state.controlBusy;
       if (!current) return;
+      el('buyerName').textContent = current.buyer_nick || current.buyer_id;
       const modeText = mode === 'human' ? `人工接管${current.handoff_reason ? ` · ${current.handoff_reason}` : ''}` : 'AI 可回复';
       el('conversationMeta').textContent = `${current.account} · ${current.buyer_id} · ${modeText}`;
     }

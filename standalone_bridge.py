@@ -44,6 +44,7 @@ from brain_ws import (
 from client_support import ClientSupportWatcher
 from config_defaults import apply_operational_defaults
 from nickname_support import event_nickname, nickname_event_id, valid_nickname
+from nickname_resolver import NicknameResolver
 from device_identity import (
     DeviceIdentityError,
     atomic_write_json,
@@ -5744,6 +5745,7 @@ class StandaloneBridge:
         self.delivery = DeliveryWorker(self)
         self.brain = BrainConnector(self)
         self.browser = BrowserServer(self)
+        self.nicknames = NicknameResolver(self)
         self.context = ContextEnricher(self)
         self.cdp = CdpInjector(self)
         self.updater = UpdaterGuard(self)
@@ -5852,6 +5854,11 @@ class StandaloneBridge:
         role = str(normalized.get("role") or "user").strip().lower()
         account = str(normalized.get("account") or "").strip()
         buyer_id = str(normalized.get("buyer_id") or "").strip()
+        if role in {"user", "buyer", "customer"} and not normalized["nickname"]:
+            normalized["nickname"] = (
+                self.db.cached_nickname(account, buyer_id)
+                or self.nicknames.cached_nickname(account, buyer_id)
+            )
         if normalized.get("type") == "nickname_update":
             if not account or not buyer_id or not normalized["nickname"]:
                 return canonical_event_id(normalized), False
@@ -5891,6 +5898,8 @@ class StandaloneBridge:
                     "ai_suppressed": True,
                 })
         event_id, changed = self.db.upsert_event(normalized)
+        if role in {"user", "buyer", "customer"} and not normalized["nickname"]:
+            self.nicknames.enqueue(account, buyer_id)
         confirmed_request = self.db.confirm_send_from_event(normalized, event_id)
         if confirmed_request:
             LOG.info("Qianniu confirmed send request_id=%s event_id=%s", confirmed_request, event_id)
@@ -6024,7 +6033,9 @@ class StandaloneBridge:
     def backfill_nicknames(self) -> None:
         # Browser pages validate that these sessions are still loaded/online.
         # Keep RPC work off the websocket receive thread so responses can arrive.
-        if not self.browser.connected:
+        if not self.browser.connected or not any(
+            item.get("imsdk_hooked") for item in self.browser.diagnostics_by_connection()
+        ):
             return
         cutoff = time.time() - 24 * 3600
         targets = [
@@ -6061,6 +6072,7 @@ class StandaloneBridge:
         self.native.start()
         self.client_support.start()
         self.api_thread.start()
+        self.nicknames.thread.start()
         threading.Thread(
             target=self._nickname_backfill_loop, name="nickname-backfill", daemon=True
         ).start()
@@ -6085,6 +6097,7 @@ class StandaloneBridge:
             "ok": not bool(self.api_error or self.workbench_error or self.browser.error),
             "version": VERSION,
             "build_hash": BUILD_HASH,
+            "nicknames": self.nicknames.status(),
             "uptime_seconds": round(time.time() - self.started_at, 3),
             "browser": {
                 "connected": self.browser.connected,
