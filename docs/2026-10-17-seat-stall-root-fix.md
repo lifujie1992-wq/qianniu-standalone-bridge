@@ -64,9 +64,9 @@
 
 ## 打包（需要你们在构建机上做）
 
-1. `installer/QianniuAIService.iss` 里的 `AppVersion` / `SourceDir` / `OutputBaseFilename`
-   按你们惯例对齐到 1.6.15。**我没有改这个文件**：`SourceDir` 指向
-   `..\delivery\淘宝千牛AI客服-安装版-<版本>`，命名是你们构建流程约定的，猜错会直接导致打包失败。
+1. `installer/QianniuAIService.iss` 的三个版本号已在本分支对齐到 **1.6.15**
+   （`AppVersion` / `SourceDir` = `..\delivery\淘宝千牛AI客服-安装版-1.6.15` / `OutputBaseFilename`），
+   与 `app_version.py` 一致；构建机只要把产物放进对应 delivery 目录即可。
 2. 装出来的包在坐席机上覆盖安装后，`/api/v1/status` 的 `version` 应为 `1.6.15`。
 
 ## 回滚

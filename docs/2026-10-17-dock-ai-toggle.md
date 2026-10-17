@@ -79,7 +79,7 @@ dock 模式下每个会话行右侧新增一枚芯片：
 
 ## 打包与验收
 
-1. 打包前把 `installer/QianniuAIService.iss` 的版本对齐 1.6.15（同其它版本发布惯例）。
+1. `installer/QianniuAIService.iss` 的版本已在本分支对齐 1.6.15（构建机直接打包即可）。
 2. 装好后：浮窗点某会话的 `AI 开启` → 变 `AI 暂停中`；该买家下一条消息**不再自动回复**；
    点回 `AI 暂停中` → 恢复。其它会话不受影响。
 3. 大脑侧核对：`pdd_brain_conversations` 里该会话 `ai_takeover_override=false`；
