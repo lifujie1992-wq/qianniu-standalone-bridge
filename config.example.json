@@ -61,7 +61,7 @@
   "auto_launch_qianniu": true,
   "qianniu_exe": "runtime/AliWorkbench.exe",
   "poll_interval_seconds": 2.0,
-  "delivery_timeout_seconds": 1.5
+  "delivery_timeout_seconds": 8.0
     ,"dock_enabled": true
     ,"dock_mode": "snap"
     ,"dock_frameless": true

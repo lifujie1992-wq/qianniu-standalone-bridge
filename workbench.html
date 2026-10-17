@@ -106,6 +106,16 @@
     .session-side { align-self: stretch; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; gap: 6px; }
     .session-time { color: var(--subtle); font-size: 10px; white-space: nowrap; }
     .open-glyph { color: var(--accent); font-size: 14px; }
+    /* Dock-only AI switch: one tap pauses/resumes AI for that conversation
+       without opening the chat in 千牛 (the conversation pane is hidden in dock
+       mode, so the AI / 人工 buttons there are unreachable). */
+    .ai-toggle { flex: 0 0 auto; padding: 1px 5px; border-radius: 999px; border: 1px solid #2f8f5b; background: #e8f7ee; color: #1c6b43; font-size: 10px; line-height: 1.5; cursor: pointer; user-select: none; }
+    .ai-toggle.paused { border-color: #d9a13a; background: #fff4df; color: #9a4f00; }
+    .ai-toggle.busy { opacity: 0.55; cursor: progress; }
+    .ai-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .session-row .ai-toggle { margin-right: 2px; }
+    .dock-toast { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); max-width: 88%; padding: 6px 10px; border-radius: 8px; background: rgba(28, 32, 36, 0.92); color: #fff; font-size: 12px; line-height: 1.4; z-index: 60; box-shadow: 0 6px 20px rgba(0,0,0,0.22); }
+    .dock-toast.error { background: #b5372f; }
     .conversation-pane { min-width: 0; width: 100%; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 58px auto minmax(0, 1fr) var(--composer); }
     .conversation-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--border); }
     .conversation-title { min-width: 0; }
@@ -388,6 +398,7 @@
       sessions: [], current: null, messages: [], status: null, diagnostics: null,
       busy: false, sending: false, canSend: false, openingKey: '', lastNewest: '',
       lastMessageRevision: '', settingsOpen: false, tokenConfigured: false, controlBusy: false,
+      controlKey: '',
       sessionFilter: 'all', sessionRevision: null,
       handoffKeysSeen: new Set(), lastHandoffTitle: '',
     };
@@ -467,6 +478,56 @@
         });
       } catch (error) { /* 提示音失败不影响功能 */ }
     }
+    function dockToast(text, isError) {
+      const node = document.createElement('div');
+      node.className = `dock-toast${isError ? ' error' : ''}`;
+      node.textContent = text;
+      document.body.append(node);
+      setTimeout(() => node.remove(), isError ? 4000 : 2200);
+    }
+    function aiToggleChip(session) {
+      const paused = session.ai_mode === 'human';
+      const chip = document.createElement('span');
+      chip.className = `ai-toggle${paused ? ' paused' : ''}${state.controlBusy && state.controlKey === keyOf(session) ? ' busy' : ''}`;
+      chip.setAttribute('role', 'button');
+      chip.setAttribute('tabindex', '0');
+      chip.textContent = paused ? 'AI 暂停中' : 'AI 开启';
+      chip.title = paused
+        ? `点击恢复 AI 回复${session.handoff_reason ? `（当前：${session.handoff_reason}）` : ''}`
+        : '点击暂停该会话的 AI 回复（不影响其它会话）';
+      const activate = event => {
+        event.stopPropagation();
+        event.preventDefault();
+        toggleSessionAI(session);
+      };
+      chip.addEventListener('click', activate);
+      chip.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') activate(event);
+      });
+      return chip;
+    }
+    async function toggleSessionAI(session) {
+      const key = keyOf(session);
+      if (state.controlBusy) return;
+      const next = session.ai_mode === 'human' ? 'ai' : 'human';
+      state.controlBusy = true; state.controlKey = key; renderSessions();
+      try {
+        const data = await api('/api/v1/session/control', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({account: session.account, buyer_id: session.buyer_id, mode: next}),
+        });
+        Object.assign(session, data.control || {});
+        const stored = state.sessions.find(item => keyOf(item) === key);
+        if (stored && stored !== session) Object.assign(stored, data.control || {});
+        if (state.current && keyOf(state.current) === key) Object.assign(state.current, data.control || {});
+        dockToast(next === 'human' ? 'AI 已暂停（仅这个会话）' : 'AI 已恢复');
+      } catch (error) {
+        dockToast(error.message || '大脑未确认 AI 开关', true);
+      } finally {
+        state.controlBusy = false; state.controlKey = '';
+        renderSessions(); renderSessionMode();
+      }
+    }
     function renderSessions() {
       const query = conversationSearch.value.trim().toLowerCase();
       const handoffSessions = state.sessions.filter(item => item.ai_mode === 'human');
@@ -516,7 +577,9 @@
         const time = document.createElement('span'); time.className = 'session-time'; time.textContent = shortTime(session.last_ts);
         const glyph = document.createElement('span'); glyph.className = 'open-glyph';
         glyph.textContent = session.ai_mode === 'human' ? (dockMode ? '人↗' : '人工') : (dockMode ? '↗' : '›');
-        side.append(time, glyph); button.append(avatar, main, side);
+        if (dockMode) side.append(aiToggleChip(session), time, glyph);
+        else side.append(time, glyph);
+        button.append(avatar, main, side);
         button.addEventListener('click', () => selectSession(session, dockMode));
         list.append(button);
       }

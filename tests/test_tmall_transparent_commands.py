@@ -58,13 +58,16 @@ class TransparentCommandsTests(unittest.TestCase):
         self.assertFalse(result["real_send"])
         self.app.appbiz.send_text.assert_called_once()
     def test_manual_pause_requires_acknowledgment_from_brain(self):
+        # 2026-10-17：改用大脑给工位开放的 POST /api/session/state（旧的
+        # session_control 事件在大脑侧根本没有实现，所以按钮一直是点了没反应）。
         self.brain.agent_id=lambda:"test-agent"
-        self.brain.request=Mock(return_value={"event_acks":[]})
+        self.brain.request=Mock(return_value={"ok":False,"error":"大脑未确认"})
         with self.assertRaises(RuntimeError):self.brain.set_tmall_session_mode(SHOP,BUYER,"ai")
         self.assertEqual(self.app.db.session_control(SHOP,BUYER)["ai_mode"],"human")
+        self.assertEqual(self.brain.request.call_args[0][:2],("POST","/api/session/state"))
         def response(method,path,payload):
-            event=payload["events"][0]
-            return {"event_acks":[{"event_id":event["event_id"],"status":"session_control_applied","committed":True}]}
+            return {"ok":True,"ai_takeover_enabled":bool(payload["ai_takeover_enabled"]),
+                    "ai_takeover_state":"active" if payload["ai_takeover_enabled"] else "paused"}
         self.brain.request.side_effect=response
         self.brain.set_tmall_session_mode(SHOP,BUYER,"ai")
         self.assertEqual(self.app.db.session_control(SHOP,BUYER)["ai_mode"],"ai")

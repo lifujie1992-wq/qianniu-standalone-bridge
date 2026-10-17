@@ -248,6 +248,34 @@ def canonical_event_id(event: dict[str, Any]) -> str:
     return f"qn-capture-v1|{digest}"
 
 
+LOCAL_SEAT_ACK_BATCH_LIMIT = 100
+LOCAL_SEAT_COMMITTED_STATUSES = {"sending", "delivered"}
+
+
+def local_seat_ack_payload(db: Any, events: list[Any]) -> dict[str, Any]:
+    """Durability ACK for a local-seat event batch.
+
+    Kept as a module-level helper so the (previously per-event) status lookups
+    can be asserted in tests: one batched query, same commitments as before.
+    """
+    event_ids = [
+        canonical_event_id(event)
+        for event in events[:LOCAL_SEAT_ACK_BATCH_LIMIT]
+        if isinstance(event, dict)
+    ]
+    statuses = db.event_statuses(event_ids)
+    acknowledgements = [
+        {
+            "event_id": event_id,
+            "committed": statuses.get(event_id) in LOCAL_SEAT_COMMITTED_STATUSES,
+        }
+        for event_id in event_ids
+    ]
+    if not acknowledgements or not all(row["committed"] for row in acknowledgements):
+        raise RuntimeError("event batch is not durable in the standalone database")
+    return {"ok": True, "event_acks": acknowledgements}
+
+
 def merge_events(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     merged = dict(current)
     for key, value in incoming.items():
@@ -536,6 +564,10 @@ class StateDB:
         self.lock = threading.RLock()
         self._session_cache: list[dict[str, Any]] = []
         self._session_cache_at = 0.0
+        # Session snapshots are rebuilt outside ``lock`` (one rebuild JSON-parses
+        # up to WORKBENCH_EVENT_LIMIT payloads); this lock only stops two
+        # threads rebuilding at the same time.
+        self._session_build_lock = threading.Lock()
         self._initialize()
         self.prune_old_events()
 
@@ -546,7 +578,12 @@ class StateDB:
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10.0)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
+        # journal_mode is a persistent, database-level setting (stored in the
+        # file header) and is applied once in `_initialize`. Re-running it on
+        # every connection takes a file lock, which on a busy seat (7 injected
+        # pages + antivirus scanning the SQLite file) is a known source of
+        # multi-second stalls. `synchronous` is per-connection, so it stays.
+        connection.execute("PRAGMA busy_timeout=8000")
         connection.execute("PRAGMA synchronous=FULL")
         return connection
 
@@ -573,6 +610,9 @@ class StateDB:
 
     def _initialize(self) -> None:
         with closing(self.connect()) as connection, connection:
+            # Applied exactly once here: the setting is persisted in the database
+            # file header, so every later connection inherits it.
+            connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS events (
@@ -587,6 +627,11 @@ class StateDB:
                     delivered_at REAL
                 );
                 CREATE INDEX IF NOT EXISTS events_status_updated ON events(status, updated_at);
+                -- The workbench session snapshot reads the newest events
+                -- (ORDER BY created_at DESC LIMIT n). Without this index SQLite
+                -- scans and sorts the whole 30-day retention window on every
+                -- rebuild, which is what made a busy seat stall for seconds.
+                CREATE INDEX IF NOT EXISTS events_created_at ON events(created_at DESC);
                 CREATE TABLE IF NOT EXISTS sends (
                     request_id TEXT PRIMARY KEY,
                     payload_hash TEXT NOT NULL,
@@ -903,6 +948,31 @@ class StateDB:
             ).fetchone()
         return str(row["status"]) if row else ""
 
+    def event_statuses(self, event_ids: list[str]) -> dict[str, str]:
+        """Batch variant of :meth:`event_status`.
+
+        The local-seat durability ACK used to call ``event_status`` once per
+        event: for a 100-event batch that meant 100 connection opens and 100
+        acquisitions of the global lock while 7 injected pages were writing.
+        That path has a 1.5s client timeout, so on a busy seat every batch timed
+        out and was retried with backoff - which is what turned a slow disk into
+        a 10-30s seat-side reporting delay. One query instead of N.
+        """
+        unique: list[str] = []
+        for raw in event_ids or []:
+            event_id = str(raw or "")
+            if event_id and event_id not in unique:
+                unique.append(event_id)
+        if not unique:
+            return {}
+        placeholders = ",".join("?" for _ in unique)
+        with self.lock, closing(self.connect()) as connection, connection:
+            rows = connection.execute(
+                f"SELECT event_id,status FROM events WHERE event_id IN ({placeholders})",
+                tuple(unique),
+            ).fetchall()
+        return {str(row["event_id"]): str(row["status"]) for row in rows}
+
     def brain_suppressed_message_ids(self, limit: int = WORKBENCH_EVENT_LIMIT) -> set[str]:
         with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
@@ -940,114 +1010,138 @@ class StateDB:
             if str(row["source"]) == "brain" or tmall_guard_scope(row["account"])
         }
 
-    def workbench_sessions(self) -> list[dict[str, Any]]:
+    def _cached_sessions(self, now_mono: float) -> list[dict[str, Any]] | None:
         with self.lock:
-            now_mono = time.monotonic()
             if (
                 self._session_cache_at
                 and now_mono - self._session_cache_at < WORKBENCH_SESSION_CACHE_SECONDS
             ):
                 return [dict(item) for item in self._session_cache]
-            with closing(self.connect()) as connection, connection:
-                rows = connection.execute(
-                    "SELECT payload,status FROM events ORDER BY created_at DESC LIMIT ?",
-                    (WORKBENCH_EVENT_LIMIT,),
-                ).fetchall()
-                controls = connection.execute(
-                    "SELECT account,buyer_id,mode,reason,source,updated_at,expires_at FROM session_controls"
-                ).fetchall()
-                nickname_rows = connection.execute(
-                    "SELECT account,buyer_id,nickname FROM buyer_nicknames"
-                ).fetchall()
-            nickname_map = {
-                (str(row["account"]), str(row["buyer_id"])): str(row["nickname"])
-                for row in nickname_rows
-            }
-            parsed_rows: list[tuple[dict[str, Any], str]] = []
-            suppressed_parent_ids: set[str] = set()
-            for row in rows:
-                try:
-                    event = json.loads(row["payload"])
-                except (TypeError, ValueError):
-                    continue
-                parsed_rows.append((event, str(row["status"])))
-                if event.get("brain_suppressed") or brain_event_suppression_reason(event):
-                    for key in ("original_msg_id", "msg_id"):
-                        value = str(event.get(key) or "").strip()
-                        if value:
-                            suppressed_parent_ids.add(value)
-            now = time.time()
-            control_map = {
-                (str(row["account"]), str(row["buyer_id"])): {
-                    "ai_mode": str(row["mode"]),
-                    "handoff_reason": str(row["reason"]),
-                    "handoff_source": str(row["source"]),
-                    "control_updated_at": float(row["updated_at"]),
-                    "handoff_expires_at": float(row["expires_at"]),
-                }
-                for row in controls
-                if str(row["mode"]) == "human"
-                and (not float(row["expires_at"]) or float(row["expires_at"]) > now)
-            }
-            sessions: dict[tuple[str, str], dict[str, Any]] = {}
-            for event, status in parsed_rows:
-                account = str(event.get("account") or "").strip()
-                buyer_id = str(event.get("buyer_id") or "").strip()
-                content = str(event.get("content") or "")
-                if not account or not buyer_id or not content:
-                    continue
-                if (
-                    str(event.get("role") or "").lower() == "assistant_simulated"
-                    and str(event.get("parent_msg_id") or "") in suppressed_parent_ids
-                ):
-                    continue
-                key = (account, buyer_id)
-                timestamp = event_timestamp(event)
-                session = sessions.setdefault(key, {
-                    "account": account,
-                    "buyer_id": buyer_id,
-                    "buyer_nick": event_nickname(event) or str(event.get("buyer_nick") or buyer_id),
-                    "_buyer_nick_ts": timestamp,
-                    "last_message": "",
-                    "last_ts": 0.0,
-                    "message_count": 0,
-                    "last_status": "",
-                })
-                session["message_count"] += 1
-                event_nick = event_nickname(event) or str(event.get("buyer_nick") or "").strip()
-                current_nick = str(session.get("buyer_nick") or "").strip()
-                event_nick_is_usable = not buyer_nick_is_placeholder(event_nick, buyer_id)
-                current_nick_is_usable = not buyer_nick_is_placeholder(current_nick, buyer_id)
-                if event_nick and (
-                    (event_nick_is_usable and not current_nick_is_usable)
-                    or (
-                        event_nick_is_usable == current_nick_is_usable
-                        and timestamp >= float(session.get("_buyer_nick_ts") or 0.0)
-                    )
-                ):
-                    session["buyer_nick"] = event_nick
-                    session["_buyer_nick_ts"] = timestamp
-                if timestamp >= float(session["last_ts"]):
-                    session["last_ts"] = timestamp
-                    session["last_message"] = content
-                    session["last_status"] = status
-            for key, session in sessions.items():
-                session.pop("_buyer_nick_ts", None)
-                if nickname_map.get(key):
-                    session["buyer_nick"] = nickname_map[key]
-                session.update(control_map.get(key, {
-                    "ai_mode": "ai",
-                    "handoff_reason": "",
-                    "handoff_source": "",
-                    "control_updated_at": 0.0,
-                    "handoff_expires_at": 0.0,
-                }))
-            result = sorted(
-                sessions.values(), key=lambda item: float(item["last_ts"]), reverse=True
-            )[:WORKBENCH_SESSION_LIMIT]
-            self._session_cache = [dict(item) for item in result]
-            self._session_cache_at = time.monotonic()
+        return None
+
+    def workbench_sessions(self) -> list[dict[str, Any]]:
+        """Group recent events into workbench session rows.
+
+        The rebuild scans up to ``WORKBENCH_EVENT_LIMIT`` payloads and JSON-parses
+        each one, so it used to hold ``self.lock`` for the whole scan: while it
+        ran, /api/v1/status, the local-seat durability ACK and event ingestion all
+        waited behind it. On a busy seat (7 injected pages, a big events table,
+        antivirus on the SQLite file) that produced multi-second stalls and the
+        tray reported the bridge as stopped. The scan now runs outside the lock;
+        a dedicated build lock keeps a single rebuild in flight.
+        """
+        cached = self._cached_sessions(time.monotonic())
+        if cached is not None:
+            return cached
+        with self._session_build_lock:
+            cached = self._cached_sessions(time.monotonic())
+            if cached is not None:
+                return cached
+            result = self._build_workbench_sessions()
+            with self.lock:
+                self._session_cache = [dict(item) for item in result]
+                self._session_cache_at = time.monotonic()
             return [dict(item) for item in result]
+
+    def _build_workbench_sessions(self) -> list[dict[str, Any]]:
+        with closing(self.connect()) as connection, connection:
+            rows = connection.execute(
+                "SELECT payload,status FROM events ORDER BY created_at DESC LIMIT ?",
+                (WORKBENCH_EVENT_LIMIT,),
+            ).fetchall()
+            controls = connection.execute(
+                "SELECT account,buyer_id,mode,reason,source,updated_at,expires_at FROM session_controls"
+            ).fetchall()
+            nickname_rows = connection.execute(
+                "SELECT account,buyer_id,nickname FROM buyer_nicknames"
+            ).fetchall()
+        nickname_map = {
+            (str(row["account"]), str(row["buyer_id"])): str(row["nickname"])
+            for row in nickname_rows
+        }
+        parsed_rows: list[tuple[dict[str, Any], str]] = []
+        suppressed_parent_ids: set[str] = set()
+        for row in rows:
+            try:
+                event = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            parsed_rows.append((event, str(row["status"])))
+            if event.get("brain_suppressed") or brain_event_suppression_reason(event):
+                for key in ("original_msg_id", "msg_id"):
+                    value = str(event.get(key) or "").strip()
+                    if value:
+                        suppressed_parent_ids.add(value)
+        now = time.time()
+        control_map = {
+            (str(row["account"]), str(row["buyer_id"])): {
+                "ai_mode": str(row["mode"]),
+                "handoff_reason": str(row["reason"]),
+                "handoff_source": str(row["source"]),
+                "control_updated_at": float(row["updated_at"]),
+                "handoff_expires_at": float(row["expires_at"]),
+            }
+            for row in controls
+            if str(row["mode"]) == "human"
+            and (not float(row["expires_at"]) or float(row["expires_at"]) > now)
+        }
+        sessions: dict[tuple[str, str], dict[str, Any]] = {}
+        for event, status in parsed_rows:
+            account = str(event.get("account") or "").strip()
+            buyer_id = str(event.get("buyer_id") or "").strip()
+            content = str(event.get("content") or "")
+            if not account or not buyer_id or not content:
+                continue
+            if (
+                str(event.get("role") or "").lower() == "assistant_simulated"
+                and str(event.get("parent_msg_id") or "") in suppressed_parent_ids
+            ):
+                continue
+            key = (account, buyer_id)
+            timestamp = event_timestamp(event)
+            session = sessions.setdefault(key, {
+                "account": account,
+                "buyer_id": buyer_id,
+                "buyer_nick": event_nickname(event) or str(event.get("buyer_nick") or buyer_id),
+                "_buyer_nick_ts": timestamp,
+                "last_message": "",
+                "last_ts": 0.0,
+                "message_count": 0,
+                "last_status": "",
+            })
+            session["message_count"] += 1
+            event_nick = event_nickname(event) or str(event.get("buyer_nick") or "").strip()
+            current_nick = str(session.get("buyer_nick") or "").strip()
+            event_nick_is_usable = not buyer_nick_is_placeholder(event_nick, buyer_id)
+            current_nick_is_usable = not buyer_nick_is_placeholder(current_nick, buyer_id)
+            if event_nick and (
+                (event_nick_is_usable and not current_nick_is_usable)
+                or (
+                    event_nick_is_usable == current_nick_is_usable
+                    and timestamp >= float(session.get("_buyer_nick_ts") or 0.0)
+                )
+            ):
+                session["buyer_nick"] = event_nick
+                session["_buyer_nick_ts"] = timestamp
+            if timestamp >= float(session["last_ts"]):
+                session["last_ts"] = timestamp
+                session["last_message"] = content
+                session["last_status"] = status
+        for key, session in sessions.items():
+            session.pop("_buyer_nick_ts", None)
+            if nickname_map.get(key):
+                session["buyer_nick"] = nickname_map[key]
+            session.update(control_map.get(key, {
+                "ai_mode": "ai",
+                "handoff_reason": "",
+                "handoff_source": "",
+                "control_updated_at": 0.0,
+                "handoff_expires_at": 0.0,
+            }))
+        result = sorted(
+            sessions.values(), key=lambda item: float(item["last_ts"]), reverse=True
+        )[:WORKBENCH_SESSION_LIMIT]
+        return [dict(item) for item in result]
 
     def set_session_control(
         self,
@@ -1872,7 +1966,14 @@ class DeliveryWorker:
             },
         )
         with urllib.request.urlopen(
-            request, timeout=float(cfg.get("delivery_timeout_seconds", 1.5))
+            # This is a *local* durability self-check (default target is the
+            # bundled workbench on 127.0.0.1). A 1.5s budget is below what a
+            # busy seat can honour while 7 injected pages write SQLite, so the
+            # batch timed out, was marked failed and retried with backoff - the
+            # retry backoff, not the message itself, was the 10-30s delay seen
+            # on the brain side. Keep a generous local budget; the loop is
+            # woken by new events and drains immediately.
+            request, timeout=float(cfg.get("delivery_timeout_seconds", 8.0))
         ) as response:
             payload = json.loads(response.read().decode("utf-8", "replace") or "{}")
         if not isinstance(payload, dict) or payload.get("ok") is not True:
@@ -2671,20 +2772,49 @@ class BrainConnector:
             "command_id": command_id, "request_ms": self.last_request_ms,
         })
 
+    def set_ai_takeover(
+        self,
+        account: str,
+        buyer_id: str,
+        enabled: bool,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """开启 / 暂停某个会话的 AI 回复（大脑权威，浮窗与工作台共用）。
+
+        走大脑给本机工位开放的 ``POST /api/session/state``：大脑负责
+        ``ai_takeover_override`` 与 handoff 语义（暂停不等于转人工，除非店铺
+        开了 sticky handoff），本机只把**确认后的**状态落到 ``session_controls``，
+        绝不自己改发送规则。旧实现发的是 ``session_control`` 事件，而大脑侧没有
+        这个 event 类型，所以工作台上的 AI / 人工按钮一直是"点了没反应"。
+        """
+        if not account or not buyer_id:
+            raise ValueError("account and buyer_id required")
+        if not isinstance(enabled, bool):
+            raise ValueError("ai_takeover_enabled must be a boolean")
+        payload = self.request("POST", "/api/session/state", {
+            "account": account,
+            "buyer_id": buyer_id,
+            "ai_takeover_enabled": bool(enabled),
+            "reason": reason or ("本机浮窗暂停 AI 回复" if not enabled else "本机浮窗恢复 AI 回复"),
+        })
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            error = str((payload or {}).get("error") or "大脑未确认 AI 开关状态")
+            raise RuntimeError(error)
+        confirmed = bool(payload.get("ai_takeover_enabled", enabled))
+        mode = "ai" if confirmed else "human"
+        source = "brain" if confirmed else "brain_pause"
+        control = self.app.db.set_session_control(account, buyer_id, mode, reason, source)
+        control["ai_takeover_enabled"] = confirmed
+        control["ai_takeover_state"] = str(payload.get("ai_takeover_state") or ("active" if confirmed else "paused"))
+        control["shop_ai_takeover_enabled"] = bool(payload.get("shop_ai_takeover_enabled", True))
+        control["sticky_handoff"] = bool(payload.get("sticky_handoff", False))
+        return control
+
     def set_tmall_session_mode(self, account: str, buyer_id: str, mode: str, reason: str = "") -> dict[str, Any]:
+        """工作台的 AI / 人工按钮（兼容旧调用方）。"""
         if mode not in {"human", "ai"} or not account or not buyer_id:
             raise ValueError("account, buyer_id and human/ai mode required")
-        event_id = "qn-control-v1|" + uuid.uuid4().hex
-        result = self.request("POST", "/api/bridge/v1/events", {
-            "agent_id": self.agent_id(), "events": [{
-                "event_id": event_id, "platform": "taobao", "type": "session_control",
-                "account": account, "buyer_id": buyer_id, "mode": mode, "reason": reason,
-            }],
-        })
-        ack = next((ack for ack in result.get("event_acks", []) if ack.get("event_id") == event_id), {})
-        if ack.get("status") != "session_control_applied" or ack.get("committed") is not True:
-            raise RuntimeError("大脑未确认会话接管状态，请重试；本机没有独立修改发送规则")
-        return self.app.db.set_session_control(account, buyer_id, mode, reason, "brain")
+        return self.set_ai_takeover(account, buyer_id, mode == "ai", reason)
 
     def execute_command(self, command: dict[str, Any]) -> dict[str, Any]:
         command_id = str(command.get("id") or command.get("command_id") or "").strip()
@@ -5405,19 +5535,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 events = body.get("events")
                 if not isinstance(events, list) or not events:
                     raise ValueError("events must be a non-empty list")
-                acknowledgements = []
-                for event in events[:100]:
-                    if not isinstance(event, dict):
-                        continue
-                    event_id = canonical_event_id(event)
-                    status = self.app.db.event_status(event_id)
-                    acknowledgements.append({
-                        "event_id": event_id,
-                        "committed": status in {"sending", "delivered"},
-                    })
-                if not acknowledgements or not all(row["committed"] for row in acknowledgements):
-                    raise RuntimeError("event batch is not durable in the standalone database")
-                self.send_json(200, {"ok": True, "event_acks": acknowledgements})
+                self.send_json(200, local_seat_ack_payload(self.app.db, events))
             except (ValueError, RuntimeError) as error:
                 self.send_json(400, {"ok": False, "error": str(error)})
             return
@@ -5457,9 +5575,14 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 account = str(body.get("account") or "")
                 buyer_id = str(body.get("buyer_id") or "")
                 reason = str(body.get("reason") or ("人工接管" if mode == "human" else ""))
-                control = (self.app.brain.set_tmall_session_mode(account, buyer_id, mode, reason)
-                           if tmall_guard_scope(account)
-                           else self.app.db.set_session_control(account, buyer_id, mode, reason, "manual"))
+                # 大脑是唯一权威：只要配置了大脑就走 /api/session/state，让大脑
+                # 真正把 auto_send 拦住。旧逻辑只对「联想官方旗舰店」走大脑、其它店
+                # 静默写本地——那些店点了开关 AI 照样回，属于同类"点了没反应"。
+                control = (
+                    self.app.brain.set_tmall_session_mode(account, buyer_id, mode, reason)
+                    if self.app.brain.configured()
+                    else self.app.db.set_session_control(account, buyer_id, mode, reason, "manual")
+                )
                 self.app.brain.record(
                     "handoff",
                     "warn" if mode == "human" else "ok",

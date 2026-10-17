@@ -88,21 +88,61 @@ def _managed_qianniu_count(root: Path) -> int:
     return count
 
 
+# A single failed probe is not a dead bridge. /api/v1/status is served by the
+# same process that ingests 7 injected pages into SQLite, so on a busy seat one
+# 5s probe can miss while messages keep flowing. Requiring two consecutive
+# failures (and naming the reason) stops the panel from flashing "已停止 / 未监听"
+# for a bridge that is only slow - the exact symptom reported on 2026-10-17.
+_BRIDGE_STOP_AFTER_FAILURES = 2
+_BRIDGE_PROBE_STATE: dict[str, dict] = {}
+
+
+def _bridge_failure_detail(reason: str, port: int) -> str:
+    if reason == "timeout":
+        return f"响应超时 {port}（进程在忙）"
+    if reason.startswith("http_"):
+        return f"本地接口 HTTP {reason[5:]}"
+    if reason == "bad_response":
+        return "本地接口返回异常"
+    if reason == "no_config":
+        return "未配置"
+    return f"未监听 {port}"
+
+
+def _probe_bridge(config: dict) -> tuple[bool, str, dict | None]:
+    """Return (healthy, detail, status payload) for the local bridge."""
+    if not config:
+        return False, "未配置", None
+    port = int(config.get("api_port", 42111))
+    status, reason = launcher.fetch_status_with_reason(config, timeout=5.0)
+    key = str(port)
+    state = _BRIDGE_PROBE_STATE.setdefault(key, {"failures": 0, "ever_ok": False})
+    if status and status.get("ok"):
+        state["failures"] = 0
+        state["ever_ok"] = True
+        return True, f"127.0.0.1:{port}", status
+    state["failures"] += 1
+    detail = _bridge_failure_detail(reason, port)
+    if state["ever_ok"] and state["failures"] < _BRIDGE_STOP_AFTER_FAILURES:
+        # Grace period: keep the panel honest but not alarming for one tick.
+        return True, f"{detail}（1 次探测失败）", status
+    return False, detail, status
+
+
 def build_status(root: Path) -> AppStatus:
     config = launcher.load_config_silent(root / "config.json") or {}
     # /api/v1/status can take a couple of seconds while the bridge runs its
     # first process/GPU scan; the old sub-second probe timed out and reported a
     # perfectly healthy bridge as stopped, leaving the tray stuck on
     # "部分组件未就绪".
-    bridge = launcher.fetch_status(config, timeout=5.0) if config else None
+    bridge_ok, bridge_detail, bridge = _probe_bridge(config)
     qianniu_count = _managed_qianniu_count(root)
     dock_running = _pid_file_running(root / "state" / "docked_workbench.pid")
-    bridge_ok = bool(bridge and bridge.get("ok"))
 
     components = {
         "bridge": ComponentStatus(
             state="healthy" if bridge_ok else "stopped",
-            detail=(f"127.0.0.1:{int(config.get('api_port', 42111))}" if bridge_ok else "未监听"),
+            detail=bridge_detail,
         ),
         "qianniu": ComponentStatus(
             state="healthy" if qianniu_count else "stopped",
