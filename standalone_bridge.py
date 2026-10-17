@@ -45,6 +45,7 @@ from client_support import ClientSupportWatcher
 from config_defaults import apply_operational_defaults
 from nickname_support import event_nickname, nickname_event_id, valid_nickname
 from nickname_resolver import NicknameResolver
+from reception_wait import message_direction, waiting_state
 from device_identity import (
     DeviceIdentityError,
     atomic_write_json,
@@ -634,6 +635,12 @@ class StateDB:
                 -- scans and sorts the whole 30-day retention window on every
                 -- rebuild, which is what made a busy seat stall for seconds.
                 CREATE INDEX IF NOT EXISTS events_created_at ON events(created_at DESC);
+                CREATE TABLE IF NOT EXISTS session_reply_receipts (
+                    account TEXT NOT NULL,
+                    buyer_id TEXT NOT NULL,
+                    reply_ts REAL NOT NULL,
+                    PRIMARY KEY(account,buyer_id)
+                );
                 CREATE TABLE IF NOT EXISTS sends (
                     request_id TEXT PRIMARY KEY,
                     payload_hash TEXT NOT NULL,
@@ -1048,7 +1055,7 @@ class StateDB:
     def _build_workbench_sessions(self) -> list[dict[str, Any]]:
         with closing(self.connect()) as connection, connection:
             rows = connection.execute(
-                "SELECT payload,status FROM events ORDER BY created_at DESC LIMIT ?",
+                "SELECT payload,status,created_at FROM events ORDER BY created_at DESC LIMIT ?",
                 (WORKBENCH_EVENT_LIMIT,),
             ).fetchall()
             controls = connection.execute(
@@ -1057,18 +1064,22 @@ class StateDB:
             nickname_rows = connection.execute(
                 "SELECT account,buyer_id,nickname FROM buyer_nicknames"
             ).fetchall()
+            reply_rows = connection.execute(
+                "SELECT account,buyer_id,reply_ts FROM session_reply_receipts"
+            ).fetchall()
+        reply_map = {(str(row["account"]), str(row["buyer_id"])): float(row["reply_ts"]) for row in reply_rows}
         nickname_map = {
             (str(row["account"]), str(row["buyer_id"])): str(row["nickname"])
             for row in nickname_rows
         }
-        parsed_rows: list[tuple[dict[str, Any], str]] = []
+        parsed_rows: list[tuple[dict[str, Any], str, float]] = []
         suppressed_parent_ids: set[str] = set()
         for row in rows:
             try:
                 event = json.loads(row["payload"])
             except (TypeError, ValueError):
                 continue
-            parsed_rows.append((event, str(row["status"])))
+            parsed_rows.append((event, str(row["status"]), float(row["created_at"])))
             if event.get("brain_suppressed") or brain_event_suppression_reason(event):
                 for key in ("original_msg_id", "msg_id"):
                     value = str(event.get(key) or "").strip()
@@ -1088,7 +1099,8 @@ class StateDB:
             and (not float(row["expires_at"]) or float(row["expires_at"]) > now)
         }
         sessions: dict[tuple[str, str], dict[str, Any]] = {}
-        for event, status in parsed_rows:
+        waiting_messages: dict[tuple[str, str], list[tuple[float, float, str]]] = {}
+        for event, status, arrived_at in parsed_rows:
             account = str(event.get("account") or "").strip()
             buyer_id = str(event.get("buyer_id") or "").strip()
             content = str(event.get("content") or "")
@@ -1101,6 +1113,9 @@ class StateDB:
                 continue
             key = (account, buyer_id)
             timestamp = event_timestamp(event)
+            direction = message_direction(event)
+            if direction:
+                waiting_messages.setdefault(key, []).append((timestamp, arrived_at, direction))
             session = sessions.setdefault(key, {
                 "account": account,
                 "buyer_id": buyer_id,
@@ -1130,6 +1145,7 @@ class StateDB:
                 session["last_message"] = content
                 session["last_status"] = status
         for key, session in sessions.items():
+            session.update(waiting_state(waiting_messages.get(key, []), reply_map.get(key, 0.0)))
             session.pop("_buyer_nick_ts", None)
             if nickname_map.get(key):
                 session["buyer_nick"] = nickname_map[key]
@@ -1141,9 +1157,29 @@ class StateDB:
                 "handoff_expires_at": 0.0,
             }))
         result = sorted(
-            sessions.values(), key=lambda item: float(item["last_ts"]), reverse=True
+            sessions.values(), key=lambda item: (item["ai_mode"] == "human", float(item["last_ts"])), reverse=True
         )[:WORKBENCH_SESSION_LIMIT]
         return [dict(item) for item in result]
+
+    def remember_reply_receipt(self, account: str, buyer_id: str, reply_ts: float) -> None:
+        self.remember_reply_receipts([(account, buyer_id, reply_ts)])
+
+    def remember_reply_receipts(self, receipts: list[tuple[str, str, float]]) -> None:
+        now = time.time()
+        valid = [(account, buyer_id, stamp) for account, buyer_id, stamp in receipts
+                 if account and buyer_id and 0 < stamp <= now + 300]
+        if not valid:
+            return
+        with self.lock, closing(self.connect()) as connection, connection:
+            cursor = connection.executemany(
+                """INSERT INTO session_reply_receipts(account,buyer_id,reply_ts) VALUES(?,?,?)
+                ON CONFLICT(account,buyer_id) DO UPDATE SET reply_ts=excluded.reply_ts
+                WHERE session_reply_receipts.reply_ts<excluded.reply_ts""",
+                valid,
+            )
+            connection.execute("DELETE FROM session_reply_receipts WHERE reply_ts<?", (now - 30 * 86400,))
+            if cursor.rowcount:
+                self._invalidate_session_cache()
 
     def set_session_control(
         self,
@@ -5955,6 +5991,7 @@ class StandaloneBridge:
         if not claimed:
             raise RuntimeError("send request could not be claimed")
         pcsource = f"QianniuStandaloneBridge/{VERSION}"
+        send_started_at = time.time()
         try:
             # Never fetch new messages to prepare a send: GetNewMsg can advance
             # Qianniu's UI cursor. The passive AppBiz observation must already
@@ -5997,6 +6034,10 @@ class StandaloneBridge:
             and native_receipt.get("result_code") == 0
         ):
             response = self.db.confirm_send_from_callback(request_id, payload_hash, 0)
+            reply_account = str(body.get("tmall_account") or body.get("account") or "").strip()
+            if not reply_account:
+                reply_account = self.db.account_for_buyer(ccode)
+            self.db.remember_reply_receipt(reply_account, ccode, send_started_at)
         return response
 
     def expire_unconfirmed_sends(self) -> int:

@@ -105,6 +105,10 @@
     .session-preview { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .session-side { align-self: stretch; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; gap: 6px; }
     .session-time { color: var(--subtle); font-size: 10px; white-space: nowrap; }
+    .reply-countdown { padding: 2px 5px; border: 1px solid #dfb765; border-radius: 4px; background: #fff8e7; color: #895300; font-size: 10px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .reply-countdown.urgent { border-color: #e59367; background: #fff0e6; color: #a24116; }
+    .reply-countdown.expired { border-color: #df8590; background: #fff0f2; color: var(--danger); }
+    .session-row.reply-overdue { box-shadow: inset -3px 0 0 #cf4858; }
     .open-glyph { color: var(--accent); font-size: 14px; }
     /* Dock-only AI switch: one tap pauses/resumes AI for that conversation
        without opening the chat in 千牛 (the conversation pane is hidden in dock
@@ -532,17 +536,8 @@
       const query = conversationSearch.value.trim().toLowerCase();
       const handoffSessions = state.sessions.filter(item => item.ai_mode === 'human');
       const handoffCount = handoffSessions.length;
-      let oldestWaitSeconds = 0;
-      const seenKeys = new Set();
-      for (const item of handoffSessions) {
-        seenKeys.add(keyOf(item));
-        const since = Number(item.control_updated_at || 0);
-        if (since > 0) oldestWaitSeconds = Math.max(oldestWaitSeconds, (Date.now() - since) / 1000);
-      }
-      const staleBadge = oldestWaitSeconds >= 600 ? ' ⚠超10分钟' : '';
       el('allSessionsTab').textContent = `全部 ${state.sessions.length}`;
-      el('handoffSessionsTab').textContent = `待人工 ${handoffCount}${staleBadge}`;
-      el('handoffSessionsTab').classList.toggle('alert', handoffCount > 0 && oldestWaitSeconds >= 600);
+      el('handoffSessionsTab').textContent = `待人工 ${handoffCount}`;
       document.title = handoffCount > 0 ? `(${handoffCount} 待人工) 千牛聚合接待` : '千牛聚合接待';
       const freshKeys = handoffSessions.map(keyOf).filter(key => !state.handoffKeysSeen.has(key));
       if (freshKeys.length) {
@@ -556,9 +551,10 @@
       const rows = state.sessions.filter(item => {
         if (state.sessionFilter === 'handoff' && item.ai_mode !== 'human') return false;
         return !query || `${item.buyer_nick} ${item.buyer_id} ${item.last_message} ${item.handoff_reason || ''}`.toLowerCase().includes(query);
-      });
+      }).sort((a, b) => Number(b.ai_mode === 'human') - Number(a.ai_mode === 'human') || Number(b.last_ts || 0) - Number(a.last_ts || 0));
       el('sessionCount').textContent = String(rows.length);
       const list = el('sessionList'); list.replaceChildren();
+      updateReplyCountdowns();
       if (!rows.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = state.sessionFilter === 'handoff' ? '暂无待人工会话' : '暂无接待消息'; list.append(empty); return; }
       for (const session of rows) {
         const sessionKey = keyOf(session);
@@ -575,6 +571,10 @@
         main.append(nameWrap, preview);
         const side = document.createElement('span'); side.className = 'session-side';
         const time = document.createElement('span'); time.className = 'session-time'; time.textContent = shortTime(session.last_ts);
+        if (Number(session.reply_due_at || 0) > 0 && session.last_message_role === 'user') {
+          time.className = 'reply-countdown';
+          time.dataset.replyDueAt = String(session.reply_due_at);
+        }
         const glyph = document.createElement('span'); glyph.className = 'open-glyph';
         glyph.textContent = session.ai_mode === 'human' ? (dockMode ? '人↗' : '人工') : (dockMode ? '↗' : '›');
         if (dockMode) side.append(aiToggleChip(session), time, glyph);
@@ -583,6 +583,22 @@
         button.addEventListener('click', () => selectSession(session, dockMode));
         list.append(button);
       }
+      updateReplyCountdowns();
+    }
+    function updateReplyCountdowns() {
+      const now = Date.now() / 1000;
+      for (const node of document.querySelectorAll('[data-reply-due-at]')) {
+        const left = Math.max(0, Math.ceil(Number(node.dataset.replyDueAt) - now));
+        node.classList.toggle('expired', left === 0);
+        node.classList.toggle('urgent', left > 0 && left <= 30);
+        node.closest('.session-row')?.classList.toggle('reply-overdue', left === 0);
+        node.textContent = left === 0 ? '已超时' : `待回复 ${String(Math.floor(left / 60)).padStart(2, '0')}:${String(left % 60).padStart(2, '0')}`;
+        node.title = left === 0 ? '买家消息超过 180 秒未回复' : `回复倒计时：剩余 ${left} 秒`;
+      }
+      const overdue = state.sessions.filter(item => item.ai_mode === 'human' && item.last_message_role === 'user' && Number(item.reply_due_at) > 0 && Number(item.reply_due_at) <= now).length;
+      const handoffCount = state.sessions.filter(item => item.ai_mode === 'human').length;
+      el('handoffSessionsTab').textContent = `待人工 ${handoffCount}${overdue ? ` · 超时 ${overdue}` : ''}`;
+      el('handoffSessionsTab').classList.toggle('alert', overdue > 0);
     }
     function renderContext() {
       const context = [...state.messages].reverse().find(item => item.context && Object.keys(item.context).length)?.context || {};
@@ -780,6 +796,7 @@
         const nextSessionRevision = nextSessions.map(item => [
           item.account, item.buyer_id, item.buyer_nick, item.last_message, item.last_ts,
           item.message_count, item.last_status, item.ai_mode, item.handoff_reason,
+          item.last_message_role, item.reply_wait_started_at, item.reply_due_at,
         ].join('\u0000')).join('\u0001');
         const sessionsChanged = state.sessionRevision !== nextSessionRevision;
         state.status = status; state.sessions = nextSessions; state.sessionRevision = nextSessionRevision;
@@ -862,7 +879,7 @@
     document.addEventListener('keydown', event => { if (event.key === 'Escape' && state.settingsOpen) closeSettings(); });
     for (const id of ['qianniuConnection', 'brainConnection']) el(id).addEventListener('click', () => document.body.classList.toggle('inspector-open'));
     if (new URLSearchParams(location.search).get('settings') === '1') openSettings();
-    refresh(); setInterval(refresh, 5000);
+    refresh(); setInterval(refresh, 5000); setInterval(updateReplyCountdowns, 1000);
   </script>
 </body>
 </html>

@@ -35,14 +35,13 @@ JSON_START = re.compile(r"(?:jsonStr|w_json_str)\s*=\s*")
 MAX_LINE = 256 * 1024
 
 
-def nickname_records(line: str, now: float) -> list[tuple[str, str, str]]:
-    """Accept only an explicit shop + full ccode + matching buyer identity."""
+def notification_payload(line: str, now: float) -> tuple[Any, Any] | None:
     if len(line) > MAX_LINE:
-        return []
+        return None
     context = CONTEXT.search(line)
     marker = JSON_START.search(line)
     if not context or not marker or not EVENT.search(line[context.end():marker.start()]):
-        return []
+        return None
     try:
         # Native timestamps omit the year. Reject old history and future lines.
         current = datetime.fromtimestamp(now)
@@ -50,10 +49,19 @@ def nickname_records(line: str, now: float) -> list[tuple[str, str, str]]:
         if stamp.timestamp() > now + 86400:
             stamp = stamp.replace(year=stamp.year - 1)
         if not now - 86400 <= stamp.timestamp() <= now + 300:
-            return []
+            return None
         payload, _end = json.JSONDecoder().raw_decode(line[marker.end():])
     except (ValueError, TypeError, OverflowError):
+        return None
+    return context, payload
+
+
+def nickname_records(line: str, now: float) -> list[tuple[str, str, str]]:
+    """Accept only an explicit shop + full ccode + matching buyer identity."""
+    decoded = notification_payload(line, now)
+    if decoded is None:
         return []
+    context, payload = decoded
     account = context.group("account")
     rows = payload if isinstance(payload, list) else [payload]
     results = []
@@ -94,6 +102,47 @@ def nickname_records(line: str, now: float) -> list[tuple[str, str, str]]:
     return results
 
 
+def local_reply_records(line: str, now: float) -> list[tuple[str, str, float]]:
+    """Read native local-send notifications, never unsent text or AI drafts."""
+    if "strEvent=im.singlemsg.onShopRobotLocalSendMsgs," not in line:
+        return []
+    decoded = notification_payload(line, now)
+    if decoded is None:
+        return []
+    context, payload = decoded
+    results = []
+    for row in (payload if isinstance(payload, list) else [payload])[:200]:
+        if not isinstance(row, dict) or not isinstance(row.get("cid"), dict):
+            continue
+        buyer_id = str(row["cid"].get("ccode") or "")
+        match = CCODE.fullmatch(buyer_id)
+        if not match or not isinstance(row.get("newmsgs"), list):
+            continue
+        for message in row["newmsgs"][:100]:
+            if not isinstance(message, dict):
+                continue
+            sender, recipient, mcode = (message.get(key) for key in ("fromId", "toId", "mcode"))
+            if not all(isinstance(value, dict) for value in (sender, recipient, mcode)):
+                continue
+            if str(sender.get("targetId") or "") != context.group("seat"):
+                continue
+            if str(recipient.get("targetId") or "") != match.group("buyer"):
+                continue
+            if not (mcode.get("messageId") or mcode.get("clientId")):
+                continue
+            try:
+                stamp = float(message.get("sendTime") or 0)
+                if stamp > 1e14:
+                    stamp /= 1e6
+                elif stamp > 1e11:
+                    stamp /= 1000
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if now - 86400 <= stamp <= now + 300:
+                results.append((context.group("account"), buyer_id, stamp))
+    return results
+
+
 class QianniuNicknameLog:
     """Bounded incremental read of native nickname metadata, including rotation."""
 
@@ -102,6 +151,7 @@ class QianniuNicknameLog:
         self.config = config
         self.files: dict[Path, tuple[tuple[int, int], int, bytes]] = {}
         self.names: dict[tuple[str, str], tuple[str, float]] = {}
+        self.reply_updates: dict[tuple[str, str], float] = {}
         self.next_discovery = 0.0
         self.paths: list[Path] = []
         self.available = False
@@ -137,6 +187,7 @@ class QianniuNicknameLog:
 
     def poll(self) -> None:
         now = time.time()
+        self.reply_updates = {}
         if time.monotonic() >= self.next_discovery:
             self.next_discovery = time.monotonic() + 60.0
             self.discover()
@@ -177,6 +228,9 @@ class QianniuNicknameLog:
                         continue
                     for account, buyer_id, nick in nickname_records(line, now):
                         self.names[(account, buyer_id)] = (nick, now)
+                    for account, buyer_id, stamp in local_reply_records(line, now):
+                        key = (account, buyer_id)
+                        self.reply_updates[key] = max(self.reply_updates.get(key, 0), stamp)
             except OSError as error:
                 self.last_error = f"native_nickname_log_unavailable: {type(error).__name__}"
         if len(self.names) > 5000:
@@ -221,6 +275,10 @@ class NicknameResolver:
 
     def resolve_pending(self) -> None:
         self.log.poll()
+        if self.log.reply_updates:
+            self.app.db.remember_reply_receipts([
+                (account, buyer_id, stamp) for (account, buyer_id), stamp in self.log.reply_updates.items()
+            ])
         self.last_error = self.log.last_error
         with self.lock:
             keys = list(self.pending)
