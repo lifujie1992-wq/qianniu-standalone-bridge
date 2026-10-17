@@ -203,38 +203,19 @@ def run() -> int:
         """Return the dock Edge app window handle, or None when it is gone."""
         if os.name != "nt":
             return None
-        user32 = ctypes.windll.user32
-        rows: list[tuple[int, int, int, int]] = []
-
-        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-        def visit(hwnd: int, _lparam: int) -> bool:
-            length = user32.GetWindowTextLengthW(hwnd)
-            buffer = ctypes.create_unicode_buffer(max(1, length + 1))
-            user32.GetWindowTextW(hwnd, buffer, len(buffer))
-            if docked_workbench.DOCK_TITLE not in buffer.value:
-                return True
-            rect = wintypes.RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            rows.append((int(hwnd), int(pid.value), int(rect.right) - int(rect.left), int(rect.bottom) - int(rect.top), int(rect.left)))
-            return True
-
-        user32.EnumWindows(visit, 0)
+        owned_pids = {
+            process.pid for process in docked_workbench.DockedWorkbench.profile_edge_processes(
+                root / "state" / "dock-edge-profile"
+            )
+        }
         candidates = []
-        for hwnd, pid, width, height, left in rows:
+        for window in docked_workbench.Win32.windows():
+            if window.pid not in owned_pids or docked_workbench.DOCK_TITLE not in window.title:
+                continue
             # Chromium parks a second off-screen helper window with the same title.
-            if left <= -1000 or width < 80:
+            if window.rect.left <= -1000 or window.rect.width < 80:
                 continue
-            try:
-                process = psutil.Process(pid)
-                if process.name().lower() != "msedge.exe":
-                    continue
-                if DOCK_PROFILE_MARKER not in " ".join(process.cmdline()):
-                    continue
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-            candidates.append((hwnd, width * height))
+            candidates.append((window.hwnd, window.rect.width * window.rect.height))
         if not candidates:
             return None
         return max(candidates, key=lambda item: item[1])[0]
@@ -255,10 +236,17 @@ def run() -> int:
             if pid > 0 and psutil.pid_exists(pid):
                 hwnd = find_dock_hwnd()
                 if hwnd:
-                    user32 = ctypes.windll.user32
+                    user32 = docked_workbench.Win32.user32
                     user32.ShowWindow(hwnd, SW_RESTORE)
                     user32.SetForegroundWindow(hwnd)
                     return
+                # Edge may still be starting, or waiting for the Qianniu window.
+                # Repeated clicks must not kill the dock before it can appear.
+                try:
+                    if time.time() - psutil.Process(pid).create_time() < 30.0:
+                        return
+                except psutil.NoSuchProcess:
+                    pass
                 # The dock process is alive but its window is gone: retire the
                 # stale process so start_dock below can recreate it.
                 try:
