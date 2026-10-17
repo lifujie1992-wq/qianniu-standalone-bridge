@@ -1067,7 +1067,22 @@ class StateDB:
             reply_rows = connection.execute(
                 "SELECT account,buyer_id,reply_ts FROM session_reply_receipts"
             ).fetchall()
+            confirmed_send_rows = connection.execute(
+                """SELECT json_extract(b.payload,'$.account') AS account,
+                          s.buyer_cid AS buyer_id, MAX(s.created_at) AS reply_ts
+                   FROM brain_commands b JOIN sends s
+                     ON s.request_id=json_extract(b.result,'$.request_id')
+                   WHERE s.status='confirmed'
+                   GROUP BY json_extract(b.payload,'$.account'),s.buyer_cid"""
+            ).fetchall()
         reply_map = {(str(row["account"]), str(row["buyer_id"])): float(row["reply_ts"]) for row in reply_rows}
+        # Existing installations already have successful send receipts. Their
+        # command identity ties each receipt to the correct shop/seat, including
+        # older AI projections that were saved without a delivery status.
+        for row in confirmed_send_rows:
+            if row["account"]:
+                key = (str(row["account"]), str(row["buyer_id"]))
+                reply_map[key] = max(reply_map.get(key, 0.0), float(row["reply_ts"]))
         nickname_map = {
             (str(row["account"]), str(row["buyer_id"])): str(row["nickname"])
             for row in nickname_rows
@@ -2935,6 +2950,7 @@ class BrainConnector:
             ).hexdigest()
             response = self.app.send_text({
                 "request_id": request_id,
+                "account": account,
                 "buyer_cid": buyer_id,
                 "content": content,
                 **({"tmall_account": account, "tmall_command_meta": meta} if central_tmall else {}),
