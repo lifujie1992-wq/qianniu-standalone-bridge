@@ -651,11 +651,18 @@
     }
     async function openInQianniu(session) {
       const sessionKey = keyOf(session); if (state.openingKey) return;
-      state.openingKey = sessionKey; el('openState').textContent = `正在打开 ${session.buyer_nick || session.buyer_id}`; renderSessions();
+      const name = session.buyer_nick || session.buyer_id;
+      state.openingKey = sessionKey; el('openState').textContent = `正在打开 ${name}`;
+      el('openState').className = 'open-state'; renderSessions();
       try {
-        await api('/api/v1/open-conversation', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(session)});
-        el('openState').textContent = `已在千牛打开 ${session.buyer_nick || session.buyer_id}`;
-      } catch (error) { el('openState').textContent = error.message; el('openState').className = 'open-state error'; }
+        const result = await api('/api/v1/open-conversation', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({account: session.account, buyer_id: session.buyer_id}), timeout: 15000});
+        const message = result.verified ? `已在千牛打开 ${name}` : `已请求打开 ${name}，尚未确认切换，请检查千牛窗口和登录店铺`;
+        el('openState').textContent = message;
+        if (dockMode) dockToast(message, !result.verified);
+      } catch (error) {
+        el('openState').textContent = error.message; el('openState').className = 'open-state error';
+        if (dockMode) dockToast(`打开会话失败：${error.message}`, true);
+      }
       finally { state.openingKey = ''; renderSessions(); }
     }
     async function selectSession(session, open = false) {

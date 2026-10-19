@@ -147,6 +147,68 @@ def local_reply_records(line: str, now: float) -> list[tuple[str, str, float]]:
     return results
 
 
+class ConversationSelectionWatch:
+    """Confirm a jump from new native selection events, never message arrivals.
+
+    Keep a separate cursor so opening a conversation cannot consume nickname
+    or sent-message notifications from the resolver's background worker.
+    """
+
+    def __init__(self, paths: list[Path]):
+        self.paths = list(paths)
+        self.cursors: dict[tuple[int, int], tuple[int, bytes]] = {}
+        self.selected: dict[str, str] = {}
+        for path in self.paths:
+            try:
+                stat = path.stat()
+                self.cursors[(stat.st_dev, stat.st_ino)] = (stat.st_size, b"")
+            except OSError:
+                continue
+
+    def poll(self) -> None:
+        for path in self.paths:
+            try:
+                with path.open("rb") as stream:
+                    stat = os.fstat(stream.fileno())
+                    identity = (stat.st_dev, stat.st_ino)
+                    offset, remainder = self.cursors.get(identity, (0, b""))
+                    if stat.st_size < offset:
+                        offset, remainder = 0, b""
+                    stream.seek(offset)
+                    data = remainder + stream.read(2 * 1024 * 1024)
+                    offset = stream.tell()
+                lines = data.split(b"\n")
+                remainder = lines.pop()
+                if len(remainder) > MAX_LINE:
+                    remainder = b"!" * (MAX_LINE + 1)
+                self.cursors[identity] = (offset, remainder)
+                for raw in lines:
+                    if len(raw) > MAX_LINE or b"im.uiutil.onConversationChange" not in raw:
+                        continue
+                    try:
+                        line = raw.decode("utf-8-sig")
+                    except UnicodeDecodeError:
+                        try:
+                            line = raw.decode("gb18030")
+                        except UnicodeDecodeError:
+                            continue
+                    decoded = notification_payload(line, time.time())
+                    event = EVENT.search(line)
+                    if decoded is None or event is None or event.group(1) != "im.uiutil.onConversationChange":
+                        continue
+                    context, payload = decoded
+                    if not isinstance(payload, dict):
+                        continue
+                    cid = payload.get("cid") if isinstance(payload.get("cid"), dict) else payload
+                    ccode = str(cid.get("ccode") or "")
+                    match = CCODE.fullmatch(ccode)
+                    target = str(cid.get("targetId") or "").removesuffix(".1")
+                    if match and (not target or target == match.group("buyer")):
+                        self.selected[context.group("account")] = ccode
+            except OSError:
+                continue
+
+
 class QianniuNicknameLog:
     """Bounded incremental read of native nickname metadata, including rotation."""
 

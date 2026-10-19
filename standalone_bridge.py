@@ -41,10 +41,10 @@ from brain_ws import (
     BrainWsError,
     ws_url_from_server_url,
 )
-from client_support import ClientSupportWatcher, agent_profiles, size_of_image
+from client_support import ClientSupportWatcher, agent_profiles, launcher_version, size_of_image
 from config_defaults import apply_operational_defaults
 from nickname_support import event_nickname, nickname_event_id, valid_nickname
-from nickname_resolver import NicknameResolver
+from nickname_resolver import ConversationSelectionWatch, NicknameResolver
 from reception_wait import message_direction, waiting_state
 from device_identity import (
     DeviceIdentityError,
@@ -5715,7 +5715,6 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 account = str(body.get("account") or "").strip()
                 buyer_id = str(body.get("buyer_id") or "").strip()
-                requested_nick = str(body.get("buyer_nick") or "").strip()
                 if not account or not buyer_id:
                     raise ValueError("account and buyer_id are required")
                 session = next(
@@ -5728,19 +5727,24 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 )
                 if session is None:
                     raise ValueError("conversation is not present in the local workbench")
-                buyer_nick = str(session.get("buyer_nick") or requested_nick or "").strip()
+                buyer_nick = valid_nickname(session.get("buyer_nick"), buyer_id)
                 if not buyer_nick:
-                    raise ValueError("conversation has no buyer nickname")
+                    raise ValueError("该会话暂未获取到有效买家昵称，请等待昵称同步后重试")
                 focused = self.app.focus_qianniu()
-                if self.app.browser.connected:
+                try:
+                    # dx-h5 can be connected without any native openChat API.
+                    # WWCmd targets the seller account explicitly and works
+                    # even when the message-center web page is not loaded.
+                    response = self.app.open_conversation_protocol(account, buyer_nick, buyer_id)
+                except FileNotFoundError as error:
+                    if not self.app.browser.connected:
+                        raise RuntimeError("未找到千牛会话跳转入口，请确认千牛已启动") from error
                     security_uid = ContextEnricher.buyer_encrypt_id({"buyer_id": buyer_id})
                     response = self.app.browser.open_conversation(
                         buyer_nick,
                         buyer_id,
                         security_uid=security_uid,
                     )
-                else:
-                    response = self.app.open_conversation_protocol(account, buyer_nick)
                 response["focused"] = focused
                 response.update(account=account, buyer_id=buyer_id)
                 self.send_json(200, response)
@@ -5854,7 +5858,9 @@ class StandaloneBridge:
         self.workbench_error = ""
         self.native_frames = 0
 
-    def open_conversation_protocol(self, account: str, buyer_nick: str) -> dict[str, Any]:
+    def open_conversation_protocol(
+        self, account: str, buyer_nick: str, expected_ccode: str = ""
+    ) -> dict[str, Any]:
         account = str(account or "").strip()
         buyer_nick = str(buyer_nick or "").strip()
         if not account or not buyer_nick:
@@ -5862,29 +5868,57 @@ class StandaloneBridge:
         if buyer_nick_is_placeholder(buyer_nick):
             raise RuntimeError("conversation has no usable buyer nickname")
         runtime_root = self.config.resolve("qianniu_exe").parent
-        candidates = sorted(runtime_root.rglob("WWCmd.exe"), reverse=True)
-        if not candidates:
-            raise RuntimeError("Qianniu WWCmd.exe is unavailable")
+        # A staged client upgrade can sit beside the active build. Use the
+        # launcher's selected version instead of choosing the largest name.
+        version = launcher_version(runtime_root)
+        candidates = [runtime_root / version / "WWCmd.exe"] if version else []
+        candidates.append(runtime_root / "WWCmd.exe")
+        command = next((path for path in candidates if path.is_file()), None)
+        if command is None:
+            available = list(runtime_root.glob("*/WWCmd.exe"))
+            if len(available) == 1:
+                command = available[0]
+        if command is None:
+            raise FileNotFoundError("Qianniu WWCmd.exe is unavailable for the active client")
+        watch = ConversationSelectionWatch(self.nicknames.log.paths)
+        def ali_id(nick: str) -> str:
+            return nick if nick.startswith("cntaobao") else "cntaobao" + nick
         query = urllib.parse.urlencode({
-            "uid": f"cntaobao{account}",
-            "touid": f"cntaobao{buyer_nick}",
+            "uid": ali_id(account),
+            "touid": ali_id(buyer_nick),
             "siteid": "cntaobao",
             "status": "1",
         })
-        completed = subprocess.run(
-            [str(candidates[0]), f"aliim:sendmsg?{query}"],
-            cwd=str(candidates[0].parent),
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            timeout=5.0,
-            check=False,
-        )
+        try:
+            # No text/content parameter: this only opens the existing chat.
+            completed = subprocess.run(
+                [str(command), f"aliim:sendmsg?{query}"],
+                cwd=str(command.parent),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=5.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError("千牛会话跳转命令未能完成，请重试") from error
         if completed.returncode != 0:
             raise RuntimeError(f"Qianniu WWCmd failed with code {completed.returncode}")
+        verified = False
+        if expected_ccode and watch.paths:
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and not self.stop_event.is_set():
+                watch.poll()
+                if watch.selected.get(account) == expected_ccode:
+                    verified = True
+                    break
+                self.stop_event.wait(0.1)
+            if watch.selected.get(account) and not verified:
+                raise RuntimeError("千牛未切换到目标会话，请确认当前登录店铺后重试")
         return {
             "ok": True,
             "buyer_nick": buyer_nick,
             "via": "qianniu_wwcmd",
-            "verified": False,
+            "verified": verified,
+            "opened_ccode": expected_ccode if verified else "",
         }
 
     def focus_qianniu(self) -> bool:
