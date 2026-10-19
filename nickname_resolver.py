@@ -27,6 +27,10 @@ CONTEXT = re.compile(
     r"\[CHAT (?P<account>[^\]\r\n]{1,128}?)#3#(?P<seat>\d+) "
     r"(?P=account)#3#(?P=seat)\]"
 )
+CONTEXT_SINGLE = re.compile(
+    r"^\[\d{2}-\d{2} \d{2}:\d{2}:\d{2} \d+ \d+ \d+ [A-Z]+\] app "
+    r"\[CHAT (?P<account>[^\]\r\n]{1,128}?)#3#(?P<seat>\d+)\]"
+)
 EVENT = re.compile(
     r"(?:strEvent|strFullEvent)=(im\.(?:singlemsg\.(?:onReceiveNewMsg|"
     r"onShopRobotReceriveNewMsgs|onShopRobotLocalSendMsgs)|uiutil\.onConversationChange))[, ]"
@@ -38,7 +42,7 @@ MAX_LINE = 256 * 1024
 def notification_payload(line: str, now: float) -> tuple[Any, Any] | None:
     if len(line) > MAX_LINE:
         return None
-    context = CONTEXT.search(line)
+    context = CONTEXT.search(line) or CONTEXT_SINGLE.search(line)
     marker = JSON_START.search(line)
     if not context or not marker or not EVENT.search(line[context.end():marker.start()]):
         return None
@@ -156,10 +160,78 @@ class QianniuNicknameLog:
         self.paths: list[Path] = []
         self.available = False
         self.last_error = ""
+        self.lines_read = 0
+        self.notifications_read = 0
+        self.nickname_matches = 0
+        self.decode_errors = 0
+        self.discovery_sources: dict[Path, str] = {}
 
     def discover(self) -> None:
         configured = str(self.config.get("qianniu_log_dir", "") or "").strip()
         directories = [Path(configured)] if configured else []
+        direct_paths: list[Path] = []
+        def add_path(value: str, base: Path, source: str, is_log: bool = False) -> None:
+            value = os.path.expandvars(value.strip().strip('"'))
+            if not value or len(value) > 4096:
+                return
+            path = Path(value)
+            if not path.is_absolute():
+                path = base / path
+            if is_log:
+                # AliRender's own --log_file lives next to the native app log.
+                directory = path.parent if path.suffix else path
+                directories.append(directory)
+                self.discovery_sources[directory] = source
+            else:
+                for directory in (path / "System/log", path / "log", path):
+                    directories.append(directory)
+                    self.discovery_sources[directory] = source
+
+        # Read the actual running client's path instead of assuming its data
+        # lives on the agent drive. This also handles custom install locations.
+        runtime_roots = {self.root / "runtime"}
+        try:
+            import psutil
+
+            for process in psutil.process_iter(["name", "exe", "cmdline"]):
+                try:
+                    if str(process.info.get("name") or "").lower() not in {"aliworkbench.exe", "alirender.exe"}:
+                        continue
+                    executable = Path(process.info.get("exe") or "")
+                    runtime_roots.update((executable.parent, executable.parent.parent))
+                    args = process.info.get("cmdline") or []
+                    for index, arg in enumerate(args):
+                        if arg.lower().startswith("--log_file="):
+                            add_path(arg.split("=", 1)[1], executable.parent, "running_client", True)
+                        elif arg.lower() == "--log_file" and index + 1 < len(args):
+                            add_path(args[index + 1], executable.parent, "running_client", True)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                    continue
+        except ImportError:
+            pass
+        for runtime in runtime_roots:
+            for name in ("version.ini", "AliWorkbench.ini", "config.ini"):
+                try:
+                    for line in (runtime / name).read_text(encoding="utf-8-sig").splitlines():
+                        key, separator, value = line.partition("=")
+                        if separator and key.strip().lower() in {"logdir", "logpath", "datapath", "datadir", "userdatadir"}:
+                            add_path(value, runtime, "client_config", key.strip().lower().startswith("log"))
+                except (OSError, UnicodeError):
+                    continue
+        if os.name == "nt":
+            import winreg
+
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                for key in (r"Software\Alibaba\AliWorkbench", r"Software\Alibaba\Qianniu",
+                            r"SOFTWARE\WOW6432Node\Alibaba\AliWorkbench"):
+                    try:
+                        with winreg.OpenKey(hive, key) as handle:
+                            for index in range(winreg.QueryInfoKey(handle)[1]):
+                                name, value, _kind = winreg.EnumValue(handle, index)
+                                if isinstance(value, str) and name.lower() in {"datapath", "datadir", "userdatadir", "logdir", "logpath"}:
+                                    add_path(value, self.root, "client_registry", name.lower().startswith("log"))
+                    except OSError:
+                        continue
         # Standard Qianniu data location, on the agent drive or another local
         # drive. No credential stores or encrypted contact databases are read.
         drives = {self.root.anchor, os.environ.get("SystemDrive", "C:") + "\\"}
@@ -176,14 +248,21 @@ class QianniuNicknameLog:
                            for suffix in ("Documents", "AppData/Local", "AppData/Roaming"))
         paths = []
         for directory in directories:
+            try:
+                if directory.is_file():
+                    direct_paths.append(directory)
+                    continue
+            except OSError:
+                continue
             for name in ("app.log.old", "app.log"):
                 path = directory / name
                 try:
                     if path.is_file() and path not in paths:
                         paths.append(path)
+                        self.discovery_sources[path] = self.discovery_sources.get(directory, "configured" if configured and directory == Path(configured) else "standard_location")
                 except OSError:
                     continue
-        self.paths = paths
+        self.paths = list(dict.fromkeys(paths + direct_paths))
 
     def poll(self) -> None:
         now = time.time()
@@ -223,11 +302,19 @@ class QianniuNicknameLog:
                     if len(raw) > MAX_LINE or b"@cntaobao" not in raw:
                         continue
                     try:
-                        line = raw.decode("utf-8")
+                        line = raw.decode("utf-8-sig")
                     except UnicodeDecodeError:
-                        continue
+                        try:
+                            line = raw.decode("gb18030")
+                        except UnicodeDecodeError:
+                            self.decode_errors += 1
+                            continue
+                    self.lines_read += 1
+                    if EVENT.search(line):
+                        self.notifications_read += 1
                     for account, buyer_id, nick in nickname_records(line, now):
                         self.names[(account, buyer_id)] = (nick, now)
+                        self.nickname_matches += 1
                     for account, buyer_id, stamp in local_reply_records(line, now):
                         key = (account, buyer_id)
                         self.reply_updates[key] = max(self.reply_updates.get(key, 0), stamp)
@@ -305,7 +392,11 @@ class NicknameResolver:
         with self.lock:
             pending = len(self.pending)
         return {"pending": pending, "resolved": self.resolved, "native_log_available": self.log.available,
-                "last_error": self.last_error}
+                "log_files": [{"path": str(path), "source": self.log.discovery_sources.get(path, "configured")}
+                              for path in self.log.paths],
+                "lines_read": self.log.lines_read, "notifications_read": self.log.notifications_read,
+                "nickname_matches": self.log.nickname_matches, "decode_errors": self.log.decode_errors,
+                "last_error": self.last_error or ("nickname_mapping_not_found" if pending else "")}
 
     def run(self) -> None:
         while not self.app.stop_event.is_set():

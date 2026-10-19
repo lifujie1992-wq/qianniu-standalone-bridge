@@ -37,6 +37,17 @@ from pathlib import Path
 # Known-good offsets, keyed by SizeOfImage. Mirrors the HOOK_PROFILES table in
 # appbiz_agent.js and the AppBizProfile table in native/appbiz_adapter.cpp.
 KNOWN_PROFILES: dict[int, dict[str, object]] = {
+    0x1F31000: {
+        "version": "9.97.86N",
+        "service_vtable": 0x18D2BD8,
+        "secondary_vtable_1": 0x18D2D40,
+        "secondary_vtable_2": 0x18D2D50,
+        "message_biz_vtable": 0x18D0C58,
+        "service_get_new_msg": 0xA78BC0,
+        "service_on_message_arrive": 0xA7C4E0,
+        "service_send_text": 0xA84B40,
+        "message_biz_send_text": 0xA65C60,
+    },
     0x1F05000: {
         "version": "9.97.59N",
         "service_vtable": 0x18AF478,
@@ -236,7 +247,7 @@ def main() -> int:
         if old_rva not in cache:
             cache[old_rva] = (lambda pair: (pair[0], pair[1]))(
                 (lambda candidates: (candidates[0][0] if candidates else None, candidates))(
-                    anchor_candidates(old, new, old_rva)
+                    [item for item in anchor_candidates(old, new, old_rva) if item[1] >= 5]
                 )
             )
         return cache[old_rva][0]

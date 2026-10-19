@@ -380,6 +380,11 @@
           <label class="toggle-row"><span><strong>AI 自动回复</strong><small>允许大脑命令调用当前千牛发送链路</small></span><input id="aiReplyInput" type="checkbox"></label>
           <label class="toggle-row"><span><strong>远程打开会话</strong><small>允许大脑主动切换千牛当前聊天</small></span><input id="remoteOpenInput" type="checkbox"></label>
         </section>
+        <section class="form-section">
+          <h3>故障诊断</h3>
+          <p>昵称显示为数字或千牛连接异常时，导出本机版本和链路状态供排查。</p>
+          <button class="button" id="exportDiagnosticsButton" type="button">导出诊断文件</button>
+        </section>
       </div>
       <footer class="drawer-footer">
         <span class="form-state" id="settingsState" aria-live="polite"></span>
@@ -695,7 +700,8 @@
       const bridge = state.status.bridge;
       const connected = bridge.browser.connected > 0 && !bridge.browser.error;
       const appbiz = bridge.appbiz_send || {};
-      const receiveReady = connected || !!appbiz.receive_ready;
+      const sdkReady = (bridge.browser.connections || []).some(page => page.imsdk_hooked);
+      const receiveReady = sdkReady || !!appbiz.receive_ready;
       const wasSendReady = state.canSend;
       state.canSend = receiveReady && bridge.send_enabled && appbiz.ready;
       if (!wasSendReady && state.canSend && el('sendState').textContent === '千牛发送链路尚未就绪') {
@@ -703,7 +709,8 @@
         el('sendState').textContent = '';
       }
       dotState(el('qianniuDot'), receiveReady ? (state.canSend ? 'ok' : 'warn') : 'bad');
-      el('qianniuText').textContent = !receiveReady ? '接收链路断开' : (state.canSend ? (connected ? '收发就绪' : '原生收发就绪') : '仅接收就绪');
+      el('qianniuText').textContent = !receiveReady ? (appbiz.last_error || '接收链路断开') : (state.canSend ? '收发就绪' : '仅接收就绪');
+      el('qianniuConnection').title = !receiveReady ? (appbiz.last_error || '千牛消息接收通道未就绪') : '';
       const brain = bridge.brain || {};
       const server = brain.server_status || {};
       const serverKnown = !!brain.last_server_status_at;
@@ -835,6 +842,19 @@
       } catch (error) { el('settingsState').className = 'form-state error'; el('settingsState').textContent = error.message; }
     }
     function closeSettings() { state.settingsOpen = false; el('settingsBackdrop').classList.remove('visible'); el('settingsButton').focus(); }
+    async function exportDiagnostics() {
+      const button = el('exportDiagnosticsButton'); button.disabled = true;
+      try {
+        const data = await api('/api/v1/support-diagnostics');
+        const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
+        const link = document.createElement('a'); link.href = url;
+        link.download = `千牛故障诊断-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+        document.body.append(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        el('settingsState').textContent = '诊断文件已导出';
+      } catch (error) { el('settingsState').textContent = error.message; }
+      finally { button.disabled = false; }
+    }
     function brainSettingsBody() {
       return {
         server_url: el('brainServerInput').value.trim(), agent_token: el('brainTokenInput').value.trim(),
@@ -872,6 +892,7 @@
     el('aiModeButton').addEventListener('click', () => setSessionMode('ai'));
     el('humanModeButton').addEventListener('click', () => setSessionMode('human'));
     el('settingsButton').addEventListener('click', openSettings);
+    el('exportDiagnosticsButton').addEventListener('click', exportDiagnostics);
     el('closeSettings').addEventListener('click', closeSettings);
     el('saveBrainButton').addEventListener('click', () => saveBrainSettings(true));
     el('testBrainButton').addEventListener('click', testBrain);

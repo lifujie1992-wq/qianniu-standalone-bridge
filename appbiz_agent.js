@@ -2,6 +2,15 @@
 
 const appBiz = Process.getModuleByName('AppBiz.dll');
 const HOOK_PROFILES = {
+  0x1f31000: {
+    version: '9.97.86N',
+    serviceVtable: 0x18d2bd8,
+    secondaryVtable1: 0x18d2d40,
+    secondaryVtable2: 0x18d2d50,
+    serviceGetNewMsg: 0xa78bc0,
+    serviceOnMessageArrive: 0xa7c4e0,
+    serviceSendText: 0xa84b40,
+  },
   0x1f05000: {
     version: '9.97.59N',
     serviceVtable: 0x18af478,

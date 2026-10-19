@@ -41,7 +41,7 @@ from brain_ws import (
     BrainWsError,
     ws_url_from_server_url,
 )
-from client_support import ClientSupportWatcher
+from client_support import ClientSupportWatcher, agent_profiles, size_of_image
 from config_defaults import apply_operational_defaults
 from nickname_support import event_nickname, nickname_event_id, valid_nickname
 from nickname_resolver import NicknameResolver
@@ -5121,6 +5121,19 @@ class AppBizSendAdapter:
             self.last_error = ""
 
     def attach(self, process: psutil.Process) -> None:
+        module_path = Path(process.exe()).parent / "AppBiz.dll"
+        if not module_path.is_file():
+            for mapping in process.memory_maps(grouped=True):
+                if Path(mapping.path).name.lower() == "appbiz.dll":
+                    module_path = Path(mapping.path)
+                    break
+        if module_path.is_file():
+            image_size = size_of_image(module_path)
+            if image_size not in agent_profiles(ROOT):
+                raise RuntimeError(
+                    f"千牛版本 {module_path.parent.name} 尚未适配 "
+                    f"(AppBiz 0x{image_size:x})，请更新客服助手"
+                )
         helper_path = self.app.config.resolve("appbiz_adapter_path")
         if not helper_path.is_file():
             raise FileNotFoundError(f"AppBiz adapter not found: {helper_path}")
@@ -5578,6 +5591,28 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 "bridge": self.app.status(),
                 "brain_activity": self.app.brain.activity(),
                 "recent_commands": self.app.db.recent_brain_commands(),
+            })
+            return
+        if path == "/api/v1/support-diagnostics":
+            state = self.app.status(include_brain=False)
+            try:
+                build = json.loads((ROOT / "build-info.json").read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                build = {}
+            sessions = self.app.db.workbench_sessions()
+            self.send_json(200, {
+                "ok": True, "version": VERSION, "build_hash": BUILD_HASH,
+                "build": {key: build.get(key) for key in ("version", "variant", "commit", "exe_sha256")},
+                "captured_at": time.time(),
+                "nicknames": state["nicknames"],
+                "missing_nicknames": sum(buyer_nick_is_placeholder(row.get("buyer_nick"), row["buyer_id"]) for row in sessions),
+                "sessions": len(sessions),
+                "client_support": state["client_support"],
+                "native": state["appbiz_send"],
+                "browser": {"connected": self.app.browser.connected,
+                    "capabilities": [{key: page.get(key) for key in (
+                        "version", "imsdk_hooked", "has_db", "has_msgDataMap", "event_callbacks")}
+                        for page in self.app.browser.diagnostics_by_connection()]},
             })
             return
         self.send_json(404, {"ok": False, "error": "not_found"})

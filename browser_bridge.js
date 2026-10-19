@@ -883,7 +883,10 @@
     if (typeof records !== "object" || records.ok === false || records.success === false) return "";
     var identity = conversationIdOf(records.cid || records.ccode || records.conversationId || "") ||
       String(records.uid || records.userId || records.userid || records.targetId || recordKey || "");
-    var matched = identity === buyerId || identity === uid;
+    var matched = identity === buyerId || identity === uid || (
+      /^\d+(?:\.1)?$/.test(identity) && /^\d+(?:\.1)?$/.test(String(uid || "")) &&
+      identity.replace(/\.1$/, "") === String(uid).replace(/\.1$/, "")
+    );
     // A mismatched row must never provide another buyer's (or the seller's) nick.
     if (matched || (trusted && !identity)) {
       var nick = firstNickname([records.nickname, records.nick, records.senderNick, records.senderName,

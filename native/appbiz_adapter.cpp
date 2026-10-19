@@ -35,7 +35,8 @@ struct AppBizProfile {
     std::uintptr_t message_biz_send_text_rva;
 };
 
-constexpr std::array<AppBizProfile, 4> kAppBizProfiles{{
+constexpr std::array<AppBizProfile, 5> kAppBizProfiles{{
+    {0x18D2BD8, 0x18D0C58, 0xA65C60},  // 9.97.86N
     {0x18AF478, 0x18AD4F8, 0xA59120},  // 9.97.59N
     {0x18BDEE8, 0x18BBF68, 0xA64BF0},  // 9.97.74N
     {0x18C4C78, 0x18C2CF8, 0xA66940},  // 9.97.81N
