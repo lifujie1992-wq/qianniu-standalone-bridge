@@ -23,7 +23,7 @@ def is_placeholder_image_event(event: Any) -> bool:
     raw_type = str(event.get("raw_type") or "").strip().lower()
     if content.startswith(HTTP_PREFIXES):
         return False
-    return content in IMAGE_PLACEHOLDERS or raw_type in IMAGE_RAW_TYPES or "[图片]" in content
+    return content in IMAGE_PLACEHOLDERS or raw_type in IMAGE_RAW_TYPES
 
 
 def enrich_native_image_event(
@@ -41,21 +41,23 @@ def enrich_native_image_event(
     if not ccode or not msg_id:
         return event
     execute = getattr(browser, "execute", None)
-    if not callable(execute):
+    lookup = getattr(browser, "lookup_image_url", None)
+    if not callable(execute) and not callable(lookup):
         return event
     expression = (
         "window.__qn_standalone_image_url && "
         f"window.__qn_standalone_image_url({json.dumps(ccode)}, {json.dumps(msg_id)})"
     )
     try:
-        url = execute(expression, timeout=timeout)
+        url = lookup(ccode, msg_id, timeout=timeout) if callable(lookup) else execute(expression, timeout=timeout)
     except Exception:
         return event
     if not isinstance(url, str) or not url.startswith(HTTP_PREFIXES):
         return event
     enriched = dict(event)
     enriched["original_content"] = str(event.get("content") or "")
-    enriched["content"] = url
+    if not str(event.get("content") or "").strip() or str(event.get("content") or "").strip() in IMAGE_PLACEHOLDERS:
+        enriched["content"] = url
     enriched["image_url"] = url
     enriched["media_url"] = url
     enriched["raw_type"] = "image"

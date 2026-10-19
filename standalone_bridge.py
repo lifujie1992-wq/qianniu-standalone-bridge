@@ -1139,6 +1139,7 @@ class StateDB:
                 "_buyer_nick_ts": timestamp,
                 "last_message": "",
                 "last_ts": 0.0,
+                "_last_message_arrival": 0.0,
                 "message_count": 0,
                 "last_status": "",
             })
@@ -1156,13 +1157,15 @@ class StateDB:
             ):
                 session["buyer_nick"] = event_nick
                 session["_buyer_nick_ts"] = timestamp
-            if timestamp >= float(session["last_ts"]):
+            if (timestamp, arrived_at) > (float(session["last_ts"]), session["_last_message_arrival"]):
                 session["last_ts"] = timestamp
                 session["last_message"] = content
                 session["last_status"] = status
+                session["_last_message_arrival"] = arrived_at
         for key, session in sessions.items():
             session.update(waiting_state(waiting_messages.get(key, []), reply_map.get(key, 0.0)))
             session.pop("_buyer_nick_ts", None)
+            session.pop("_last_message_arrival", None)
             if nickname_map.get(key):
                 session["buyer_nick"] = nickname_map[key]
             session.update(control_map.get(key, {
@@ -3614,11 +3617,11 @@ class BrowserServer:
         with send_lock:
             connection.send(json.dumps(payload, ensure_ascii=False))
 
-    def execute(self, expression: str, timeout: float = 3.0) -> Any:
+    def execute(self, expression: str, timeout: float = 3.0, *, result_filter: Any = None) -> Any:
         request_id = uuid.uuid4().hex
-        response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         with self.connection_lock:
             connections = list(self.connections)
+            response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(1, len(connections)))
             self.pending[request_id] = response_queue
         if not connections:
             with self.connection_lock:
@@ -3638,16 +3641,34 @@ class BrowserServer:
                     continue
             if not sent:
                 raise RuntimeError("Qianniu browser command could not be sent")
-            try:
-                response = response_queue.get(timeout=timeout)
-            except queue.Empty as error:
-                raise RuntimeError("Qianniu browser command timed out") from error
-            if not response.get("ok"):
-                raise RuntimeError(str(response.get("error") or "Qianniu browser command failed"))
-            return response.get("value")
+            deadline = time.monotonic() + timeout
+            for _ in range(sent):
+                try:
+                    response = response_queue.get(timeout=max(0.0, deadline - time.monotonic()))
+                except queue.Empty as error:
+                    if result_filter is not None:
+                        return None
+                    raise RuntimeError("Qianniu browser command timed out") from error
+                if not response.get("ok"):
+                    if result_filter is not None:
+                        continue
+                    raise RuntimeError(str(response.get("error") or "Qianniu browser command failed"))
+                value = response.get("value")
+                if result_filter is None or result_filter(value):
+                    return value
+            return None
         finally:
             with self.connection_lock:
                 self.pending.pop(request_id, None)
+
+    def lookup_image_url(self, ccode: str, msg_id: str, timeout: float = 1.5) -> str:
+        # dx-h5 commonly answers first with an empty result. Wait for a page
+        # with the matching cache entry, using one shared timeout across pages.
+        expression = ("window.__qn_standalone_image_url && window.__qn_standalone_image_url("
+                      + json.dumps(ccode) + "," + json.dumps(msg_id) + ")")
+        value = self.execute(expression, timeout=timeout, result_filter=lambda value:
+                             isinstance(value, str) and value.startswith(("http://", "https://")))
+        return value if isinstance(value, str) else ""
 
     def execute_all(self, expression: str, timeout: float = 3.0) -> list[Any]:
         """Run an expression on every connected page and return the successes.
@@ -5756,7 +5777,6 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 buyer_nick = valid_nickname(session.get("buyer_nick"), buyer_id)
                 if not buyer_nick:
                     raise ValueError("该会话暂未获取到有效买家昵称，请等待昵称同步后重试")
-                focused = self.app.focus_qianniu()
                 try:
                     # dx-h5 can be connected without any native openChat API.
                     # WWCmd targets the seller account explicitly and works
@@ -5771,6 +5791,9 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                         buyer_id,
                         security_uid=security_uid,
                     )
+                # WWCmd restores the conversation itself. Activating the old
+                # chat first adds a redundant render on software-rendered seats.
+                focused = self.app.focus_qianniu()
                 response["focused"] = focused
                 response.update(account=account, buyer_id=buyer_id)
                 self.send_json(200, response)
@@ -5883,9 +5906,18 @@ class StandaloneBridge:
         self.api_error = ""
         self.workbench_error = ""
         self.native_frames = 0
+        self._conversation_open_lock = threading.Lock()
+        self._conversation_watch: ConversationSelectionWatch | None = None
+        self._conversation_watch_pid = 0
 
     def open_conversation_protocol(
         self, account: str, buyer_nick: str, expected_ccode: str = ""
+    ) -> dict[str, Any]:
+        with self._conversation_open_lock:
+            return self._open_conversation_protocol(account, buyer_nick, expected_ccode)
+
+    def _open_conversation_protocol(
+        self, account: str, buyer_nick: str, expected_ccode: str
     ) -> dict[str, Any]:
         account = str(account or "").strip()
         buyer_nick = str(buyer_nick or "").strip()
@@ -5906,7 +5938,18 @@ class StandaloneBridge:
                 command = available[0]
         if command is None:
             raise FileNotFoundError("Qianniu WWCmd.exe is unavailable for the active client")
-        watch = ConversationSelectionWatch(self.nicknames.log.paths)
+        paths = list(self.nicknames.log.paths)
+        process_id = int(self.appbiz.pid or 0)
+        if (self._conversation_watch is None or self._conversation_watch_pid != process_id
+                or self._conversation_watch.paths != paths):
+            self._conversation_watch = ConversationSelectionWatch(
+                paths, process_id=process_id, recent_bytes=1024 * 1024 if process_id else 0
+            )
+            self._conversation_watch_pid = process_id
+        watch = self._conversation_watch
+        # Read new native selections too, so a manual switch in Qianniu
+        # invalidates the cached current conversation before the next click.
+        watch.poll()
         def ali_id(nick: str) -> str:
             return nick if nick.startswith("cntaobao") else "cntaobao" + nick
         query = urllib.parse.urlencode({
@@ -5936,7 +5979,7 @@ class StandaloneBridge:
                 if watch.selected.get(account) == expected_ccode:
                     verified = True
                     break
-                self.stop_event.wait(0.1)
+                self.stop_event.wait(0.02 if deadline - time.monotonic() > 2.5 else 0.05)
             if watch.selected.get(account) and not verified:
                 raise RuntimeError("千牛未切换到目标会话，请确认当前登录店铺后重试")
         return {

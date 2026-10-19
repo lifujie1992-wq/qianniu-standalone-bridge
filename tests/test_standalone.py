@@ -495,17 +495,18 @@ class BrowserReceiveCompatibilityTests(unittest.TestCase):
 
     def test_workbench_open_conversation_is_purely_local_and_has_no_fixed_wait(self):
         source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
+        endpoint = source[source.index('if path == "/api/v1/open-conversation":'):source.index('\nclass ApiHandler')]
         focus = source.index("focused = self.app.focus_qianniu()")
-        opened = source.index("response = self.app.browser.open_conversation(", focus)
-        endpoint = source[source.index('if path == "/api/v1/open-conversation":'):opened]
-        self.assertLess(focus, opened)
+        opened = source.index("response = self.app.open_conversation_protocol(")
+        self.assertLess(opened, focus)
         self.assertNotIn("resolve_buyer_nick", endpoint)
         self.assertNotIn("wait_until_connected", endpoint)
 
-    def test_open_conversation_uses_default_local_request_timeout(self):
+    def test_open_conversation_sends_only_identity_and_shows_dock_progress(self):
         source = (ROOT / "workbench.html").read_text(encoding="utf-8")
-        self.assertIn("body: JSON.stringify(session)}", source)
-        self.assertNotIn("timeout: 20000", source)
+        self.assertIn("JSON.stringify({account: session.account, buyer_id: session.buyer_id})", source)
+        self.assertIn("timeout: 15000", source)
+        self.assertIn('dockToast(`正在打开 ${name}…`)', source)
 
     def test_conversation_eviction_also_drops_its_passive_fingerprint(self):
         source = (ROOT / "browser_bridge.js").read_text(encoding="utf-8")
@@ -758,10 +759,12 @@ class DockPlacementTests(unittest.TestCase):
             dock.edge = SimpleNamespace(pid=30)
 
         waits = 0
+        clock = [100.0]
 
         def wait(_delay):
             nonlocal waits
             waits += 1
+            clock[0] += 11.0
             if waits == 3:
                 dock.stop_event.set()
 
@@ -771,10 +774,12 @@ class DockPlacementTests(unittest.TestCase):
                 patch.object(dock, "launch", side_effect=launch), \
                 patch.object(dock, "find_dock_window", side_effect=[edge_window, None, None]), \
                 patch.object(dock, "set_dock_visible"), \
+                patch.object(dock, "apply_panel_frame"), \
+                patch.object(dock, "browser_closed", return_value=False), \
                 patch.object(dock, "close"), \
                 patch("docked_workbench.Win32.windows", return_value=[target]), \
                 patch("docked_workbench.Win32.work_area", return_value=Rect(0, 0, 1920, 1040)), \
-                patch("docked_workbench.time.time", side_effect=[100.0, 100.0, 102.0]):
+                patch("docked_workbench.time.time", side_effect=lambda: clock[0]):
             self.assertEqual(dock.run(), 0)
 
         self.assertEqual(len(launches), 2)
@@ -1288,6 +1293,7 @@ class BrainConnectorTests(unittest.TestCase):
                 delivery=SimpleNamespace(wakeup=threading.Event()),
                 context=None,
                 brain=fake_brain,
+                nicknames=Mock(cached_nickname=Mock(return_value="")),
             )
             _event_id, changed = StandaloneBridge.ingest_event(fake_app, system_event)
             self.assertTrue(changed)
@@ -1527,6 +1533,7 @@ class AiPolicyTests(unittest.TestCase):
             app.context = None
             app.brain = brain
             app.send_text = Mock()
+            app.nicknames = Mock(cached_nickname=Mock(return_value=""))
             buyer_id = "buyer.1-seller.1#11001@cntaobao"
 
             _event_id, changed = app.ingest_event({
@@ -1982,8 +1989,9 @@ class WorkbenchTests(unittest.TestCase):
 
     def test_workbench_accepts_appbiz_as_a_receive_link(self):
         source = (ROOT / "workbench.html").read_text(encoding="utf-8")
-        self.assertIn("const receiveReady = connected || !!appbiz.receive_ready", source)
-        self.assertIn("原生收发就绪", source)
+        self.assertIn("const sdkReady = (bridge.browser.connections || []).some(page => page.imsdk_hooked)", source)
+        self.assertIn("const receiveReady = sdkReady || !!appbiz.receive_ready", source)
+        self.assertIn("收发就绪", source)
 
     def test_conversation_search_rejects_agent_id_autofill_before_user_input(self):
         source = (ROOT / "workbench.html").read_text(encoding="utf-8")
@@ -2011,11 +2019,12 @@ class WorkbenchTests(unittest.TestCase):
         self.assertIn("message.role === 'draft' ? 'draft'", source)
         self.assertIn(".draft .bubble-body", source)
 
-    def test_composer_stays_editable_while_send_transport_is_unbound(self):
+    def test_manual_reply_uses_the_qianniu_window_when_ai_transport_is_unbound(self):
         source = (ROOT / "workbench.html").read_text(encoding="utf-8")
         self.assertIn("el('replyInput').disabled = !state.current || state.sending", source)
         self.assertNotIn("el('replyInput').disabled = !state.current || !state.canSend", source)
-        self.assertIn("if (!state.canSend)", source)
+        self.assertIn('placeholder="人工回复请在千牛会话中完成" readonly', source)
+        self.assertIn("async function replyInQianniu() { if (state.current) await openInQianniu(state.current); }", source)
         self.assertIn("!wasSendReady && state.canSend", source)
 
     def test_only_docked_session_click_opens_qianniu(self):
@@ -2146,6 +2155,8 @@ class AppBizSendSafetyTests(unittest.TestCase):
             session.create_script.side_effect = RuntimeError("script failed")
             device = SimpleNamespace(attach=Mock(return_value=session))
             process = Mock(pid=7)
+            process.exe.return_value = str(root / "AliWorkbench.exe")
+            process.memory_maps.return_value = []
             process.create_time.return_value = 100.0
 
             appbiz = AppBizSendAdapter(SimpleNamespace(
@@ -2164,6 +2175,7 @@ class AppBizSendSafetyTests(unittest.TestCase):
     def test_appbiz_receive_ingests_without_the_browser_page(self):
         app = SimpleNamespace(
             config=Config(Path("config.json"), {}),
+            browser=SimpleNamespace(connected=0),
             ingest_event=Mock(return_value=("event-1", True)),
         )
         adapter = AppBizSendAdapter(app)
@@ -2316,7 +2328,7 @@ class AppBizSendSafetyTests(unittest.TestCase):
         # Never unbind someone else's handler and never rebind via the window
         # object literal (the wrapper captures and chains the original).
         self.assertNotIn("window.imsdk.off(", browser_source)
-        self.assertNotIn("window.imsdk.invoke =", browser_source)
+        self.assertNotRegex(browser_source, r"window\.imsdk\.invoke\s*=(?!=)")
         self.assertIn("sdk.invoke = wrapped;", browser_source)
         self.assertIn("var result = originalSend.apply(this, arguments);", browser_source)
         self.assertNotIn("prepare_send_context", bridge_source)

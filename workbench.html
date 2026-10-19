@@ -318,10 +318,10 @@
       <div class="messages" id="messages"><div class="empty">请选择左侧会话</div></div>
       <div class="composer">
         <label class="sr-only" for="replyInput">回复内容</label>
-        <textarea id="replyInput" placeholder="输入回复内容" disabled></textarea>
+        <textarea id="replyInput" placeholder="人工回复请在千牛会话中完成" readonly disabled></textarea>
         <div class="composer-footer">
           <span class="send-state" id="sendState" aria-live="polite"></span>
-          <button class="button primary" id="sendButton" type="button" disabled>发送</button>
+          <button class="button primary" id="sendButton" type="button" disabled>在千牛回复</button>
         </div>
       </div>
     </section>
@@ -488,6 +488,7 @@
       } catch (error) { /* 提示音失败不影响功能 */ }
     }
     function dockToast(text, isError) {
+      document.querySelectorAll('.dock-toast').forEach(node => node.remove());
       const node = document.createElement('div');
       node.className = `dock-toast${isError ? ' error' : ''}`;
       node.textContent = text;
@@ -654,6 +655,8 @@
       const name = session.buyer_nick || session.buyer_id;
       state.openingKey = sessionKey; el('openState').textContent = `正在打开 ${name}`;
       el('openState').className = 'open-state'; renderSessions();
+      updateSendButton();
+      if (dockMode) dockToast(`正在打开 ${name}…`);
       try {
         const result = await api('/api/v1/open-conversation', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({account: session.account, buyer_id: session.buyer_id}), timeout: 15000});
         const message = result.verified ? `已在千牛打开 ${name}` : `已请求打开 ${name}，尚未确认切换，请检查千牛窗口和登录店铺`;
@@ -663,7 +666,7 @@
         el('openState').textContent = error.message; el('openState').className = 'open-state error';
         if (dockMode) dockToast(`打开会话失败：${error.message}`, true);
       }
-      finally { state.openingKey = ''; renderSessions(); }
+      finally { state.openingKey = ''; renderSessions(); updateSendButton(); }
     }
     async function selectSession(session, open = false) {
       state.current = session; state.lastNewest = ''; state.lastMessageRevision = '';
@@ -825,17 +828,8 @@
         dotState(el('qianniuDot'), 'bad'); el('qianniuText').textContent = error.message;
       } finally { state.busy = false; }
     }
-    function updateSendButton() { el('sendButton').disabled = !state.current || !el('replyInput').value.trim() || state.sending; }
-    async function sendReply() {
-      const content = el('replyInput').value.trim(); if (!state.current || !content) return;
-      if (!state.canSend) { el('sendState').className = 'send-state error'; el('sendState').textContent = '千牛发送链路尚未就绪'; return; }
-      state.sending = true; updateSendButton(); el('replyInput').disabled = true; el('sendState').className = 'send-state'; el('sendState').textContent = '正在提交给千牛';
-      try {
-        const result = await api('/api/v1/reply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({request_id: `workbench-${crypto.randomUUID()}`, buyer_cid: state.current.buyer_id, content})});
-        el('replyInput').value = ''; el('sendState').textContent = result.confirmed ? '千牛已确认' : '已提交，等待千牛确认'; await loadMessages(true);
-      } catch (error) { el('sendState').className = 'send-state error'; el('sendState').textContent = error.message; }
-      finally { state.sending = false; el('replyInput').disabled = !state.current; updateSendButton(); el('replyInput').focus(); }
-    }
+    function updateSendButton() { el('sendButton').disabled = !state.current || !!state.openingKey; }
+    async function replyInQianniu() { if (state.current) await openInQianniu(state.current); }
     async function openSettings() {
       state.settingsOpen = true; el('settingsBackdrop').classList.add('visible'); el('settingsState').textContent = '读取配置';
       try {
@@ -894,8 +888,8 @@
     conversationSearch.addEventListener('input', () => { if (!rejectUnexpectedSearchAutofill()) renderSessions(); });
     for (const delay of [0, 250, 1000, 2500]) setTimeout(rejectUnexpectedSearchAutofill, delay);
     el('replyInput').addEventListener('input', updateSendButton);
-    el('replyInput').addEventListener('keydown', event => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); sendReply(); } });
-    el('sendButton').addEventListener('click', sendReply);
+    el('replyInput').addEventListener('keydown', event => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); replyInQianniu(); } });
+    el('sendButton').addEventListener('click', replyInQianniu);
     el('aiModeButton').addEventListener('click', () => setSessionMode('ai'));
     el('humanModeButton').addEventListener('click', () => setSessionMode('human'));
     el('settingsButton').addEventListener('click', openSettings);

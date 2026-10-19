@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -133,12 +134,12 @@ class SqlitePragmaTests(StateDBFixture):
     """WAL 只在建库时设置一次，连接不再重复设置；busy_timeout 兜住锁竞争。"""
 
     def test_journal_mode_persists_without_per_connection_pragma(self):
-        with self.db.connect() as connection:
+        with closing(self.db.connect()) as connection:
             mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
         assert mode == "wal"
 
     def test_busy_timeout_is_set_per_connection(self):
-        with self.db.connect() as connection:
+        with closing(self.db.connect()) as connection:
             timeout = int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
         assert timeout == 8000
 
@@ -147,7 +148,7 @@ class EventsIndexTests(StateDBFixture):
     """会话快照的 `ORDER BY created_at DESC LIMIT ?` 必须有索引，否则每次重建全表排序。"""
 
     def test_created_at_index_exists(self):
-        with self.db.connect() as connection:
+        with closing(self.db.connect()) as connection:
             names = {
                 str(row[0])
                 for row in connection.execute(
@@ -158,7 +159,7 @@ class EventsIndexTests(StateDBFixture):
 
     def test_created_at_index_is_used_by_session_scan(self):
         self.seed(3)
-        with self.db.connect() as connection:
+        with closing(self.db.connect()) as connection:
             plan = " ".join(
                 str(row[3])
                 for row in connection.execute(

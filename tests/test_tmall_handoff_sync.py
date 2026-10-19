@@ -53,6 +53,7 @@ class TmallHandoffSyncTests(unittest.TestCase):
     def test_keywords_do_not_independently_pause_tmall(self):
         app=StandaloneBridge.__new__(StandaloneBridge);app.config={'delivery_enabled':True};app.db=self.db
         app.delivery=SimpleNamespace(wakeup=threading.Event());app.context=SimpleNamespace(enqueue=Mock())
+        app.nicknames=Mock(cached_nickname=Mock(return_value=''))
         app.ingest_event({'account':ACCOUNT,'buyer_id':BUYER,'role':'user','content':'我要退款','msg_id':'refund'})
         self.assertEqual(self.db.session_control(ACCOUNT,BUYER)['ai_mode'],'ai')
     def test_polling_can_clear_tmall_automatic_controls_but_not_other_shops(self):

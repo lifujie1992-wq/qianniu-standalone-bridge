@@ -35,8 +35,17 @@ def waiting_state(messages: list[tuple[float, float, str]], reply_ts: float = 0.
     buyer appeared in the local window. Further buyer messages do not extend
     the deadline; a new turn after a reply gets its own 180 seconds.
     """
-    latest_reply = max([reply_ts] + [ts for ts, _arrived, role in messages if role == "seller"])
-    unanswered = [(ts, arrived) for ts, arrived, role in messages if role == "user" and ts > latest_reply]
+    # Some native timestamps have only second precision. Use first ingestion
+    # order to distinguish an actual new buyer turn within that same second.
+    reply_order = max(((ts, arrived) for ts, arrived, role in messages if role == "seller"),
+                      default=(0.0, 0.0))
+    if reply_ts > reply_order[0]:
+        # A receipt without a corresponding message has no ingestion order;
+        # preserve its existing timestamp-based confirmation semantics.
+        reply_order = (reply_ts, float("inf"))
+    latest_reply = reply_order[0]
+    unanswered = [(ts, arrived) for ts, arrived, role in messages
+                  if role == "user" and (ts, arrived) > reply_order]
     started_at = min((arrived for _ts, arrived in unanswered), default=0.0)
     return {
         "last_message_role": "user" if unanswered else ("seller" if latest_reply else ""),

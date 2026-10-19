@@ -74,6 +74,7 @@ function loadBridge(options = {}) {
     setItem(key, value) { this.values.set(key, value); },
   };
   const window = {
+    __qn_standalone_options: options.bridgeOptions || {},
     imsdk,
     _db: {msgDataMap: new Map(), ...(options.db || {})},
     _conversationId: {ccode: 'foreground#1@cntaobao'},
@@ -616,4 +617,44 @@ test('Tmall uploads rich entry context even without a text summary', () => {
   b.handlers.get('im.singlemsg.onReceiveNewMsg')(raw);
   assert.equal(captured(b).length,1);
   assert.equal(captured(b)[0].raw_message.entryContext.orderId,'1234567890123456789');
+});
+
+test('history probe is opt-in, targets only the transferred conversation and runs once', async () => {
+  const common = {loginid:{nick:'联想官方旗舰店:燕燕'},toid:{nick:'联想官方旗舰店:燕燕'},
+    summary:'由 服务助手 转交给 燕燕'};
+  const off = loadBridge({asyncRpc:true});
+  off.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('probe-off', common));
+  await settle();
+  assert.equal(off.calls.filter(call => /Get(?:Remote|Local)HisMsg/.test(call.api)).length, 0);
+  const on = loadBridge({asyncRpc:true,bridgeOptions:{history_probe:true,
+    history_probe_params:{ccode:'another-customer',count:10}},invoke:() => ({ok:true,result:[]})});
+  on.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('probe-on-1', common));
+  on.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('probe-on-2', common));
+  await settle();
+  const calls = on.calls.filter(call => /Get(?:Remote|Local)HisMsg/.test(call.api));
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.params.ccode === NUMERIC_BUYER));
+  assert.ok(calls.every(call => call.params.startTime > 0 && call.params.count === 10));
+  assert.equal(on.window.__qn_standalone_diag.history_probe_results.length, 2);
+});
+
+test('history probe retries after the SDK becomes available', async () => {
+  const b = loadBridge({asyncRpc:true,bridgeOptions:{history_probe:true},invoke:() => ({ok:true})});
+  const sdk = b.window.imsdk;
+  const common = {loginid:{nick:'联想官方旗舰店:燕燕'},toid:{nick:'联想官方旗舰店:燕燕'},
+    summary:'由 服务助手 转交给 燕燕'};
+  b.window.imsdk = undefined;
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('probe-no-sdk', common));
+  b.window.imsdk = sdk;
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('probe-sdk-ready', common));
+  await settle();
+  assert.equal(b.calls.filter(call => /Get(?:Remote|Local)HisMsg/.test(call.api)).length, 2);
+});
+
+test('native image lookup never substitutes one older image for a different message ID', () => {
+  const b = loadBridge();
+  const url = 'https://img.alicdn.com/imgextra/i1/100/chat-image.jpg';
+  b.window._db.msgDataMap.set(NUMERIC_BUYER, [uidMessage('older-image', {summary:url,image_url:url})]);
+  assert.equal(b.window.__qn_standalone_image_url(NUMERIC_BUYER, 'missing-new-image'), '');
+  assert.equal(b.window.__qn_standalone_image_url(NUMERIC_BUYER, 'qn-msg-v1|taobao|older-image'), url);
 });

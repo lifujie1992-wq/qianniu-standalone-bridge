@@ -1249,16 +1249,20 @@
 
   function probeHistory(ccode) {
     if (!HISTORY_PROBE || !ccode || historyProbeCcodes[ccode]) return;
-    historyProbeCcodes[ccode] = true;
-    diagnostics.history_probe_runs += 1;
     diagnostics.history_probe_last_ccode = ccode;
     diagnostics.history_probe_last_at_ms = Date.now();
     diagnostics.history_probe_imsdk = !!(window.imsdk && typeof window.imsdk.invoke === "function");
     if (!diagnostics.history_probe_imsdk) {
       diagnostics.history_probe_results.push({ api: "", ok: false, error: "imsdk_unavailable" });
+      if (diagnostics.history_probe_results.length > 4) diagnostics.history_probe_results.shift();
       return;
     }
+    historyProbeCcodes[ccode] = true;
+    diagnostics.history_probe_runs += 1;
     var params = Object.assign({ ccode: ccode, count: 100 }, HISTORY_PROBE_PARAMS);
+    // Parameter-name experiments must not redirect a transfer's probe to a
+    // different buyer. The event's full conversation ID is authoritative.
+    params.ccode = ccode;
     // 只拉当天：本地零点。服务端仍会按 original_timestamp 再过滤一次。
     if (!("startTime" in params) && !("start_time" in params) && !("beginTime" in params)) {
       params.startTime = sameDayStartSeconds();
@@ -1406,7 +1410,7 @@
         if (wanted && id === wanted) exact = url;
         if (fallback.indexOf(url) < 0) fallback.push(url);
       }
-      if (exact) return exact;
+      if (wanted) return exact;
       // 找不到精确消息时，只在会话里恰好只有一张聊天图片时兜底，避免拿旧图。
       return fallback.length === 1 ? fallback[0] : "";
     } catch (e) {

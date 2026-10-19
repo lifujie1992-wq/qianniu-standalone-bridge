@@ -70,6 +70,18 @@ class NativeImageLookupTest(unittest.TestCase):
         self.assertIn("enrich_native_image_event", bridge)
         self.assertIn('"bridge_native_image_lookup": true', (ROOT / "config.example.json").read_text(encoding="utf-8"))
 
+    def test_text_mentioning_an_image_is_not_replaced(self):
+        event = {**_event(), 'content': '我刚才发的[图片]看到了吗', 'raw_type': 'text'}
+        browser = _Browser(URL)
+        self.assertIs(enrich_native_image_event(event, browser), event)
+        self.assertEqual(browser.calls, [])
+
+    def test_real_image_caption_is_preserved_when_url_is_added(self):
+        event = {**_event(), 'content': '这个灯一直闪', 'raw_type': 'image'}
+        enriched = enrich_native_image_event(event, _Browser(URL))
+        self.assertEqual(enriched['content'], '这个灯一直闪')
+        self.assertEqual(enriched['image_url'], URL)
+
 
 if __name__ == "__main__":
     unittest.main()

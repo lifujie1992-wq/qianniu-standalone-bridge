@@ -23,12 +23,12 @@ from nickname_support import valid_nickname
 LOG = logging.getLogger("qianniu_standalone.nicknames")
 CCODE = re.compile(r"^(?P<buyer>\d+)(?:\.\d+)?-\d+(?:\.\d+)?#\d+@cntaobao$")
 CONTEXT = re.compile(
-    r"^\[\d{2}-\d{2} \d{2}:\d{2}:\d{2} \d+ \d+ \d+ [A-Z]+\] app "
+    r"^\[\d{2}-\d{2} \d{2}:\d{2}:\d{2} \d+ (?P<pid>\d+) \d+ [A-Z]+\] app "
     r"\[CHAT (?P<account>[^\]\r\n]{1,128}?)#3#(?P<seat>\d+) "
     r"(?P=account)#3#(?P=seat)\]"
 )
 CONTEXT_SINGLE = re.compile(
-    r"^\[\d{2}-\d{2} \d{2}:\d{2}:\d{2} \d+ \d+ \d+ [A-Z]+\] app "
+    r"^\[\d{2}-\d{2} \d{2}:\d{2}:\d{2} \d+ (?P<pid>\d+) \d+ [A-Z]+\] app "
     r"\[CHAT (?P<account>[^\]\r\n]{1,128}?)#3#(?P<seat>\d+)\]"
 )
 EVENT = re.compile(
@@ -108,7 +108,7 @@ def nickname_records(line: str, now: float) -> list[tuple[str, str, str]]:
 
 def local_reply_records(line: str, now: float) -> list[tuple[str, str, float]]:
     """Read native local-send notifications, never unsent text or AI drafts."""
-    if "strEvent=im.singlemsg.onShopRobotLocalSendMsgs," not in line:
+    if not re.search(r"(?:strEvent|strFullEvent)=im\.singlemsg\.onShopRobotLocalSendMsgs[, ]", line):
         return []
     decoded = notification_payload(line, now)
     if decoded is None:
@@ -154,14 +154,15 @@ class ConversationSelectionWatch:
     or sent-message notifications from the resolver's background worker.
     """
 
-    def __init__(self, paths: list[Path]):
+    def __init__(self, paths: list[Path], *, process_id: int = 0, recent_bytes: int = 0):
         self.paths = list(paths)
+        self.process_id = process_id
         self.cursors: dict[tuple[int, int], tuple[int, bytes]] = {}
         self.selected: dict[str, str] = {}
         for path in self.paths:
             try:
                 stat = path.stat()
-                self.cursors[(stat.st_dev, stat.st_ino)] = (stat.st_size, b"")
+                self.cursors[(stat.st_dev, stat.st_ino)] = (max(0, stat.st_size - recent_bytes), b"")
             except OSError:
                 continue
 
@@ -174,6 +175,11 @@ class ConversationSelectionWatch:
                     offset, remainder = self.cursors.get(identity, (0, b""))
                     if stat.st_size < offset:
                         offset, remainder = 0, b""
+                    if stat.st_size - offset > 2 * 1024 * 1024:
+                        # A long idle gap must not leave a stale current-chat
+                        # cache while only reading the start of a large backlog.
+                        offset, remainder = stat.st_size - 2 * 1024 * 1024, b""
+                        self.selected.clear()
                     stream.seek(offset)
                     data = remainder + stream.read(2 * 1024 * 1024)
                     offset = stream.tell()
@@ -197,6 +203,8 @@ class ConversationSelectionWatch:
                     if decoded is None or event is None or event.group(1) != "im.uiutil.onConversationChange":
                         continue
                     context, payload = decoded
+                    if self.process_id and int(context.group("pid")) != self.process_id:
+                        continue
                     if not isinstance(payload, dict):
                         continue
                     cid = payload.get("cid") if isinstance(payload.get("cid"), dict) else payload
