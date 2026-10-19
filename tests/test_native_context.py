@@ -41,6 +41,8 @@ class NativeContentTests(unittest.TestCase):
         self.assertEqual(event['msg_id'],'123.PNM')
         self.assertEqual(event['ts'],STAMP)
         self.assertEqual(event['nickname'],'tb_7715324')
+        self.assertEqual(event['sender_uid'],'100')
+        self.assertEqual(event['sender_nick'],'tb_7715324')
         self.assertEqual(event['capture_mode'],'history_snapshot')
 
     def test_image_reads_original_media_from_its_own_packed_body(self):
@@ -57,7 +59,11 @@ class NativeContentTests(unittest.TestCase):
     def test_staff_from_another_seat_in_same_shop_is_context(self):
         value=row(sender='999@cntaobao')
         value[7]=json.dumps({'sender_nick':'cntaobao联想官方旗舰店:京京','receiver_nick':'cntaobaotb_7715324'})
-        self.assertEqual(native_event(value,ACCOUNT,BUYER)['role'],'seller')
+        event=native_event(value,ACCOUNT,BUYER)
+        self.assertEqual(event['role'],'mall_cs')
+        self.assertEqual(event['sender_uid'],'999')
+        self.assertEqual(event['staff_name'],'联想官方旗舰店:京京')
+        self.assertEqual(event['recipient_nick'],'tb_7715324')
 
     def test_truncation_and_unbounded_structures_fail_closed(self):
         for value in [b'',b'\xda\xff\xff',b'\x81\x01',b'\xdf\xff\xff\xff\xff',b'\x01\x02']:
@@ -151,6 +157,37 @@ class NativePrepareTests(unittest.TestCase):
             claimed=db.claim_pending()[0]
             db.remember_native_context([native_event(row(image=True),ACCOUNT,BUYER)])
             self.assertTrue(db.mark_delivered(event_id,claimed['revision']))
+
+    def test_native_history_role_correction_preserves_delivery_and_platform_fields(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db=StateDB(Path(folder)/'bridge.sqlite3')
+            native=row(sender='999@cntaobao')
+            native[7]=json.dumps({'sender_nick':'cntaobao联想官方旗舰店:京京','receiver_nick':'cntaobaotb_7715324'})
+            corrected=native_event(native,ACCOUNT,BUYER)
+            old=dict(corrected,role='seller')
+            db.remember_native_context([old])
+            event_id=normalize_event(old)['event_id']
+            before=db.event_payload(event_id)
+            db.remember_native_context([corrected])
+            saved=db.event_payload(event_id)
+            self.assertEqual(saved['role'],'mall_cs')
+            self.assertEqual(db.event_status(event_id),'delivered')
+            self.assertEqual(len(db.pending()),0)
+            for key in ('event_id','account','buyer_id','msg_id','ts','original_timestamp','content','capture_mode'):
+                self.assertEqual(saved[key],before[key])
+
+    def test_native_history_cannot_reclassify_a_live_event(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db=StateDB(Path(folder)/'bridge.sqlite3')
+            history=native_event(row(),ACCOUNT,BUYER)
+            for index,source in enumerate(('appbiz_native_callback','another_history_reader')):
+                incoming=dict(history,msg_id=f'{index}.PNM')
+                original=dict(incoming,role='unknown',source=source,
+                              capture_mode='live' if index==0 else 'history_snapshot')
+                event_id,_=db.upsert_event(original)
+                before=db.event_payload(event_id)
+                db.remember_native_context([incoming])
+                self.assertEqual(db.event_payload(event_id),before)
 
 
 class NativeUploadTests(unittest.TestCase):

@@ -102,7 +102,7 @@ def native_event(row: list[Any], account: str, buyer_id: str) -> dict[str, Any] 
     if sender == match[1]:
         role, nickname = 'user', valid_nickname(sender_nick, buyer_id)
     elif sender_nick == shop or sender_nick.startswith(shop+':'):
-        role, nickname = 'seller', valid_nickname(recipient_nick, buyer_id)
+        role, nickname = 'mall_cs', valid_nickname(recipient_nick, buyer_id)
     else:
         return None
     content = ''
@@ -125,7 +125,10 @@ def native_event(row: list[Any], account: str, buyer_id: str) -> dict[str, Any] 
               'msg_id':str(row[1]), 'original_msg_id':str(row[1]), 'nickname':nickname,
               'content':content, 'role':role, 'ts':stamp, 'original_timestamp':stamp,
               'capture_mode':'history_snapshot', 'source':'qianniu_native_message_store',
+              'sender_uid':sender, 'sender_nick':sender_nick, 'recipient_nick':recipient_nick,
               'raw_type':'image' if media else 'text'}
+    if role == 'mall_cs':
+        result['staff_name'] = sender_nick
     if media:
         result.update(image_url=media, media_url=media, message_type='image', image_lookup='native_message_store')
     return result

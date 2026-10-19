@@ -867,15 +867,29 @@ class StateDB:
                         # worker. The outgoing brain envelope is still enriched.
                         continue
                     current = json.loads(row['payload'])
-                    if not normalized.get('image_url'):
-                        continue
-                    for key in ('image_url','media_url','message_type','image_lookup','raw_type'):
-                        if normalized.get(key):
-                            current[key] = normalized[key]
-                    if str(current.get('content') or '').strip() in {'[图片]','买家发送图片','图片',''}:
-                        current['original_content'] = current.get('content','')
-                        current['content'] = normalized['image_url']
+                    before = json_text(current)
+                    native_history = all(
+                        item.get('capture_mode') == 'history_snapshot'
+                        and item.get('source') == 'qianniu_native_message_store'
+                        for item in (current, normalized)
+                    ) and all(current.get(key) == normalized.get(key)
+                              for key in ('account','buyer_id','msg_id'))
+                    if native_history:
+                        # Correct only our own history projection. Never change
+                        # the role or capture mode of an existing live event.
+                        for key in ('role','sender_uid','sender_nick','recipient_nick','staff_name'):
+                            if key in normalized:
+                                current[key] = normalized[key]
+                    if normalized.get('image_url'):
+                        for key in ('image_url','media_url','message_type','image_lookup','raw_type'):
+                            if normalized.get(key):
+                                current[key] = normalized[key]
+                        if str(current.get('content') or '').strip() in {'[图片]','买家发送图片','图片',''}:
+                            current['original_content'] = current.get('content','')
+                            current['content'] = normalized['image_url']
                     encoded = json_text(current)
+                    if encoded == before:
+                        continue
                     revision = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
                     connection.execute('UPDATE events SET payload=?,revision=?,updated_at=? WHERE event_id=?',
                                        (encoded,revision,now,normalized['event_id']))
