@@ -3587,6 +3587,10 @@ class BrowserServer:
             "passive_dom_interval_ms", "passive_cache_interval_ms",
             "recovery_scan_requests", "recovery_scan_runs",
             "recovery_scan_last_reason",
+            "history_poll_enabled", "history_poll_calls", "history_poll_errors",
+            "history_probe_enabled", "history_probe_runs",
+            "history_probe_last_ccode", "history_probe_last_at_ms",
+            "history_probe_imsdk", "history_probe_results",
         )
         snapshot = {key: diagnostics.get(key) for key in allowed if key in diagnostics}
         with self.connection_lock:
@@ -5097,6 +5101,17 @@ class AppBizSendAdapter:
                 self.last_error = ""
             except Exception as error:
                 self.last_error = f"AppBiz message ingest failed: {error}"[:500]
+        elif event == "appbiz_message_dump":
+            # 诊断：图片消息原生结构 dump，落盘供离线分析图片 URL 字段。
+            try:
+                target = ROOT / "state" / "appbiz-image-struct-dump.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                self.last_error = ""
+            except OSError as error:
+                self.last_error = f"could not persist image struct dump: {error}"[:500]
+        elif event == "appbiz_message_dump_error":
+            self.last_error = str(payload.get("error") or event)[:500]
         elif event == "appbiz_receive_error":
             self.last_error = str(payload.get("error") or event)[:500]
         elif event == "appbiz_send_observed":
@@ -5170,7 +5185,10 @@ class AppBizSendAdapter:
                 continue
         source = template.replace(
             "__APPBIZ_ADAPTER_PATH__", json.dumps(str(helper_path))
-        ).replace("__SELECTED_SERVICE__", json.dumps(selected_service_hint))
+        ).replace("__SELECTED_SERVICE__", json.dumps(selected_service_hint)).replace(
+            "__APPBIZ_DUMP_IMAGE_STRUCT__",
+            json.dumps(bool(self.app.config.get("appbiz_dump_image_struct", False))),
+        )
         session = frida.get_local_device().attach(process.pid)
         script = None
         try:
