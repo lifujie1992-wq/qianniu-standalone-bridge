@@ -178,6 +178,12 @@ function scanCandidates() {
 }
 
 scanCandidates();
+let nativeMessageStore;
+try { nativeMessageStore = createNativeMessageStore(() => candidates.map(candidateDetails)); }
+catch (error) {
+  const reason=String(error.message||error).slice(0,160);
+  nativeMessageStore={read(){return {ok:false,error:reason,rows:[]};},status(){return {databases:0,error:reason};}};
+}
 
 // Login and shift changes can create the service objects after this script is
 // attached. Keep retrying only while no service object is available.
@@ -380,6 +386,9 @@ function ensureHelper() {
 }
 
 rpc.exports = {
+  readmessages(account, ccode, beforeMs, afterMs, messageId, count) {
+    return nativeMessageStore.read(String(account),String(ccode),beforeMs,afterMs,String(messageId||''),count);
+  },
   status() {
     if ((selectedService === null || candidates.length === 0) && Date.now() - lastCandidateScanMs >= 30000) {
       scanCandidates();
@@ -404,6 +413,7 @@ rpc.exports = {
       received_messages: receivedMessages,
       last_receive_at_ms: lastReceiveAtMs,
       helper_loaded: helperModule !== null,
+      message_store: nativeMessageStore.status(),
     };
   },
   preparesend(ccode, centralExecution) {

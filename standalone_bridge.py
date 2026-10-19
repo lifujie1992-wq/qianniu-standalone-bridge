@@ -45,6 +45,7 @@ from client_support import ClientSupportWatcher, agent_profiles, launcher_versio
 from config_defaults import apply_operational_defaults
 from nickname_support import event_nickname, nickname_event_id, valid_nickname
 from native_image_lookup import enrich_native_image_event
+from native_context import NativeContext
 from nickname_resolver import ConversationSelectionWatch, NicknameResolver
 from reception_wait import message_direction, waiting_state
 from device_identity import (
@@ -850,6 +851,44 @@ class StateDB:
             [tmall_delivery_identity_view(json.loads(row["payload"])) for row in rows],
             command_parent, batch_ids,
         )
+
+    def remember_native_context(self, events: list[dict[str, Any]]) -> None:
+        """Local history display/media enrichment; preserve existing delivery state."""
+        now = time.time()
+        with self.lock, closing(self.connect()) as connection, connection:
+            changed = False
+            for incoming in events:
+                normalized = normalize_event(incoming)
+                row = connection.execute('SELECT payload,status FROM events WHERE event_id=?',
+                                         (normalized['event_id'],)).fetchone()
+                if row:
+                    if row['status'] == 'sending':
+                        # Preserve the revision currently owned by a delivery
+                        # worker. The outgoing brain envelope is still enriched.
+                        continue
+                    current = json.loads(row['payload'])
+                    if not normalized.get('image_url'):
+                        continue
+                    for key in ('image_url','media_url','message_type','image_lookup','raw_type'):
+                        if normalized.get(key):
+                            current[key] = normalized[key]
+                    if str(current.get('content') or '').strip() in {'[图片]','买家发送图片','图片',''}:
+                        current['original_content'] = current.get('content','')
+                        current['content'] = normalized['image_url']
+                    encoded = json_text(current)
+                    revision = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+                    connection.execute('UPDATE events SET payload=?,revision=?,updated_at=? WHERE event_id=?',
+                                       (encoded,revision,now,normalized['event_id']))
+                elif normalized.get('capture_mode') == 'history_snapshot':
+                    encoded = json_text(normalized)
+                    revision = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+                    connection.execute("INSERT OR IGNORE INTO events(event_id,payload,revision,status,attempts,last_error,created_at,updated_at,delivered_at) VALUES(?,?,?,'delivered',0,'',?,?,?)",
+                                       (normalized['event_id'],encoded,revision,now,now,now))
+                else:
+                    continue
+                changed = True
+            if changed:
+                self._invalidate_session_cache()
 
     def upsert_local_projection(self, event: dict[str, Any]) -> tuple[str, bool]:
         """Persist a center-side draft for local display without any delivery queue."""
@@ -3225,8 +3264,19 @@ class BrainConnector:
         if not allowed_rows:
             return scope_blocked | suppressed_ids
         events = []
+        primary_events = []
+        uploaded_rows = []
+        primary_ids = {str(row['event_id']) for row in allowed_rows}
+        history_ids: set[str] = set()
         for row in allowed_rows:
             event = self.compatible_context_event(row["payload"])
+            native_context = getattr(self.app, 'native_context', None)
+            supplemental = []
+            if native_context is not None and tmall_guard_scope(event.get('account')):
+                event, supplemental = native_context.prepare(event)
+            if brain_event_suppression_reason(event):
+                suppressed_ids.add(str(row['event_id']))
+                continue
             account = str(event.get("account") or "").strip()
             event["nickname"] = event_nickname(event) or self.app.db.cached_nickname(
                 account, str(event.get("buyer_id") or "")
@@ -3243,30 +3293,54 @@ class BrainConnector:
                 "agent_id": self.agent_id(),
                 "captured_at": float(captured_at or time.time()),
             })
+            for item in supplemental:
+                snapshot = normalize_event(item)
+                if brain_event_suppression_reason(snapshot):
+                    continue
+                if snapshot['event_id'] in primary_ids or snapshot['event_id'] in history_ids:
+                    continue
+                snapshot.update(shop_id=event['shop_id'], agent_id=event['agent_id'], captured_at=event['captured_at'])
+                history_ids.add(snapshot['event_id'])
+                events.append(snapshot)
             events.append(event)
-        payload: dict[str, Any] | None = None
-        transport = "http"
-        channel = self.event_channel()
-        if channel is not None and channel.available:
-            try:
-                payload = channel.send_events(
-                    events,
-                    timeout=float(
-                        self.app.config.get("brain_ws_ack_timeout_seconds", 10.0)
-                    ),
-                )
-                transport = "ws"
-            except BrainWsError as error:
-                # The link dropped between the availability check and the send;
-                # fall back to HTTP for this batch instead of stalling the queue.
-                payload = None
-                with self.lock:
-                    self.last_error = f"WS 上报失败，回退 HTTP：{error}"[:500]
-        if payload is None:
-            payload = self.request("POST", "/api/bridge/v1/events", {
-                "agent_id": self.agent_id(),
-                "events": events,
-            })
+            primary_events.append(event)
+            uploaded_rows.append(row)
+        allowed_rows = uploaded_rows
+        if not events:
+            return scope_blocked | suppressed_ids
+        def transmit(batch: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+            payload = None
+            transport = 'http'
+            channel = self.event_channel()
+            if channel is not None and channel.available:
+                try:
+                    payload = channel.send_events(batch, timeout=float(self.app.config.get('brain_ws_ack_timeout_seconds',10.0)))
+                    transport = 'ws'
+                except BrainWsError as error:
+                    with self.lock:
+                        self.last_error = f'WS 上报失败，回退 HTTP：{error}'[:500]
+            if payload is None:
+                payload = self.request('POST','/api/bridge/v1/events',{'agent_id':self.agent_id(),'events':batch})
+            return payload,transport
+
+        # Supplemental context can exceed the original claim's batch size.
+        # Await each chunk before transmitting the next one so a transfer's
+        # history is durably acknowledged before its parent reaches the brain.
+        responses = []
+        for start in range(0,len(events),100):
+            response,mode = transmit(events[start:start+100])
+            responses.append((response,mode))
+            if start+100 < len(events) and isinstance(response.get('event_acks'),list):
+                durable = {str(ack.get('event_id')) for ack in response['event_acks']
+                           if isinstance(ack,dict) and ack.get('committed') is True}
+                if any(item['event_id'] not in durable for item in events[start:start+100]):
+                    raise RuntimeError('转接历史尚未获得持久化确认，保留队列稍后重试')
+        payload,transport = responses[0]
+        if len(responses)>1:
+            payload = {'event_acks':[ack for response,_mode in responses for ack in response.get('event_acks',[])]}
+            for key in ('accepted','acknowledged','ingested_local','context_updated','shadow_queued','shadow_stale_skipped','scope_rejected','shop_rejected'):
+                payload[key] = sum(int(response.get(key) or 0) for response,_mode in responses)
+            transport = 'ws' if all(mode=='ws' for _response,mode in responses) else 'http'
         acknowledgements = list(payload.get("event_acks") or [])
         if transport == "http":
             summary = {
@@ -3309,7 +3383,7 @@ class BrainConnector:
             str(item.get("event_id") or ""): item
             for item in acknowledgements if isinstance(item, dict)
         }
-        for row, event in zip(allowed_rows, events):
+        for row, event in zip(allowed_rows, primary_events):
             ack = ack_by_id.get(str(row["event_id"])) or {}
             ack_status = str(ack.get("status") or "")
             if ack_status in {"rejected", "error", "ignored", "context_traced"}:
@@ -5110,13 +5184,8 @@ class AppBizSendAdapter:
                 clean_event["account"] = self.app.db.account_for_buyer(
                     str(clean_event.get("buyer_id") or "")
                 )
-            # 原生回调只带 "[图片]"；从千牛页面本地缓存补真实图片 URL，
-            # 让大脑视觉链路能真正读到图片（可配置关闭）。
-            clean_event = enrich_native_image_event(
-                clean_event,
-                self.app.browser,
-                enabled=bool(self.app.config.get("bridge_native_image_lookup", True)),
-            )
+            # Capture durably first. Native media/history reads run on upload
+            # workers so a missing browser cache cannot block this callback.
             try:
                 self.app.ingest_event(clean_event)
                 self.last_error = ""
@@ -5210,6 +5279,7 @@ class AppBizSendAdapter:
             "__APPBIZ_DUMP_IMAGE_STRUCT__",
             json.dumps(bool(self.app.config.get("appbiz_dump_image_struct", False))),
         )
+        source = (ROOT / 'native_message_store.js').read_text(encoding='utf-8') + '\n' + source
         session = frida.get_local_device().attach(process.pid)
         script = None
         try:
@@ -5276,6 +5346,13 @@ class AppBizSendAdapter:
             and trusted_selection
             and self.app.config.get("appbiz_send_abi_validated", False)
         )
+
+    def read_messages(self, account: str, buyer_id: str, before_ms: int, after_ms: int,
+                      message_id: str = '', count: int = 100) -> dict[str, Any]:
+        script = self.script
+        if script is None:
+            return {'ok':False, 'error':'native_client_unavailable', 'rows':[]}
+        return script.exports_sync.readmessages(account, buyer_id, before_ms, after_ms, message_id, count)
 
     def send_text(self, ccode: str, content: str, pcsource: str, *, tmall_account: str = "") -> dict[str, Any]:
         if not self.app.config.get("appbiz_send_abi_validated", False):
@@ -5890,6 +5967,7 @@ class StandaloneBridge:
         self.cdp = CdpInjector(self)
         self.updater = UpdaterGuard(self)
         self.appbiz = AppBizSendAdapter(self)
+        self.native_context = NativeContext(self)
         self.native = NativeAdapter(self)
         # Qianniu upgrades itself in place; this watch keeps a re-injected
         # webui.zip and surfaces builds the agent has no profile for.
@@ -6303,6 +6381,7 @@ class StandaloneBridge:
                 "error": self.browser.error,
             },
             "context_enrich": self.context.status(),
+            "native_context": self.native_context.status(),
             "cdp": {
                 "enabled": bool(self.config.get("cdp_injection_enabled", False)),
                 "port": self.cdp.cdp_port,
