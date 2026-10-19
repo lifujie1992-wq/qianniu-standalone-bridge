@@ -40,6 +40,9 @@ def build_injection(config: dict, bridge_source: str) -> str:
         "invoke_observer": bool(config.get("bridge_invoke_observer", True)),
         "ws_mirror": bool(config.get("bridge_ws_mirror", True)),
         "history_poll": bool(config.get("bridge_history_poll", False)),
+        "history_probe": bool(config.get("bridge_history_probe", False)),
+        "history_probe_params": config.get("bridge_history_probe_params")
+        if isinstance(config.get("bridge_history_probe_params"), dict) else {},
         "discovery_poll": bool(config.get("bridge_discovery_poll", True)),
         "dom_scan_interval_ms": _int_option("bridge_passive_dom_ms", 5000),
         "cache_scan_interval_ms": _int_option("bridge_passive_cache_ms", 10000),

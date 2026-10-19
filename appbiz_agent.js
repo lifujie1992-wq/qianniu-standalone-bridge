@@ -77,6 +77,8 @@ if (!serviceVtable.add(0x90).readPointer().equals(serviceSendText)) {
 }
 const helperPath = __APPBIZ_ADAPTER_PATH__;
 const selectedServiceHint = __SELECTED_SERVICE__;
+const DUMP_IMAGE_STRUCT = (typeof __APPBIZ_DUMP_IMAGE_STRUCT__ !== 'undefined')
+  ? __APPBIZ_DUMP_IMAGE_STRUCT__ : false;
 // Retain bounded passive routes; legacy callers still enforce 120s on send.
 const SERVICE_CCACHE_TTL_MS = 8 * 60 * 60 * 1000;
 const SERVICE_CCACHE_MAX = 256;
@@ -100,6 +102,7 @@ let helperSendText = null;
 let helperPollSend = null;
 let helperCancelSend = null;
 let lastCandidateScanMs = 0;
+let imageStructDumpSent = false;
 
 function readMsvcString(address) {
   try {
@@ -264,6 +267,28 @@ Interceptor.attach(serviceOnMessageArrive, {
           !ccode || ccode.indexOf('#') < 0 || ccode.indexOf('@') < 0 ||
           !messageId || !content
         ) continue;
+        // 诊断：图片消息只拿到 "[图片]"；把首条图片的 0x248 字节结构 dump 出来，
+        // 供离线定位图片 URL 字段。默认关闭，不影响任何收发行为。
+        if (DUMP_IMAGE_STRUCT && !imageStructDumpSent && /\[图片\]|^图片$/.test(String(content).trim())) {
+          imageStructDumpSent = true;
+          try {
+            send({
+              event: 'appbiz_message_dump',
+              reason: 'image_struct',
+              size: MESSAGE_SIZE,
+              message: {
+                ccode: ccode,
+                message_id: messageId,
+                buyer_id: buyerId,
+                seller_id: sellerId,
+                content: content,
+              },
+              struct_hex: readHex(message, MESSAGE_SIZE),
+            });
+          } catch (dumpError) {
+            send({event: 'appbiz_message_dump_error', error: String(dumpError)});
+          }
+        }
         pruneServiceCcache(now);
         serviceByCcode.set(ccode, {service: service, seen_at_ms: now});
         receivedMessages += 1;

@@ -23,6 +23,10 @@
   var WS_MIRROR = OPTIONS.ws_mirror !== false;
   var HISTORY_POLL = OPTIONS.history_poll === true;
   var DISCOVERY_POLL = OPTIONS.discovery_poll !== false;
+  // 诊断用：转接时一次性探测历史 API，默认关闭，不影响正常收发。
+  var HISTORY_PROBE = OPTIONS.history_probe === true;
+  var HISTORY_PROBE_PARAMS = (OPTIONS.history_probe_params && typeof OPTIONS.history_probe_params === "object")
+    ? OPTIONS.history_probe_params : {};
   // 被动扫描间隔可在注入时通过 bridge_passive_dom_ms / bridge_passive_cache_ms
   // 调整；缺失或非法值回落到默认。
   function clampIntervalMs(value, fallback, minimum, maximum) {
@@ -173,6 +177,12 @@
     history_poll_enabled: HISTORY_POLL,
     history_poll_calls: 0,
     history_poll_errors: 0,
+    history_probe_enabled: HISTORY_PROBE,
+    history_probe_runs: 0,
+    history_probe_last_ccode: "",
+    history_probe_last_at_ms: 0,
+    history_probe_imsdk: false,
+    history_probe_results: [],
     discovery_poll_enabled: DISCOVERY_POLL,
     discovery_calls: 0,
     discovery_hits: 0,
@@ -1230,6 +1240,42 @@
     });
   }
 
+  var historyProbeCcodes = {};
+
+  function sameDayStartSeconds() {
+    var now = new Date();
+    return Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+  }
+
+  function probeHistory(ccode) {
+    if (!HISTORY_PROBE || !ccode || historyProbeCcodes[ccode]) return;
+    historyProbeCcodes[ccode] = true;
+    diagnostics.history_probe_runs += 1;
+    diagnostics.history_probe_last_ccode = ccode;
+    diagnostics.history_probe_last_at_ms = Date.now();
+    diagnostics.history_probe_imsdk = !!(window.imsdk && typeof window.imsdk.invoke === "function");
+    if (!diagnostics.history_probe_imsdk) {
+      diagnostics.history_probe_results.push({ api: "", ok: false, error: "imsdk_unavailable" });
+      return;
+    }
+    var params = Object.assign({ ccode: ccode, count: 100 }, HISTORY_PROBE_PARAMS);
+    // 只拉当天：本地零点。服务端仍会按 original_timestamp 再过滤一次。
+    if (!("startTime" in params) && !("start_time" in params) && !("beginTime" in params)) {
+      params.startTime = sameDayStartSeconds();
+    }
+    ["im.singlemsg.GetRemoteHisMsg", "im.singlemsg.GetLocalHisMsg"].forEach(function (api) {
+      invokeWithTimeout(api, params, INVOKE_TIMEOUT_MS).then(function (res) {
+        var ok = !!res && res.ok !== false;
+        var payload = res && res.result != null ? res.result : res;
+        var record = ok
+          ? { api: api, ok: true, shape: diagnosticSample(payload) }
+          : { api: api, ok: false, error: diagnosticSample(res) };
+        diagnostics.history_probe_results.push(record);
+        if (diagnostics.history_probe_results.length > 4) diagnostics.history_probe_results.shift();
+      });
+    });
+  }
+
   function emitChatPayload(payload, sellerHint, captureMode, transferHistory) {
     var result = { details: 0, captured: 0, sent: 0, ccodes: [] };
     try {
@@ -1245,6 +1291,10 @@
       details.forEach(function (detail) {
         var row = normalizeDetail(detail, sellerHint, captureMode, transferHistory);
         if (!row) return;
+        // 转接通知：诊断模式下一次性探测该会话的历史 API。
+        if (/^由\s*.+?\s*转交给\s*.+$/.test(String(row.content || ""))) {
+          probeHistory(String(row.buyer_id || ""));
+        }
         var immediate = tmallGuardScope(row.account);
         var queuedId = queueEnvelope(row, !immediate && !row.nickname && !!row.account);
         rememberSeen(row.msg_id);
