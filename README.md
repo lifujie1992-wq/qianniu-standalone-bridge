@@ -120,6 +120,7 @@ node --check .\appbiz_agent.js
 | `bridge_ws_mirror` | true | 探测并镜像千牛自身的 IM WebSocket 帧（先调原函数再镜像） |
 | `bridge_discovery_poll` | true | 每 4 秒轮换一个"最近会话列表"API，只为发现 ccode |
 | `bridge_history_poll` | **false** | 主动拉取 `GetNewMsg` / `PeekNewMsg`。会推进千牛自己的消息游标，默认关闭 |
+| `bridge_native_image_lookup` | **true** | 原生 AppBiz 回调只带「[图片]」时，从千牛页面本地 `msgDataMap` 取真实图片 URL，供大脑视觉链路使用；置 false 回退为文字追问 |
 
 改动后需要重新注入并让千牛重新加载聊天页：
 

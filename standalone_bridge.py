@@ -44,6 +44,7 @@ from brain_ws import (
 from client_support import ClientSupportWatcher, agent_profiles, launcher_version, size_of_image
 from config_defaults import apply_operational_defaults
 from nickname_support import event_nickname, nickname_event_id, valid_nickname
+from native_image_lookup import enrich_native_image_event
 from nickname_resolver import ConversationSelectionWatch, NicknameResolver
 from reception_wait import message_direction, waiting_state
 from device_identity import (
@@ -5084,6 +5085,13 @@ class AppBizSendAdapter:
                 clean_event["account"] = self.app.db.account_for_buyer(
                     str(clean_event.get("buyer_id") or "")
                 )
+            # 原生回调只带 "[图片]"；从千牛页面本地缓存补真实图片 URL，
+            # 让大脑视觉链路能真正读到图片（可配置关闭）。
+            clean_event = enrich_native_image_event(
+                clean_event,
+                self.app.browser,
+                enabled=bool(self.app.config.get("bridge_native_image_lookup", True)),
+            )
             try:
                 self.app.ingest_event(clean_event)
                 self.last_error = ""

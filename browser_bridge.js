@@ -1336,6 +1336,35 @@
     return null;
   }
 
+  // Native AppBiz callbacks only carry "[图片]"; recover the real image URL
+  // from Qianniu's local msgDataMap so the brain's vision pipeline can read it.
+  function imageUrlForMessage(ccode, msgId) {
+    try {
+      var wanted = String(msgId || "").replace(/^qn-msg-v1\|taobao\|/, "");
+      var value = localMessageValue(ccode);
+      if (!value) return "";
+      var rows = Array.isArray(value) ? value : [value];
+      var exact = "";
+      var fallback = [];
+      for (var i = 0; i < rows.length; i++) {
+        var adapted = adaptLocalMessage(ccode, rows[i]);
+        if (!adapted) continue;
+        var mcode = adapted.mcode && typeof adapted.mcode === "object" ? adapted.mcode : {};
+        var id = textOf(mcode.messageId || mcode.clientId || adapted.messageId || adapted.msg_id || adapted.clientId || "");
+        var url = extractImage(adapted);
+        if (!url || isProductImageUrl(url)) continue;
+        if (wanted && id === wanted) exact = url;
+        if (fallback.indexOf(url) < 0) fallback.push(url);
+      }
+      if (exact) return exact;
+      // 找不到精确消息时，只在会话里恰好只有一张聊天图片时兜底，避免拿旧图。
+      return fallback.length === 1 ? fallback[0] : "";
+    } catch (e) {
+      return "";
+    }
+  }
+  window.__qn_standalone_image_url = imageUrlForMessage;
+
   function passiveConversationKeys(limit) {
     try {
       var mdm = window._db && window._db.msgDataMap;

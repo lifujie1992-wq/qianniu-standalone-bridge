@@ -42,6 +42,7 @@
   "appbiz_send_abi_validated": true,
   "appbiz_adapter_path": "build/appbiz_adapter.dll",
   "bridge_invoke_observer": true,
+  "bridge_native_image_lookup": true,
   "bridge_ws_mirror": true,
   "bridge_discovery_poll": true,
   "bridge_history_poll": false,
