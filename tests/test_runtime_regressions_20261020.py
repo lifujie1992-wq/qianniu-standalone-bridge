@@ -64,6 +64,19 @@ class ReceptionOrderingTests(unittest.TestCase):
 
 
 class NativeMetadataTests(unittest.TestCase):
+    def test_deselect_invalidates_old_target_and_advances_revision(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'app.log'
+            path.write_text(notification({'ccode': BUYER, 'targetId': '100'}), encoding='utf-8')
+            watch = ConversationSelectionWatch([path], process_id=2, recent_bytes=4096)
+            watch.poll()
+            revision = watch.revisions['store']
+            with path.open('a', encoding='utf-8') as stream:
+                stream.write(notification({'cid': {}}))
+            watch.poll()
+            self.assertNotIn('store', watch.selected)
+            self.assertGreater(watch.revisions['store'], revision)
+
     def test_current_selection_can_be_reused_only_from_the_active_client(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'app.log'
@@ -133,7 +146,7 @@ class NativeMetadataTests(unittest.TestCase):
 
 
 class NativeJumpTests(unittest.TestCase):
-    def test_clicking_current_chat_still_dispatches_but_does_not_wait_for_another_event(self):
+    def check_jump(self, *, new_selection=None):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             runtime = root / 'runtime'
@@ -151,13 +164,34 @@ class NativeJumpTests(unittest.TestCase):
             app._conversation_open_lock = threading.Lock()
             app._conversation_watch = None
             app._conversation_watch_pid = 0
-            with patch('standalone_bridge.subprocess.run', return_value=SimpleNamespace(returncode=0)) as run, \
-                    patch.object(app.stop_event, 'wait', side_effect=AssertionError('unnecessary wait')):
+            def dispatch(*args, **kwargs):
+                if new_selection is not None:
+                    with log.open('a', encoding='utf-8') as stream:
+                        stream.write(notification(new_selection))
+                return SimpleNamespace(returncode=0)
+            with patch('standalone_bridge.subprocess.run', side_effect=dispatch) as run, \
+                    patch.object(app.stop_event, 'wait', side_effect=lambda _: app.stop_event.set()):
                 result = app.open_conversation_protocol('store', 'buyer', BUYER)
-            self.assertTrue(result['verified'])
-            self.assertEqual(result['opened_ccode'], BUYER)
             self.assertEqual(Path(run.call_args.args[0][0]).resolve(), (runtime/'9.97.86N/WWCmd.exe').resolve())
             self.assertNotIn('content=', run.call_args.args[0][1])
+            return result
+
+    def test_cached_current_chat_cannot_verify_a_new_jump(self):
+        result = self.check_jump()
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['opened_ccode'], '')
+
+    def test_fresh_selection_verifies_the_exact_target(self):
+        result = self.check_jump(new_selection={'ccode': BUYER, 'targetId': '100'})
+        self.assertTrue(result['verified'])
+        self.assertEqual(result['opened_ccode'], BUYER)
+
+    def test_fresh_wrong_selection_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, '未切换到目标会话'):
+            self.check_jump(new_selection={'ccode': '101.1-200.1#11001@cntaobao', 'targetId': '101'})
+
+    def test_fresh_deselect_does_not_verify_cached_target(self):
+        self.assertFalse(self.check_jump(new_selection={'cid': {}})['verified'])
 
 
 class ImagePageRaceTests(unittest.TestCase):

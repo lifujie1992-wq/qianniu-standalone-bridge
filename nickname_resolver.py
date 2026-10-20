@@ -159,6 +159,8 @@ class ConversationSelectionWatch:
         self.process_id = process_id
         self.cursors: dict[tuple[int, int], tuple[int, bytes]] = {}
         self.selected: dict[str, str] = {}
+        self.revisions: dict[str, int] = {}
+        self.sequence = 0
         for path in self.paths:
             try:
                 stat = path.stat()
@@ -175,6 +177,7 @@ class ConversationSelectionWatch:
                     offset, remainder = self.cursors.get(identity, (0, b""))
                     if stat.st_size < offset:
                         offset, remainder = 0, b""
+                        self.selected.clear()
                     if stat.st_size - offset > 2 * 1024 * 1024:
                         # A long idle gap must not leave a stale current-chat
                         # cache while only reading the start of a large backlog.
@@ -208,11 +211,16 @@ class ConversationSelectionWatch:
                     if not isinstance(payload, dict):
                         continue
                     cid = payload.get("cid") if isinstance(payload.get("cid"), dict) else payload
+                    account = context.group("account")
+                    self.sequence += 1
+                    self.revisions[account] = self.sequence
+                    # Deselect/invalid identities invalidate the old target too.
+                    self.selected.pop(account, None)
                     ccode = str(cid.get("ccode") or "")
                     match = CCODE.fullmatch(ccode)
                     target = str(cid.get("targetId") or "").removesuffix(".1")
                     if match and (not target or target == match.group("buyer")):
-                        self.selected[context.group("account")] = ccode
+                        self.selected[account] = ccode
             except OSError:
                 continue
 

@@ -504,7 +504,7 @@ class BrowserReceiveCompatibilityTests(unittest.TestCase):
 
     def test_open_conversation_sends_only_identity_and_shows_dock_progress(self):
         source = (ROOT / "workbench.html").read_text(encoding="utf-8")
-        self.assertIn("JSON.stringify({account: session.account, buyer_id: session.buyer_id})", source)
+        self.assertIn("JSON.stringify({account: target.account, buyer_id: target.buyer_id})", source)
         self.assertIn("timeout: 15000", source)
         self.assertIn('dockToast(`正在打开 ${name}…`)', source)
 

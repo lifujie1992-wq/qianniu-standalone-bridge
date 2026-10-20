@@ -407,7 +407,7 @@
       sessions: [], current: null, messages: [], status: null, diagnostics: null,
       busy: false, sending: false, canSend: false, openingKey: '', lastNewest: '',
       lastMessageRevision: '', settingsOpen: false, tokenConfigured: false, controlBusy: false,
-      controlKey: '',
+      controlKey: '', pendingOpen: null, openingPromise: null, openSequence: 0, messageLoadSequence: 0,
       sessionFilter: 'all', sessionRevision: null,
       handoffKeysSeen: new Set(), lastHandoffTitle: '',
     };
@@ -642,8 +642,10 @@
     }
     async function loadMessages(forceScroll = false) {
       if (!state.current || dockMode) return;
+      const sessionKey = keyOf(state.current), sequence = ++state.messageLoadSequence;
       const query = new URLSearchParams({account: state.current.account, buyer_id: state.current.buyer_id});
       const data = await api(`/api/v1/session?${query}`);
+      if (!state.current || keyOf(state.current) !== sessionKey || sequence !== state.messageLoadSequence) return;
       const newest = data.messages.length ? data.messages[data.messages.length - 1].event_id : '';
       const revision = data.messages.map(item => `${item.event_id}\u0000${item.msg_id}\u0000${item.role}\u0000${item.status}\u0000${item.content}`).join('\u0001');
       const changed = newest !== state.lastNewest || revision !== state.lastMessageRevision;
@@ -651,29 +653,46 @@
       if (changed || forceScroll) renderMessages(forceScroll || changed);
     }
     async function openInQianniu(session) {
-      const sessionKey = keyOf(session); if (state.openingKey) return;
+      const sequence = ++state.openSequence;
+      state.pendingOpen = {session, sequence};
       const name = session.buyer_nick || session.buyer_id;
-      state.openingKey = sessionKey; el('openState').textContent = `正在打开 ${name}`;
+      state.openingKey = keyOf(session); el('openState').textContent = `正在打开 ${name}`;
       el('openState').className = 'open-state'; renderSessions();
       updateSendButton();
       if (dockMode) dockToast(`正在打开 ${name}…`);
-      try {
-        const result = await api('/api/v1/open-conversation', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({account: session.account, buyer_id: session.buyer_id}), timeout: 15000});
-        const message = result.verified ? `已在千牛打开 ${name}` : `已请求打开 ${name}，尚未确认切换，请检查千牛窗口和登录店铺`;
-        el('openState').textContent = message;
-        if (dockMode) dockToast(message, !result.verified);
-      } catch (error) {
-        el('openState').textContent = error.message; el('openState').className = 'open-state error';
-        if (dockMode) dockToast(`打开会话失败：${error.message}`, true);
+      if (!state.openingPromise) {
+        state.openingPromise = (async () => {
+          // Keep the newest click while the native command is in flight.
+          // Older replies must not overwrite the state of that newer target.
+          while (state.pendingOpen) {
+            const request = state.pendingOpen; state.pendingOpen = null;
+            const target = request.session, targetName = target.buyer_nick || target.buyer_id;
+            try {
+              const result = await api('/api/v1/open-conversation', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({account: target.account, buyer_id: target.buyer_id}), timeout: 15000});
+              if (request.sequence !== state.openSequence) continue;
+              const message = result.verified ? `已在千牛打开 ${targetName}` : `已请求打开 ${targetName}，尚未确认切换，请检查千牛窗口和登录店铺`;
+              el('openState').textContent = message;
+              if (dockMode) dockToast(message, !result.verified);
+            } catch (error) {
+              if (request.sequence !== state.openSequence) continue;
+              el('openState').textContent = error.message; el('openState').className = 'open-state error';
+              if (dockMode) dockToast(`打开会话失败：${error.message}`, true);
+            }
+          }
+        })().finally(() => {
+          state.openingPromise = null; state.openingKey = ''; renderSessions(); updateSendButton();
+        });
       }
-      finally { state.openingKey = ''; renderSessions(); updateSendButton(); }
+      await state.openingPromise;
     }
     async function selectSession(session, open = false) {
-      state.current = session; state.lastNewest = ''; state.lastMessageRevision = '';
+      state.current = session; state.messages = []; state.lastNewest = ''; state.lastMessageRevision = '';
       renderSessionMode();
       el('replyInput').disabled = false;
-      renderSessions(); await loadMessages(true); updateSendButton(); renderEvidence();
-      if (open) await openInQianniu(session);
+      renderSessions(); renderMessages();
+      const opening = open ? openInQianniu(session) : null;
+      await loadMessages(true); updateSendButton(); renderEvidence();
+      if (opening) await opening;
       if (innerWidth <= 760) document.body.classList.remove('show-sessions');
     }
     function renderSessionMode() {

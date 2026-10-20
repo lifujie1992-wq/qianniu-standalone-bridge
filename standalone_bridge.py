@@ -6042,6 +6042,7 @@ class StandaloneBridge:
         # Read new native selections too, so a manual switch in Qianniu
         # invalidates the cached current conversation before the next click.
         watch.poll()
+        selection_revision = watch.revisions.get(account, 0)
         def ali_id(nick: str) -> str:
             return nick if nick.startswith("cntaobao") else "cntaobao" + nick
         query = urllib.parse.urlencode({
@@ -6068,11 +6069,13 @@ class StandaloneBridge:
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline and not self.stop_event.is_set():
                 watch.poll()
-                if watch.selected.get(account) == expected_ccode:
+                if (watch.revisions.get(account, 0) > selection_revision
+                        and watch.selected.get(account) == expected_ccode):
                     verified = True
                     break
                 self.stop_event.wait(0.02 if deadline - time.monotonic() > 2.5 else 0.05)
-            if watch.selected.get(account) and not verified:
+            if (watch.revisions.get(account, 0) > selection_revision
+                    and watch.selected.get(account) and not verified):
                 raise RuntimeError("千牛未切换到目标会话，请确认当前登录店铺后重试")
         return {
             "ok": True,
