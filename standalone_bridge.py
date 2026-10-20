@@ -770,6 +770,30 @@ class StateDB:
             ).fetchone()
         return str(row["nickname"]) if row else ""
 
+    def conversation_route_nickname(self, account: str, buyer_id: str) -> str:
+        """Keep the original inbound address separate from a display nickname.
+
+        Qianniu can replace cid.nick with a display alias after loading contacts;
+        WWCmd still needs the peer's login name. Use only an inbound event already
+        bound to this exact account/ccode, never another session's matching label.
+        """
+        with self.lock, closing(self.connect()) as connection:
+            rows = connection.execute(
+                """SELECT payload FROM events
+                WHERE json_extract(payload,'$.account')=? AND json_extract(payload,'$.buyer_id')=?
+                  AND json_extract(payload,'$.role') IN ('user','buyer','customer')
+                  AND COALESCE(json_extract(payload,'$.capture_mode'),'')!='history_snapshot'
+                  AND COALESCE(json_extract(payload,'$.type'),'')!='nickname_update'
+                ORDER BY created_at ASC,event_id ASC LIMIT 100""", (account,buyer_id),
+            ).fetchall()
+        for row in rows:
+            event = json.loads(row['payload'])
+            nick = event_nickname(event)
+            shop = account.split(':',1)[0]
+            if nick and nick != account and nick != shop and not nick.startswith(shop+':'):
+                return nick
+        return ''
+
     def upsert_event(self, event: dict[str, Any]) -> tuple[str, bool]:
         normalized = normalize_event(event)
         account = str(normalized.get("account") or "").strip()
@@ -6047,7 +6071,7 @@ class StandaloneBridge:
             return nick if nick.startswith("cntaobao") else "cntaobao" + nick
         query = urllib.parse.urlencode({
             "uid": ali_id(account),
-            "touid": ali_id(buyer_nick),
+            "touid": ali_id(self.db.conversation_route_nickname(account, expected_ccode) or buyer_nick),
             "siteid": "cntaobao",
             "status": "1",
         })

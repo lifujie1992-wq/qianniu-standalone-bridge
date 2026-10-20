@@ -147,7 +147,7 @@ class NativeMetadataTests(unittest.TestCase):
 
 
 class NativeJumpTests(unittest.TestCase):
-    def check_jump(self, *, new_selection=None):
+    def check_jump(self, *, new_selection=None, route_nick=''):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             runtime = root / 'runtime'
@@ -160,6 +160,7 @@ class NativeJumpTests(unittest.TestCase):
             app = StandaloneBridge.__new__(StandaloneBridge)
             app.config = Config(root/'config.json', {'qianniu_exe': str(runtime/'AliWorkbench.exe')})
             app.appbiz = SimpleNamespace(pid=2)
+            app.db = SimpleNamespace(conversation_route_nickname=lambda account,buyer: route_nick)
             app.nicknames = SimpleNamespace(log=SimpleNamespace(paths=[log]))
             app.stop_event = threading.Event()
             app._conversation_open_lock = threading.Lock()
@@ -175,6 +176,7 @@ class NativeJumpTests(unittest.TestCase):
                 result = app.open_conversation_protocol('store', 'buyer', BUYER)
             self.assertEqual(Path(run.call_args.args[0][0]).resolve(), (runtime/'9.97.86N/WWCmd.exe').resolve())
             self.assertNotIn('content=', run.call_args.args[0][1])
+            self.assertIn('touid=cntaobao'+(route_nick or 'buyer'),run.call_args.args[0][1])
             return result
 
     def test_cached_current_chat_cannot_verify_a_new_jump(self):
@@ -194,8 +196,32 @@ class NativeJumpTests(unittest.TestCase):
     def test_fresh_deselect_does_not_verify_cached_target(self):
         self.assertFalse(self.check_jump(new_selection={'cid': {}})['verified'])
 
+    def test_native_command_uses_login_address_while_display_name_changes(self):
+        result = self.check_jump(new_selection={'ccode':BUYER,'targetId':'100'},route_nick='login-address')
+        self.assertTrue(result['verified'])
+        self.assertEqual(result['buyer_nick'],'buyer')
+
 
 class NativeNicknameRefreshTests(unittest.TestCase):
+    def test_routing_name_is_preserved_when_display_nickname_changes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, resolver, _ = self.make_app(Path(folder))
+            resolver.resolve_pending()
+            self.assertEqual(app.db.cached_nickname('store',BUYER),'new-name')
+            self.assertEqual(app.db.conversation_route_nickname('store',BUYER),'tb123456')
+            self.assertEqual(app.db.conversation_route_nickname('another-shop',BUYER),'')
+            self.assertEqual(app.db.conversation_route_nickname('store','other-buyer'),'')
+
+    def test_history_staff_and_metadata_cannot_supply_the_login_address(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, _, _ = self.make_app(Path(folder))
+            base={'account':'store','buyer_id':BUYER,'content':'x','ts':1}
+            with patch('standalone_bridge.time.time',return_value=1):
+                app.db.upsert_event(dict(base,msg_id='staff',role='mall_cs',nickname='staff-name'))
+                app.db.upsert_event(dict(base,msg_id='history',role='user',nickname='history-alias',capture_mode='history_snapshot'))
+                app.db.upsert_event(dict(base,role='user',type='nickname_update',nickname='metadata-alias'))
+            self.assertEqual(app.db.conversation_route_nickname('store',BUYER),'tb123456')
+
     def make_app(self, root, nick='tb123456'):
         app = StandaloneBridge.__new__(StandaloneBridge)
         app.db = StateDB(root / 'state/bridge.sqlite3')
