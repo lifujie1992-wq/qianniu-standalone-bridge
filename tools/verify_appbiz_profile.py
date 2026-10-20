@@ -25,6 +25,17 @@ import psutil
 # Mirrors HOOK_PROFILES in appbiz_agent.js. Kept here so the checker can run
 # standalone against a specific build.
 PROFILES: dict[str, dict[str, str]] = {
+    "0x2039000": {
+        "version": "9.98.49N",
+        "serviceVtable": "0x19b1788",
+        "secondaryVtable1": "0x19b18f0",
+        "secondaryVtable2": "0x19b1900",
+        "serviceGetNewMsg": "0xa81760",
+        "serviceOnMessageArrive": "0xa85080",
+        "serviceSendText": "0xa8d700",
+        "messageBizVtable": "0x19af808",
+        "messageBizSendText": "0xa6e800",
+    },
     "0x1f31000": {
         "version": "9.97.86N",
         "serviceVtable": "0x18d2bd8",
@@ -73,6 +84,12 @@ rpc.exports = {
   probe: function (profileJson) {
     var profile = JSON.parse(profileJson);
     var mod = Process.getModuleByName('AppBiz.dll');
+    // The first pass discovers the actual module before choosing a profile.
+    // Never dereference offsets from an empty or mismatched profile.
+    if (!profile.serviceVtable) return {
+      module: mod.name, module_base: mod.base.toString(),
+      module_size: mod.size, size_key: '0x' + mod.size.toString(16), checks: {}
+    };
     function at(rva) { return mod.base.add(parseInt(rva, 16)); }
     function executable(addr) {
       var range = Process.findRangeByAddress(addr);
@@ -151,6 +168,10 @@ def main() -> int:
         session.detach()
         print(f"no known profile for {probe['module']} size {size_key}")
         print("run tools/map_appbiz_offsets.py against a known build to derive one")
+        return 1
+    if args.profile and args.profile != profile['version']:
+        session.detach()
+        print(f"requested profile {args.profile} does not match loaded build {profile['version']}", file=sys.stderr)
         return 1
 
     try:

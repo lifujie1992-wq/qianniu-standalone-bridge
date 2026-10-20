@@ -37,6 +37,17 @@ from pathlib import Path
 # Known-good offsets, keyed by SizeOfImage. Mirrors the HOOK_PROFILES table in
 # appbiz_agent.js and the AppBizProfile table in native/appbiz_adapter.cpp.
 KNOWN_PROFILES: dict[int, dict[str, object]] = {
+    0x2039000: {
+        "version": "9.98.49N",
+        "service_vtable": 0x19B1788,
+        "secondary_vtable_1": 0x19B18F0,
+        "secondary_vtable_2": 0x19B1900,
+        "message_biz_vtable": 0x19AF808,
+        "service_get_new_msg": 0xA81760,
+        "service_on_message_arrive": 0xA85080,
+        "service_send_text": 0xA8D700,
+        "message_biz_send_text": 0xA6E800,
+    },
     0x1F31000: {
         "version": "9.97.86N",
         "service_vtable": 0x18D2BD8,

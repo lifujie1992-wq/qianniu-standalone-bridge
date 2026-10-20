@@ -35,7 +35,8 @@ struct AppBizProfile {
     std::uintptr_t message_biz_send_text_rva;
 };
 
-constexpr std::array<AppBizProfile, 5> kAppBizProfiles{{
+constexpr std::array<AppBizProfile, 6> kAppBizProfiles{{
+    {0x19B1788, 0x19AF808, 0xA6E800},  // 9.98.49N
     {0x18D2BD8, 0x18D0C58, 0xA65C60},  // 9.97.86N
     {0x18AF478, 0x18AD4F8, 0xA59120},  // 9.97.59N
     {0x18BDEE8, 0x18BBF68, 0xA64BF0},  // 9.97.74N
@@ -165,6 +166,16 @@ int send_text_impl(
 }
 
 }  // namespace
+
+
+// Side-effect-free compatibility probe; never touches a service object or sends.
+extern "C" __declspec(dllexport) int appbiz_adapter_profile_supported_v1(
+    std::uintptr_t service_vtable_rva) {
+    for (const auto& profile : kAppBizProfiles) {
+        if (profile.app_message_service_vtable_rva == service_vtable_rva) return 1;
+    }
+    return 0;
+}
 
 
 extern "C" __declspec(dllexport) int appbiz_adapter_layout(

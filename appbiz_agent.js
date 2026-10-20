@@ -2,6 +2,15 @@
 
 const appBiz = Process.getModuleByName('AppBiz.dll');
 const HOOK_PROFILES = {
+  0x2039000: {
+    version: '9.98.49N',
+    serviceVtable: 0x19b1788,
+    secondaryVtable1: 0x19b18f0,
+    secondaryVtable2: 0x19b1900,
+    serviceGetNewMsg: 0xa81760,
+    serviceOnMessageArrive: 0xa85080,
+    serviceSendText: 0xa8d700,
+  },
   0x1f31000: {
     version: '9.97.86N',
     serviceVtable: 0x18d2bd8,
@@ -368,6 +377,15 @@ Interceptor.attach(serviceSendText, {
 function ensureHelper() {
   if (helperSendText !== null) return;
   helperModule = Module.load(helperPath);
+  const supportedAddress = helperModule.findExportByName('appbiz_adapter_profile_supported_v1');
+  if (supportedAddress !== null) {
+    const supported = new NativeFunction(supportedAddress, 'int', ['uint64']);
+    if (supported(new UInt64(String(hookProfile.serviceVtable))) !== 1) {
+      throw new Error('native adapter does not support ' + hookProfile.version);
+    }
+  } else if (hookProfile.version === '9.98.49N') {
+    throw new Error('9.98.49N requires the updated native adapter; update both JS and DLL');
+  }
   helperSendText = new NativeFunction(
     helperModule.getExportByName('appbiz_send_text_v2'),
     'int',
