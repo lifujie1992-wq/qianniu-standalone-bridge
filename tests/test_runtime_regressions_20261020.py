@@ -7,12 +7,13 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from nickname_resolver import ConversationSelectionWatch, local_reply_records, nickname_records
+from nickname_resolver import ConversationSelectionWatch, NicknameResolver, local_reply_records, nickname_records
 from reception_wait import waiting_state
 from standalone_bridge import BrowserServer, Config, StandaloneBridge, StateDB
 
@@ -192,6 +193,90 @@ class NativeJumpTests(unittest.TestCase):
 
     def test_fresh_deselect_does_not_verify_cached_target(self):
         self.assertFalse(self.check_jump(new_selection={'cid': {}})['verified'])
+
+
+class NativeNicknameRefreshTests(unittest.TestCase):
+    def make_app(self, root, nick='tb123456'):
+        app = StandaloneBridge.__new__(StandaloneBridge)
+        app.db = StateDB(root / 'state/bridge.sqlite3')
+        app.config = Config(root/'config.json', {})
+        app.stop_event = threading.Event()
+        app.delivery = SimpleNamespace(wakeup=threading.Event())
+        app.brain = SimpleNamespace(configured=lambda: False)
+        app.db.upsert_event({'account':'store','buyer_id':BUYER,'nickname':nick,
+                             'msg_id':'original-message','content':'original','role':'user','ts':1234})
+        resolver = NicknameResolver(app)
+        log = root/'app.log'
+        log.write_text(notification({'ccode':BUYER,'targetId':'100','nick':'new-name'}),encoding='utf-8')
+        resolver.log.paths = [log]
+        resolver.log.next_discovery = float('inf')
+        resolver.log.available = True
+        return app, resolver, log
+
+    def test_nonempty_cache_refreshes_from_native_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, resolver, _ = self.make_app(Path(folder))
+            with closing(app.db.connect()) as connection:
+                before = connection.execute("SELECT payload FROM events WHERE json_extract(payload,'$.msg_id')='original-message'").fetchone()[0]
+            resolver.resolve_pending()
+            self.assertEqual(app.db.cached_nickname('store',BUYER),'new-name')
+            self.assertEqual(app.db.workbench_sessions()[0]['buyer_nick'],'new-name')
+            with closing(app.db.connect()) as connection:
+                after = connection.execute("SELECT payload FROM events WHERE json_extract(payload,'$.msg_id')='original-message'").fetchone()[0]
+                count = connection.execute("SELECT COUNT(*) FROM events WHERE json_extract(payload,'$.type')='nickname_update'").fetchone()[0]
+            self.assertEqual(before, after)
+            self.assertEqual(count,1)
+
+    def test_repeated_polls_do_not_reemit_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, resolver, _ = self.make_app(Path(folder))
+            with patch.object(app,'ingest_event',wraps=app.ingest_event) as ingest:
+                resolver.resolve_pending(); resolver.resolve_pending()
+            self.assertEqual(ingest.call_count,1)
+            self.assertEqual(resolver.resolved,1)
+
+    def test_unknown_native_peer_does_not_create_a_session(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, resolver, log = self.make_app(Path(folder))
+            other='101.1-200.1#11001@cntaobao'
+            log.write_text(notification({'ccode':other,'targetId':'101','nick':'unrelated'}),encoding='utf-8')
+            resolver.resolve_pending()
+            self.assertEqual(app.db.cached_nickname('store',other),'')
+            self.assertEqual(len(app.db.workbench_sessions()),1)
+
+    def test_missing_nickname_still_resolves_through_pending_lookup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, resolver, _ = self.make_app(Path(folder),nick='')
+            resolver.enqueue('store',BUYER); resolver.resolve_pending()
+            self.assertEqual(app.db.cached_nickname('store',BUYER),'new-name')
+            self.assertEqual(resolver.pending,{})
+
+    def test_transient_ingest_failure_retries_metadata_next_poll(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, resolver, _ = self.make_app(Path(folder))
+            with patch.object(app,'ingest_event',side_effect=RuntimeError('temporary')):
+                with self.assertRaises(RuntimeError):resolver.resolve_pending()
+            self.assertTrue(resolver.metadata_pending)
+            resolver.resolve_pending()
+            self.assertEqual(app.db.cached_nickname('store',BUYER),'new-name')
+            self.assertEqual(resolver.metadata_pending,{})
+
+    def test_latest_native_nickname_wins_within_one_poll(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, resolver, log = self.make_app(Path(folder))
+            with log.open('a',encoding='utf-8') as stream:
+                stream.write(notification({'ccode':BUYER,'targetId':'100','nick':'latest-name'}))
+            resolver.resolve_pending()
+            self.assertEqual(app.db.cached_nickname('store',BUYER),'latest-name')
+
+    def test_older_log_record_cannot_replace_newer_native_nickname(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app, resolver, log = self.make_app(Path(folder))
+            older = notification({'ccode':BUYER,'targetId':'100','nick':'stale-name'})
+            older = '['+datetime.fromtimestamp(time.time()-120).strftime('%m-%d %H:%M:%S')+older[15:]
+            with log.open('a',encoding='utf-8') as stream:stream.write(older)
+            resolver.resolve_pending()
+            self.assertEqual(app.db.cached_nickname('store',BUYER),'new-name')
 
 
 class ImagePageRaceTests(unittest.TestCase):

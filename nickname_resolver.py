@@ -233,6 +233,7 @@ class QianniuNicknameLog:
         self.config = config
         self.files: dict[Path, tuple[tuple[int, int], int, bytes]] = {}
         self.names: dict[tuple[str, str], tuple[str, float]] = {}
+        self.nickname_updates: dict[tuple[str, str], str] = {}
         self.reply_updates: dict[tuple[str, str], float] = {}
         self.next_discovery = 0.0
         self.paths: list[Path] = []
@@ -344,6 +345,7 @@ class QianniuNicknameLog:
 
     def poll(self) -> None:
         now = time.time()
+        self.nickname_updates = {}
         self.reply_updates = {}
         if time.monotonic() >= self.next_discovery:
             self.next_discovery = time.monotonic() + 60.0
@@ -390,8 +392,19 @@ class QianniuNicknameLog:
                     self.lines_read += 1
                     if EVENT.search(line):
                         self.notifications_read += 1
-                    for account, buyer_id, nick in nickname_records(line, now):
-                        self.names[(account, buyer_id)] = (nick, now)
+                    records = nickname_records(line, now)
+                    if records:
+                        stamp = datetime.strptime(f"{datetime.fromtimestamp(now).year}-{line[1:15]}", "%Y-%m-%d %H:%M:%S")
+                        if stamp.timestamp() > now + 86400:
+                            stamp = stamp.replace(year=stamp.year - 1)
+                        observed_at = stamp.timestamp()
+                    for account, buyer_id, nick in records:
+                        key = (account, buyer_id)
+                        if self.names.get(key, ("", 0))[1] > observed_at:
+                            continue
+                        if self.names.get(key, ("", 0))[0] != nick:
+                            self.nickname_updates[key] = nick
+                        self.names[(account, buyer_id)] = (nick, observed_at)
                         self.nickname_matches += 1
                     for account, buyer_id, stamp in local_reply_records(line, now):
                         key = (account, buyer_id)
@@ -415,6 +428,7 @@ class NicknameResolver:
         self.wakeup = threading.Event()
         self.lock = threading.Lock()
         self.pending: dict[tuple[str, str], float] = {}
+        self.metadata_pending: dict[tuple[str, str], str] = {}
         self.last_scan = 0.0
         self.resolved = 0
         self.last_error = ""
@@ -440,11 +454,25 @@ class NicknameResolver:
 
     def resolve_pending(self) -> None:
         self.log.poll()
+        self.metadata_pending.update(self.log.nickname_updates)
         if self.log.reply_updates:
             self.app.db.remember_reply_receipts([
                 (account, buyer_id, stamp) for (account, buyer_id), stamp in self.log.reply_updates.items()
             ])
         self.last_error = self.log.last_error
+        # A nonempty cached login name may be replaced by the resolved native
+        # nickname later. Refresh known buyers too, without creating sessions
+        # for every unrelated peer encountered in Qianniu's log.
+        for (account, buyer_id), nick in list(self.metadata_pending.items())[:1000]:
+            cached = self.app.db.cached_nickname(account, buyer_id)
+            if cached and cached != nick:
+                self.app.ingest_event({"type": "nickname_update", "platform": "taobao",
+                                       "account": account, "buyer_id": buyer_id,
+                                       "nickname": nick, "source": "qianniu_native_nickname_metadata"})
+                if self.app.db.cached_nickname(account, buyer_id) != nick:
+                    continue
+                self.resolved += 1
+            self.metadata_pending.pop((account, buyer_id), None)
         with self.lock:
             keys = list(self.pending)
         for account, buyer_id in keys:
