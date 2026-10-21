@@ -4865,6 +4865,7 @@ class CdpInjector:
         self.last_error = ""
         self.launched_pid = 0
         self.host_pid = 0
+        self.last_reap_at = 0.0
 
     def start(self) -> None:
         self.thread.start()
@@ -4913,9 +4914,45 @@ class CdpInjector:
                 continue
         return ""
 
+    def reap_orphan_shells(self) -> list[int]:
+        """Kill `AliWorkbench.exe /run:shell` helpers whose client is gone.
+
+        Qianniu spawns those shells itself, so they normally sit under a live
+        AliWorkbench.exe and must be left alone. When the client dies abruptly
+        (crash, forced upgrade, Task Manager, our own restart) the shell keeps
+        running, re-opens a login window and looks to the user like a second
+        Qianniu that the assistant cannot drive. Only shells whose parent is
+        gone are terminated, and at most once every 30 seconds.
+        """
+        if os.name != "nt":
+            return []
+        now = time.monotonic()
+        if now - self.last_reap_at < 30.0:
+            return []
+        self.last_reap_at = now
+        expected = str(self.app.config.resolve("qianniu_exe")).lower()
+        reaped: list[int] = []
+        for process in psutil.process_iter(["pid", "ppid", "exe", "cmdline"]):
+            try:
+                if str(process.info.get("exe") or "").lower() != expected:
+                    continue
+                if "/run:shell" not in " ".join(process.info.get("cmdline") or []):
+                    continue
+                parent = int(process.info.get("ppid") or 0)
+                if parent and psutil.pid_exists(parent):
+                    continue
+                process.terminate()
+                reaped.append(int(process.pid))
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if reaped:
+            LOG.warning("terminated orphan Qianniu shell(s): %s", reaped)
+        return reaped
+
     def maybe_launch(self) -> None:
         if not self.app.config.get("auto_launch_qianniu", False):
             return
+        self.reap_orphan_shells()
         if self.host_processes():
             return
         foreign = self.foreign_qianniu_running()
@@ -6154,7 +6191,37 @@ class StandaloneBridge:
         user32.ShowWindow(hwnd, 9)
         user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
         user32.BringWindowToTop(hwnd)
-        return bool(user32.SetForegroundWindow(hwnd))
+        # A background process cannot take the foreground on Windows: only the
+        # thread that owns the current foreground window (or one that just
+        # received input) may call SetForegroundWindow successfully. Every call
+        # from the bridge therefore returned 0, which surfaced as
+        # focused=false and made the workbench report a switch failure even
+        # though the conversation had changed. Attaching to the foreground
+        # thread's input queue for the duration of the call lifts that limit.
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.AttachThreadInput.restype = wintypes.BOOL
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        foreground_thread = 0
+        foreground = user32.GetForegroundWindow()
+        if foreground:
+            foreground_pid = wintypes.DWORD()
+            foreground_thread = int(user32.GetWindowThreadProcessId(foreground, ctypes.byref(foreground_pid)))
+        current_thread = int(kernel32.GetCurrentThreadId())
+        attached = False
+        if foreground_thread and foreground_thread != current_thread:
+            attached = bool(user32.AttachThreadInput(current_thread, foreground_thread, True))
+        try:
+            if user32.SetForegroundWindow(hwnd):
+                return True
+            # Last resort for shells that still refuse: raising the window
+            # without the foreground lock at least makes the switch visible.
+            return bool(user32.BringWindowToTop(hwnd))
+        finally:
+            if attached:
+                user32.AttachThreadInput(current_thread, foreground_thread, False)
 
     def ingest_event(self, event: dict[str, Any]) -> tuple[str, bool]:
         normalized = normalize_event(event)

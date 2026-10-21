@@ -69,6 +69,8 @@
     .pane-heading { height: 47px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid var(--border); }
     .pane-heading h2 { margin: 0; font: 600 13px Bahnschrift, "Microsoft YaHei UI", sans-serif; }
     .count { color: var(--muted); font: 11px "Cascadia Mono", Consolas, monospace; }
+    .pane-clear { margin-left: auto; margin-right: 8px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--muted); font: 11px "Microsoft YaHei UI", sans-serif; cursor: pointer; }
+    .pane-clear:hover { color: var(--fg, #222); border-color: #bbb; }
     .search-wrap { padding: 10px 12px; border-bottom: 1px solid var(--border); }
     .search-wrap input, .field input {
       width: 100%; min-height: 34px; border: 1px solid var(--border); border-radius: 4px;
@@ -294,7 +296,7 @@
 
   <main class="workspace">
     <aside class="pane sessions-pane" aria-label="会话列表">
-      <div class="pane-heading"><h2 id="sessionsTitle">实时会话</h2><span class="count" id="sessionCount">0</span></div>
+      <div class="pane-heading"><h2 id="sessionsTitle">实时会话</h2><button class="pane-clear" id="clearSessionsButton" type="button" title="清空列表，之后有新消息的会话会自动重新出现">清空</button><span class="count" id="sessionCount">0</span></div>
       <div class="session-tabs" role="tablist" aria-label="会话筛选">
         <button class="session-tab active" id="allSessionsTab" type="button" role="tab" aria-selected="true">全部 0</button>
         <button class="session-tab handoff" id="handoffSessionsTab" type="button" role="tab" aria-selected="false">待人工 0</button>
@@ -409,6 +411,7 @@
       lastMessageRevision: '', settingsOpen: false, tokenConfigured: false, controlBusy: false,
       controlKey: '', pendingOpen: null, openingPromise: null, openSequence: 0, messageLoadSequence: 0,
       sessionFilter: 'all', sessionRevision: null,
+      clearedAt: (function () { try { return Number(localStorage.getItem('qn_dock_cleared_at') || 0) || 0; } catch (e) { return 0; } })(),
       handoffKeysSeen: new Set(), lastHandoffTitle: '',
     };
     const conversationSearch = el('conversationSearchInput');
@@ -540,9 +543,17 @@
     }
     function renderSessions() {
       const query = conversationSearch.value.trim().toLowerCase();
-      const handoffSessions = state.sessions.filter(item => item.ai_mode === 'human');
+      // "清空" only hides what was already in the list: anything that receives a
+      // newer message (last_ts > clearedAt) comes straight back, so the dock
+      // cannot silently swallow a real conversation.
+      const visible = state.clearedAt > 0
+        ? state.sessions.filter(item => Number(item.last_ts || 0) > state.clearedAt)
+        : state.sessions;
+      const clearButton = el('clearSessionsButton');
+      if (clearButton) clearButton.title = '清空列表，之后有新消息的会话会自动重新出现';
+      const handoffSessions = visible.filter(item => item.ai_mode === 'human');
       const handoffCount = handoffSessions.length;
-      el('allSessionsTab').textContent = `全部 ${state.sessions.length}`;
+      el('allSessionsTab').textContent = `全部 ${visible.length}`;
       el('handoffSessionsTab').textContent = `待人工 ${handoffCount}`;
       document.title = handoffCount > 0 ? `(${handoffCount} 待人工) 千牛聚合接待` : '千牛聚合接待';
       const freshKeys = handoffSessions.map(keyOf).filter(key => !state.handoffKeysSeen.has(key));
@@ -554,14 +565,19 @@
       for (const [id, active] of [['allSessionsTab', state.sessionFilter === 'all'], ['handoffSessionsTab', state.sessionFilter === 'handoff']]) {
         el(id).classList.toggle('active', active); el(id).setAttribute('aria-selected', String(active));
       }
-      const rows = state.sessions.filter(item => {
+      const rows = visible.filter(item => {
         if (state.sessionFilter === 'handoff' && item.ai_mode !== 'human') return false;
         return !query || `${item.buyer_nick} ${item.buyer_id} ${item.last_message} ${item.handoff_reason || ''}`.toLowerCase().includes(query);
       }).sort((a, b) => Number(b.ai_mode === 'human') - Number(a.ai_mode === 'human') || Number(b.last_ts || 0) - Number(a.last_ts || 0));
       el('sessionCount').textContent = String(rows.length);
       const list = el('sessionList'); list.replaceChildren();
       updateReplyCountdowns();
-      if (!rows.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = state.sessionFilter === 'handoff' ? '暂无待人工会话' : '暂无接待消息'; list.append(empty); return; }
+      if (!rows.length) {
+        const empty = document.createElement('div'); empty.className = 'empty';
+        empty.textContent = state.sessionFilter === 'handoff' ? '暂无待人工会话'
+          : (state.clearedAt > 0 ? '列表已清空，新消息会自动出现' : '暂无接待消息');
+        list.append(empty); return;
+      }
       for (const session of rows) {
         const sessionKey = keyOf(session);
         const button = document.createElement('button');
@@ -901,6 +917,11 @@
       catch (error) { el('settingsState').className = 'form-state error'; el('settingsState').textContent = error.message; }
     }
     el('refreshButton').addEventListener('click', refresh);
+    el('clearSessionsButton').addEventListener('click', () => {
+      state.clearedAt = Date.now() / 1000;
+      try { localStorage.setItem('qn_dock_cleared_at', String(state.clearedAt)); } catch (e) {}
+      renderSessions();
+    });
     el('sessionsButton').addEventListener('click', () => document.body.classList.toggle('show-sessions'));
     el('allSessionsTab').addEventListener('click', () => { state.sessionFilter = 'all'; renderSessions(); });
     el('handoffSessionsTab').addEventListener('click', () => { state.sessionFilter = 'handoff'; renderSessions(); });

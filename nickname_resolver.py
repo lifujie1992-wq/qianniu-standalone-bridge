@@ -24,15 +24,15 @@ LOG = logging.getLogger("qianniu_standalone.nicknames")
 CCODE = re.compile(r"^(?P<buyer>\d+)(?:\.\d+)?-\d+(?:\.\d+)?#\d+@cntaobao$")
 CONTEXT = re.compile(
     r"^\[\d{2}-\d{2} \d{2}:\d{2}:\d{2} \d+ (?P<pid>\d+) \d+ [A-Z]+\] app "
-    r"\[CHAT (?P<account>[^\]\r\n]{1,128}?)#3#(?P<seat>\d+) "
-    r"(?P=account)#3#(?P=seat)\]"
+    r"\[CHAT (?P<account>[^\]\r\n]{1,128}?)#3#(?P<seat>\d+)"
+    r"(?:\s+(?P=account)#3#(?P=seat))?\s*\]"
 )
 CONTEXT_SINGLE = re.compile(
     r"^\[\d{2}-\d{2} \d{2}:\d{2}:\d{2} \d+ (?P<pid>\d+) \d+ [A-Z]+\] app "
-    r"\[CHAT (?P<account>[^\]\r\n]{1,128}?)#3#(?P<seat>\d+)\]"
+    r"\[CHAT (?P<account>[^\]\r\n]{1,128}?)#3#(?P<seat>\d+)\s*\]"
 )
 EVENT = re.compile(
-    r"(?:strEvent|strFullEvent)=(im\.(?:singlemsg\.(?:onReceiveNewMsg|"
+    r"(?:strEvent|strFullEvent)=(im\.(?:(?:singlemsg|imbamsg)\.(?:onReceiveNewMsg|"
     r"onShopRobotReceriveNewMsgs|onShopRobotLocalSendMsgs)|uiutil\.onConversationChange))[, ]"
 )
 JSON_START = re.compile(r"(?:jsonStr|w_json_str)\s*=\s*")
@@ -108,7 +108,7 @@ def nickname_records(line: str, now: float) -> list[tuple[str, str, str]]:
 
 def local_reply_records(line: str, now: float) -> list[tuple[str, str, float]]:
     """Read native local-send notifications, never unsent text or AI drafts."""
-    if not re.search(r"(?:strEvent|strFullEvent)=im\.singlemsg\.onShopRobotLocalSendMsgs[, ]", line):
+    if not re.search(r"(?:strEvent|strFullEvent)=im\.(?:singlemsg|imbamsg)\.onShopRobotLocalSendMsgs[, ]", line):
         return []
     decoded = notification_payload(line, now)
     if decoded is None:
