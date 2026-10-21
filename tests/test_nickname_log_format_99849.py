@@ -105,6 +105,54 @@ class EventNamespaceTest(unittest.TestCase):
         self.assertEqual(nr.local_reply_records(line, NOW), [])
 
 
+class SelectionConfirmationTest(unittest.TestCase):
+    """9.98.49N often omits `im.uiutil.onConversationChange`, so the
+    `[APPCHAT ...][OpenConversation][...GetcCode()=...]` line must confirm too."""
+
+    LINE = (
+        "[10-22 03:18:13 18664796 17444 17488 WARNING] app "
+        "[APPCHAT 联想官方旗舰店:花花#3#2214931408880 ][OpenConversation][ "
+        "appConversationInfo.GetcCode()=2201250451713.1-126446588.1#11001@cntaobao,"
+        "appConversationInfo.GetSnick()=cntaobaowangchenyu2660,"
+        "GetCurrentConversation().GetcCode()=2201250451713.1-126446588.1#11001@cntaobao"
+        " ][ChatService.cpp(162) OpenConversationBefore]\r"
+    )
+
+    def test_regex_extracts_account_and_ccode(self):
+        match = nr.OPEN_CONVERSATION.search(self.LINE)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group("account"), "联想官方旗舰店:花花")
+        self.assertEqual(match.group("seat"), "2214931408880")
+        self.assertEqual(match.group("ccode"), "2201250451713.1-126446588.1#11001@cntaobao")
+        self.assertEqual(match.group("pid"), "17444")
+
+    def test_watch_confirms_from_open_conversation_line(self):
+        import tempfile
+
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "app.log"
+            log.write_bytes(chat("联想官方旗舰店:花花", "2214931408880", False, True).encode("utf-8")
+                            + b"\r\n" + self.LINE.encode("utf-8") + b"\r\n")
+            watch = nr.ConversationSelectionWatch([log], process_id=17444, recent_bytes=log.stat().st_size)
+            watch.poll()
+            self.assertEqual(watch.revisions.get("联想官方旗舰店:花花"), 1)
+            self.assertEqual(watch.selected.get("联想官方旗舰店:花花"), "2201250451713.1-126446588.1#11001@cntaobao")
+
+    def test_watch_ignores_other_process(self):
+        import tempfile
+
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "app.log"
+            log.write_bytes(self.LINE.encode("utf-8") + b"\r\n")
+            watch = nr.ConversationSelectionWatch([log], process_id=999, recent_bytes=log.stat().st_size)
+            watch.poll()
+            self.assertEqual(watch.selected, {})
+
+
 class PayloadTest(unittest.TestCase):
     def test_conversation_change_payload_on_new_shape(self):
         line = chat("联想官方旗舰店:花花", "2214931408880", False, True) + CONVERSATION_CHANGE

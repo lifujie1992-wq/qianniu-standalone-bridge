@@ -39,6 +39,17 @@ JSON_START = re.compile(r"(?:jsonStr|w_json_str)\s*=\s*")
 MAX_LINE = 256 * 1024
 
 
+# 9.98.49N emits this INFO/WARNING pair every time the client accepts an open
+# request, and it carries both the account and the resolved ccode. The
+# `im.uiutil.onConversationChange` event is unreliable on the same build, so a
+# switch confirmation must not depend on it alone.
+OPEN_CONVERSATION = re.compile(
+    r"^\[\d{2}-\d{2} \d{2}:\d{2}:\d{2} \d+ (?P<pid>\d+) \d+ [A-Z]+\] app "
+    r"\[APPCHAT (?P<account>[^\]\r\n]{1,128}?)#3#(?P<seat>\d+)\s*\]\[OpenConversation\]\["
+    r".*?appConversationInfo\.GetcCode\(\)=(?P<ccode>[^\s,\]]+)"
+)
+
+
 def notification_payload(line: str, now: float) -> tuple[Any, Any] | None:
     if len(line) > MAX_LINE:
         return None
@@ -192,7 +203,12 @@ class ConversationSelectionWatch:
                     remainder = b"!" * (MAX_LINE + 1)
                 self.cursors[identity] = (offset, remainder)
                 for raw in lines:
-                    if len(raw) > MAX_LINE or b"im.uiutil.onConversationChange" not in raw:
+                    if len(raw) > MAX_LINE:
+                        continue
+                    if (
+                        b"im.uiutil.onConversationChange" not in raw
+                        and b"appConversationInfo.GetcCode()" not in raw
+                    ):
                         continue
                     try:
                         line = raw.decode("utf-8-sig")
@@ -201,6 +217,18 @@ class ConversationSelectionWatch:
                             line = raw.decode("gb18030")
                         except UnicodeDecodeError:
                             continue
+                    opened = OPEN_CONVERSATION.search(line)
+                    if opened is not None:
+                        if self.process_id and int(opened.group("pid")) != self.process_id:
+                            continue
+                        account = opened.group("account")
+                        ccode = opened.group("ccode")
+                        self.sequence += 1
+                        self.revisions[account] = self.sequence
+                        self.selected.pop(account, None)
+                        if CCODE.fullmatch(ccode):
+                            self.selected[account] = ccode
+                        continue
                     decoded = notification_payload(line, time.time())
                     event = EVENT.search(line)
                     if decoded is None or event is None or event.group(1) != "im.uiutil.onConversationChange":
