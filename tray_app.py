@@ -88,21 +88,61 @@ def _managed_qianniu_count(root: Path) -> int:
     return count
 
 
+# A single failed probe is not a dead bridge. /api/v1/status is served by the
+# same process that ingests 7 injected pages into SQLite, so on a busy seat one
+# 5s probe can miss while messages keep flowing. Requiring two consecutive
+# failures (and naming the reason) stops the panel from flashing "已停止 / 未监听"
+# for a bridge that is only slow - the exact symptom reported on 2026-10-17.
+_BRIDGE_STOP_AFTER_FAILURES = 2
+_BRIDGE_PROBE_STATE: dict[str, dict] = {}
+
+
+def _bridge_failure_detail(reason: str, port: int) -> str:
+    if reason == "timeout":
+        return f"响应超时 {port}（进程在忙）"
+    if reason.startswith("http_"):
+        return f"本地接口 HTTP {reason[5:]}"
+    if reason == "bad_response":
+        return "本地接口返回异常"
+    if reason == "no_config":
+        return "未配置"
+    return f"未监听 {port}"
+
+
+def _probe_bridge(config: dict) -> tuple[bool, str, dict | None]:
+    """Return (healthy, detail, status payload) for the local bridge."""
+    if not config:
+        return False, "未配置", None
+    port = int(config.get("api_port", 42111))
+    status, reason = launcher.fetch_status_with_reason(config, timeout=5.0)
+    key = str(port)
+    state = _BRIDGE_PROBE_STATE.setdefault(key, {"failures": 0, "ever_ok": False})
+    if status and status.get("ok"):
+        state["failures"] = 0
+        state["ever_ok"] = True
+        return True, f"127.0.0.1:{port}", status
+    state["failures"] += 1
+    detail = _bridge_failure_detail(reason, port)
+    if state["ever_ok"] and state["failures"] < _BRIDGE_STOP_AFTER_FAILURES:
+        # Grace period: keep the panel honest but not alarming for one tick.
+        return True, f"{detail}（1 次探测失败）", status
+    return False, detail, status
+
+
 def build_status(root: Path) -> AppStatus:
     config = launcher.load_config_silent(root / "config.json") or {}
     # /api/v1/status can take a couple of seconds while the bridge runs its
     # first process/GPU scan; the old sub-second probe timed out and reported a
     # perfectly healthy bridge as stopped, leaving the tray stuck on
     # "部分组件未就绪".
-    bridge = launcher.fetch_status(config, timeout=5.0) if config else None
+    bridge_ok, bridge_detail, bridge = _probe_bridge(config)
     qianniu_count = _managed_qianniu_count(root)
     dock_running = _pid_file_running(root / "state" / "docked_workbench.pid")
-    bridge_ok = bool(bridge and bridge.get("ok"))
 
     components = {
         "bridge": ComponentStatus(
             state="healthy" if bridge_ok else "stopped",
-            detail=(f"127.0.0.1:{int(config.get('api_port', 42111))}" if bridge_ok else "未监听"),
+            detail=bridge_detail,
         ),
         "qianniu": ComponentStatus(
             state="healthy" if qianniu_count else "stopped",
@@ -163,38 +203,19 @@ def run() -> int:
         """Return the dock Edge app window handle, or None when it is gone."""
         if os.name != "nt":
             return None
-        user32 = ctypes.windll.user32
-        rows: list[tuple[int, int, int, int]] = []
-
-        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-        def visit(hwnd: int, _lparam: int) -> bool:
-            length = user32.GetWindowTextLengthW(hwnd)
-            buffer = ctypes.create_unicode_buffer(max(1, length + 1))
-            user32.GetWindowTextW(hwnd, buffer, len(buffer))
-            if docked_workbench.DOCK_TITLE not in buffer.value:
-                return True
-            rect = wintypes.RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            rows.append((int(hwnd), int(pid.value), int(rect.right) - int(rect.left), int(rect.bottom) - int(rect.top), int(rect.left)))
-            return True
-
-        user32.EnumWindows(visit, 0)
+        owned_pids = {
+            process.pid for process in docked_workbench.DockedWorkbench.profile_edge_processes(
+                root / "state" / "dock-edge-profile"
+            )
+        }
         candidates = []
-        for hwnd, pid, width, height, left in rows:
+        for window in docked_workbench.Win32.windows():
+            if window.pid not in owned_pids or docked_workbench.DOCK_TITLE not in window.title:
+                continue
             # Chromium parks a second off-screen helper window with the same title.
-            if left <= -1000 or width < 80:
+            if window.rect.left <= -1000 or window.rect.width < 80:
                 continue
-            try:
-                process = psutil.Process(pid)
-                if process.name().lower() != "msedge.exe":
-                    continue
-                if DOCK_PROFILE_MARKER not in " ".join(process.cmdline()):
-                    continue
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-            candidates.append((hwnd, width * height))
+            candidates.append((window.hwnd, window.rect.width * window.rect.height))
         if not candidates:
             return None
         return max(candidates, key=lambda item: item[1])[0]
@@ -215,10 +236,17 @@ def run() -> int:
             if pid > 0 and psutil.pid_exists(pid):
                 hwnd = find_dock_hwnd()
                 if hwnd:
-                    user32 = ctypes.windll.user32
+                    user32 = docked_workbench.Win32.user32
                     user32.ShowWindow(hwnd, SW_RESTORE)
                     user32.SetForegroundWindow(hwnd)
                     return
+                # Edge may still be starting, or waiting for the Qianniu window.
+                # Repeated clicks must not kill the dock before it can appear.
+                try:
+                    if time.time() - psutil.Process(pid).create_time() < 30.0:
+                        return
+                except psutil.NoSuchProcess:
+                    pass
                 # The dock process is alive but its window is gone: retire the
                 # stale process so start_dock below can recreate it.
                 try:

@@ -1,11 +1,35 @@
 """Last-mile deterministic guards for the authorized Tmall shop only."""
 import math
+import re
 import time
 from taobao_message_contract import message_id, epoch, classification, REVISION
 
 
 def in_scope(account):
     return str(account or "").removeprefix("tb_nick_").replace("：", ":").split(":")[0] == "联想官方旗舰店"
+
+
+def delivery_identity_view(event):
+    """Use observed sender evidence in the final guard, preserving the raw event."""
+    if not in_scope(event.get('account')):
+        return event
+
+    def uid(value):
+        value = str(value or '')
+        return value.split('.')[0] if re.fullmatch(r'\d+(?:\.\d+)?', value) else ''
+
+    sender = uid(event.get('sender_uid'))
+    login = uid(event.get('login_uid'))
+    buyer = re.match(r'^(\d+)\.', str(event.get('buyer_id') or ''))
+    nick = str(event.get('sender_nick') or '')
+    staff = ((sender and login and sender == login)
+             or (':' in nick or '：' in nick)
+             and re.split(r'[:：]', nick, maxsplit=1)[0] == '联想官方旗舰店')
+    if staff:
+        return {**event, 'role': 'mall_cs', 'identity_uncertain': False}
+    if sender and buyer and sender == buyer.group(1):
+        return {**event, 'role': 'user', 'identity_uncertain': False}
+    return event
 
 
 def parent_id(value):

@@ -39,6 +39,7 @@ class NicknameTests(unittest.TestCase):
         app.db = self.db
         app.delivery = SimpleNamespace(wakeup=threading.Event())
         app.context = Mock()
+        app.nicknames = Mock(cached_nickname=Mock(return_value=''))
         app.brain = SimpleNamespace(configured=lambda: True, wakeup=threading.Event(), event_wakeup=threading.Event())
         return app
 
@@ -139,7 +140,8 @@ class NicknameTests(unittest.TestCase):
 
     def test_backfill_worker_filters_old_and_named_sessions(self):
         app = self.app()
-        app.browser = SimpleNamespace(connected=1, execute_all=Mock())
+        app.browser = SimpleNamespace(connected=1, execute_all=Mock(),
+                                      diagnostics_by_connection=lambda: [{'imsdk_hooked': True}])
         app.db.upsert_event(self.event(ts=time.time(), original_timestamp=time.time()))
         app.db.upsert_event(self.event(msg_id='old', original_msg_id='old', buyer_id='old#1@cntaobao', ts=1, original_timestamp=1))
         app.db.upsert_event(self.event(msg_id='named', original_msg_id='named', buyer_id='named#1@cntaobao', nickname='已有昵称', ts=time.time(), original_timestamp=time.time()))

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import signal
 import subprocess
 import sys
@@ -31,6 +33,7 @@ DOCK_TITLE = "千牛聚合接待"
 # dock reads as the same kind of native app component instead of a browser popup.
 DEFAULT_DOCK_WIDTH = 300
 DEFAULT_DOCK_HEIGHT = 720
+LOG = logging.getLogger("qianniu.dock")
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,32 @@ def choose_dock_rect(target: Rect, work_area: Rect, width: int) -> Rect:
 class Win32:
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     enum_proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    # ctypes otherwise defaults to 32-bit integers, truncating handles on x64.
+    user32.EnumWindows.argtypes = (enum_proc_type, wintypes.LPARAM)
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user32.GetWindowTextW.restype = ctypes.c_int
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.IsWindow.argtypes = (wintypes.HWND,)
+    user32.IsWindow.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.IsIconic.argtypes = (wintypes.HWND,)
+    user32.IsIconic.restype = wintypes.BOOL
+    user32.GetForegroundWindow.argtypes = ()
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.MonitorFromWindow.argtypes = (wintypes.HWND, wintypes.DWORD)
+    user32.MonitorFromWindow.restype = wintypes.HANDLE
+    user32.GetMonitorInfoW.argtypes = (wintypes.HANDLE, ctypes.c_void_p)
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
 
     user32.SetWindowPos.argtypes = (
         wintypes.HWND,
@@ -145,13 +174,16 @@ class Win32:
 
         @cls.enum_proc_type
         def visit(hwnd: int, _lparam: int) -> bool:
+            if not cls.user32.IsWindow(hwnd):
+                return True
             length = cls.user32.GetWindowTextLengthW(hwnd)
             buffer = ctypes.create_unicode_buffer(max(1, length + 1))
             cls.user32.GetWindowTextW(hwnd, buffer, len(buffer))
             pid = wintypes.DWORD()
             cls.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             rect = wintypes.RECT()
-            cls.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            if not cls.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return True
             rows.append(WindowInfo(
                 hwnd=int(hwnd),
                 pid=int(pid.value),
@@ -387,6 +419,7 @@ class DockedWorkbench:
             cwd=str(ROOT),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        LOG.info("Edge launched pid=%s rect=%s", self.edge.pid, initial)
 
     def find_dock_window(self, windows: list[WindowInfo]) -> WindowInfo | None:
         owned_pids = self.edge_pids()
@@ -409,6 +442,7 @@ class DockedWorkbench:
         return max(candidates, key=lambda item: item.rect.width * item.rect.height)
 
     def close(self) -> None:
+        LOG.info("Closing dock hwnd=%s", self.dock_hwnd)
         if self.dock_hwnd:
             Win32.user32.PostMessageW(self.dock_hwnd, Win32.WM_CLOSE, 0, 0)
         self.stop_profile_edge(ROOT / "state" / "dock-edge-profile")
@@ -422,6 +456,34 @@ class DockedWorkbench:
             Win32.SW_SHOWNOACTIVATE if visible else Win32.SW_HIDE,
         )
         self._dock_visible = visible
+
+    def browser_closed(self, dock: WindowInfo | None) -> bool:
+        """A Chromium launcher can exit while its actual app window lives on."""
+        if dock is not None or self.edge is None:
+            return False
+        if self.edge.poll() != 0:
+            return False
+        return not self.profile_edge_processes(ROOT / "state" / "dock-edge-profile")
+
+    def place_dock(self, desired: Rect, *, topmost: bool) -> bool:
+        insert_after = Win32.HWND_TOPMOST if topmost else Win32.HWND_NOTOPMOST
+        ctypes.set_last_error(0)
+        if Win32.user32.SetWindowPos(
+            self.dock_hwnd, insert_after,
+            desired.left, desired.top, desired.width, desired.height,
+            Win32.SWP_NOACTIVATE | Win32.SWP_SHOWWINDOW,
+        ):
+            self._dock_rect = desired
+            self._dock_visible = True
+            return True
+        # Windows can replace an Edge HWND between enumeration and positioning.
+        # Rediscover it on the next pass instead of exiting and killing Edge.
+        LOG.warning("Dock position failed hwnd=%s error=%s; rediscovering window",
+                    self.dock_hwnd, ctypes.get_last_error())
+        self.dock_hwnd = 0
+        self._dock_rect = None
+        self._dock_visible = False
+        return False
 
     def run(self) -> int:
         mode = str(self.config.get("dock_mode") or "snap").strip().lower()
@@ -475,17 +537,29 @@ class DockedWorkbench:
         self.launch(Rect(left, top, left + width, top + height))
         # Stay alive until the app is stopped or the user closes the window.
         last_check = 0.0
+        dock_seen = False
+        missing_since = 0.0
         while not self.stop_event.is_set():
-            if self.edge is not None and self.edge.poll() is not None:
-                break
             now = time.monotonic()
             if now - last_check >= 2.0:
                 last_check = now
                 dock = self.find_dock_window(Win32.windows())
                 if dock is not None:
+                    dock_seen = True
+                    missing_since = 0.0
                     self.dock_hwnd = dock.hwnd
                     if not Win32.is_frameless(dock.hwnd):
                         self.apply_panel_frame(dock)
+                else:
+                    missing_since = missing_since or now
+                    if dock_seen and now - missing_since >= 5.0 and self.browser_closed(dock):
+                        LOG.info("Floating window closed; Edge exit code=%s", self.edge.poll())
+                        break
+                    if now - missing_since >= 20.0:
+                        LOG.warning("Floating window missing for 20s; restarting dock browser")
+                        self.launch(Rect(left, top, left + width, top + height))
+                        dock_seen = False
+                        missing_since = 0.0
             self.stop_event.wait(1.0)
         self.close()
         return 0
@@ -515,13 +589,6 @@ class DockedWorkbench:
             pids = self.qianniu_pids()
             target = self.select_target(windows, pids)
             dock = self.find_dock_window(windows)
-            if dock_seen and self.edge is not None:
-                edge_poll = getattr(self.edge, "poll", None)
-                if edge_poll is not None and edge_poll() is not None:
-                    # The Edge app process exited: the user closed the panel with
-                    # its own close button, so stop following instead of
-                    # resurrecting it.
-                    break
             if dock is not None:
                 if self.dock_hwnd != dock.hwnd:
                     self._dock_visible = dock.visible
@@ -538,8 +605,12 @@ class DockedWorkbench:
                 self._dock_rect = None
                 frame_hwnd = 0
                 dock_missing_since = dock_missing_since or time.time()
-                retry_after = 1.0 if dock_seen else 20.0
+                if dock_seen and time.time() - dock_missing_since >= 5.0 and self.browser_closed(dock):
+                    LOG.info("Snapped window closed; Edge exit code=%s", self.edge.poll())
+                    break
+                retry_after = 10.0 if dock_seen else 20.0
                 if target is not None and time.time() - dock_missing_since >= retry_after:
+                    LOG.warning("Dock window missing; restarting dock browser")
                     self.launch(self.seed_rect(target, width, options))
                     dock_seen = False
                     dock_missing_since = 0.0
@@ -549,19 +620,7 @@ class DockedWorkbench:
                 continue
             desired = self.seed_rect(target, width, options)
             if self._dock_rect != desired or not self._dock_visible:
-                insert_after = Win32.HWND_TOPMOST if options["topmost"] else Win32.HWND_NOTOPMOST
-                if not Win32.user32.SetWindowPos(
-                    self.dock_hwnd,
-                    insert_after,
-                    desired.left,
-                    desired.top,
-                    desired.width,
-                    desired.height,
-                    Win32.SWP_NOACTIVATE | Win32.SWP_SHOWWINDOW,
-                ):
-                    raise ctypes.WinError(ctypes.get_last_error())
-                self._dock_rect = desired
-                self._dock_visible = True
+                self.place_dock(desired, topmost=options["topmost"])
             self.stop_event.wait(poll_delay)
         self.close()
         return 0
@@ -599,13 +658,26 @@ def main() -> int:
         else:
             close_existing()
         return 0
+    log_path = ROOT / "state" / "docked_workbench.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(log_path, maxBytes=2 * 1024 * 1024,
+                                  backupCount=2, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    LOG.addHandler(handler)
+    LOG.setLevel(logging.INFO)
+    LOG.info("Dock starting config=%s", args.config)
     app = DockedWorkbench(Path(args.config))
     signal.signal(signal.SIGINT, lambda *_: app.stop_event.set())
     signal.signal(signal.SIGTERM, lambda *_: app.stop_event.set())
     try:
         return app.run()
+    except Exception:
+        LOG.exception("Dock exited unexpectedly")
+        raise
     finally:
         app.close()
+        LOG.removeHandler(handler)
+        handler.close()
 
 
 if __name__ == "__main__":

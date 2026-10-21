@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import gzip
 import hashlib
+from copy import deepcopy
 import html
 import json
 import logging
@@ -19,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zlib
 from dataclasses import dataclass, field
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,18 +35,24 @@ import websocket
 from app_version import VERSION
 from taobao_message_contract import select_parent as tmall_select_parent
 from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence
+from tmall_delivery_guard import delivery_identity_view as tmall_delivery_identity_view
 from brain_ws import (
     BrainEventChannel,
     BrainWsError,
     ws_url_from_server_url,
 )
-from client_support import ClientSupportWatcher
+from client_support import ClientSupportWatcher, agent_profiles, launcher_version, size_of_image
 from config_defaults import apply_operational_defaults
 from nickname_support import event_nickname, nickname_event_id, valid_nickname
+from native_image_lookup import enrich_native_image_event
+from native_context import NativeContext
+from nickname_resolver import ConversationSelectionWatch, NicknameResolver
+from reception_wait import message_direction, waiting_state
 from device_identity import (
     DeviceIdentityError,
     atomic_write_json,
     brain_workstation_token,
+    http_header_value,
     prepare_device_identity,
     set_brain_workstation_token,
 )
@@ -164,7 +173,9 @@ def suggested_handoff_reason(event: dict[str, Any]) -> str:
 
 
 def brain_event_suppression_reason(event: dict[str, Any]) -> str:
-    """Exclude platform chrome while preserving real buyer-uploaded images."""
+    """Other shops retain filtering; Tmall sends raw platform input to brain."""
+    if tmall_guard_scope(event.get("account")):
+        return ""
     content = str(event.get("content") or "").strip()
     media_values = {
         str(event.get(key) or "").strip()
@@ -240,6 +251,34 @@ def canonical_event_id(event: dict[str, Any]) -> str:
     ]
     digest = hashlib.sha256("\x1f".join(stable).encode("utf-8")).hexdigest()
     return f"qn-capture-v1|{digest}"
+
+
+LOCAL_SEAT_ACK_BATCH_LIMIT = 100
+LOCAL_SEAT_COMMITTED_STATUSES = {"sending", "delivered"}
+
+
+def local_seat_ack_payload(db: Any, events: list[Any]) -> dict[str, Any]:
+    """Durability ACK for a local-seat event batch.
+
+    Kept as a module-level helper so the (previously per-event) status lookups
+    can be asserted in tests: one batched query, same commitments as before.
+    """
+    event_ids = [
+        canonical_event_id(event)
+        for event in events[:LOCAL_SEAT_ACK_BATCH_LIMIT]
+        if isinstance(event, dict)
+    ]
+    statuses = db.event_statuses(event_ids)
+    acknowledgements = [
+        {
+            "event_id": event_id,
+            "committed": statuses.get(event_id) in LOCAL_SEAT_COMMITTED_STATUSES,
+        }
+        for event_id in event_ids
+    ]
+    if not acknowledgements or not all(row["committed"] for row in acknowledgements):
+        raise RuntimeError("event batch is not durable in the standalone database")
+    return {"ok": True, "event_acks": acknowledgements}
 
 
 def merge_events(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
@@ -362,7 +401,7 @@ def normalize_native_frame(raw: str) -> list[dict[str, Any]]:
             row.get("messageId") or row.get("msgid") or mcode.get("messageId") or mcode.get("msgid") or ""
         ).strip()
         content = content_value(row)
-        if not message_id or not content:
+        if not message_id:
             continue
         from_id = row.get("fromid") or row.get("fromId") or {}
         to_id = row.get("toid") or row.get("toId") or {}
@@ -373,6 +412,8 @@ def normalize_native_frame(raw: str) -> list[dict[str, Any]]:
         login = row.get("loginid") or row.get("loginId") or {}
         seller_target = party_value(login, "targetId", "userid", "uid")
         seller_nick = party_value(login, "nick", "display")
+        if not content and not tmall_guard_scope(seller_nick):
+            continue
         is_self = bool(row.get("isself")) or bool(seller_target and from_target == seller_target)
         buyer_id = to_target if is_self else from_target
         buyer_nick = to_nick if is_self else from_nick
@@ -396,9 +437,17 @@ def normalize_native_frame(raw: str) -> list[dict[str, Any]]:
             "original_timestamp": timestamp_value,
             "source": "qianniu_standalone_native",
             "capture_mode": "native_callback",
+            **({"raw_message": row} if tmall_guard_scope(seller_nick) else {}),
             "raw_type": str(row.get("msgtype") or row.get("templateId") or ""),
         }))
     return output
+
+
+class ConfirmedSendRejection(RuntimeError):
+    """Transport proved this attempt did not send; retry cannot duplicate it."""
+    def __init__(self, message: str, *, retryable: bool = True):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass
@@ -520,6 +569,10 @@ class StateDB:
         self.lock = threading.RLock()
         self._session_cache: list[dict[str, Any]] = []
         self._session_cache_at = 0.0
+        # Session snapshots are rebuilt outside ``lock`` (one rebuild JSON-parses
+        # up to WORKBENCH_EVENT_LIMIT payloads); this lock only stops two
+        # threads rebuilding at the same time.
+        self._session_build_lock = threading.Lock()
         self._initialize()
         self.prune_old_events()
 
@@ -530,13 +583,18 @@ class StateDB:
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10.0)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
+        # journal_mode is a persistent, database-level setting (stored in the
+        # file header) and is applied once in `_initialize`. Re-running it on
+        # every connection takes a file lock, which on a busy seat (7 injected
+        # pages + antivirus scanning the SQLite file) is a known source of
+        # multi-second stalls. `synchronous` is per-connection, so it stays.
+        connection.execute("PRAGMA busy_timeout=8000")
         connection.execute("PRAGMA synchronous=FULL")
         return connection
 
     def prune_old_events(self, retention_seconds: float = RETENTION_SECONDS) -> int:
         cutoff = time.time() - max(0.0, retention_seconds)
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             events_cursor = connection.execute(
                 """
                 DELETE FROM events
@@ -556,7 +614,10 @@ class StateDB:
         return int(events_cursor.rowcount or 0) + int(brain_cursor.rowcount or 0)
 
     def _initialize(self) -> None:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
+            # Applied exactly once here: the setting is persisted in the database
+            # file header, so every later connection inherits it.
+            connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS events (
@@ -571,6 +632,17 @@ class StateDB:
                     delivered_at REAL
                 );
                 CREATE INDEX IF NOT EXISTS events_status_updated ON events(status, updated_at);
+                -- The workbench session snapshot reads the newest events
+                -- (ORDER BY created_at DESC LIMIT n). Without this index SQLite
+                -- scans and sorts the whole 30-day retention window on every
+                -- rebuild, which is what made a busy seat stall for seconds.
+                CREATE INDEX IF NOT EXISTS events_created_at ON events(created_at DESC);
+                CREATE TABLE IF NOT EXISTS session_reply_receipts (
+                    account TEXT NOT NULL,
+                    buyer_id TEXT NOT NULL,
+                    reply_ts REAL NOT NULL,
+                    PRIMARY KEY(account,buyer_id)
+                );
                 CREATE TABLE IF NOT EXISTS sends (
                     request_id TEXT PRIMARY KEY,
                     payload_hash TEXT NOT NULL,
@@ -698,6 +770,30 @@ class StateDB:
             ).fetchone()
         return str(row["nickname"]) if row else ""
 
+    def conversation_route_nickname(self, account: str, buyer_id: str) -> str:
+        """Keep the original inbound address separate from a display nickname.
+
+        Qianniu can replace cid.nick with a display alias after loading contacts;
+        WWCmd still needs the peer's login name. Use only an inbound event already
+        bound to this exact account/ccode, never another session's matching label.
+        """
+        with self.lock, closing(self.connect()) as connection:
+            rows = connection.execute(
+                """SELECT payload FROM events
+                WHERE json_extract(payload,'$.account')=? AND json_extract(payload,'$.buyer_id')=?
+                  AND json_extract(payload,'$.role') IN ('user','buyer','customer')
+                  AND COALESCE(json_extract(payload,'$.capture_mode'),'')!='history_snapshot'
+                  AND COALESCE(json_extract(payload,'$.type'),'')!='nickname_update'
+                ORDER BY created_at ASC,event_id ASC LIMIT 100""", (account,buyer_id),
+            ).fetchall()
+        for row in rows:
+            event = json.loads(row['payload'])
+            nick = event_nickname(event)
+            shop = account.split(':',1)[0]
+            if nick and nick != account and nick != shop and not nick.startswith(shop+':'):
+                return nick
+        return ''
+
     def upsert_event(self, event: dict[str, Any]) -> tuple[str, bool]:
         normalized = normalize_event(event)
         account = str(normalized.get("account") or "").strip()
@@ -708,7 +804,7 @@ class StateDB:
             normalized["nickname"] = self.cached_nickname(account, buyer_id)
         event_id = normalized["event_id"]
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             existing = connection.execute(
                 "SELECT payload,revision,status,created_at FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -768,21 +864,76 @@ class StateDB:
             return event_id, True
 
     def latest_tmall_buyer_event(self, account: str, buyer_id: str, command_parent: str = "", batch_ids=()) -> dict[str, Any] | None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT payload FROM events WHERE json_extract(payload,'$.account')=? "
                 "AND json_extract(payload,'$.buyer_id')=? "
                 "ORDER BY created_at ASC, rowid ASC",
                 (account, buyer_id),
             ).fetchall()
-        return tmall_select_parent([json.loads(row["payload"]) for row in rows], command_parent, batch_ids)
+        return tmall_select_parent(
+            [tmall_delivery_identity_view(json.loads(row["payload"])) for row in rows],
+            command_parent, batch_ids,
+        )
+
+    def remember_native_context(self, events: list[dict[str, Any]]) -> None:
+        """Local history display/media enrichment; preserve existing delivery state."""
+        now = time.time()
+        with self.lock, closing(self.connect()) as connection, connection:
+            changed = False
+            for incoming in events:
+                normalized = normalize_event(incoming)
+                row = connection.execute('SELECT payload,status FROM events WHERE event_id=?',
+                                         (normalized['event_id'],)).fetchone()
+                if row:
+                    if row['status'] == 'sending':
+                        # Preserve the revision currently owned by a delivery
+                        # worker. The outgoing brain envelope is still enriched.
+                        continue
+                    current = json.loads(row['payload'])
+                    before = json_text(current)
+                    native_history = all(
+                        item.get('capture_mode') == 'history_snapshot'
+                        and item.get('source') == 'qianniu_native_message_store'
+                        for item in (current, normalized)
+                    ) and all(current.get(key) == normalized.get(key)
+                              for key in ('account','buyer_id','msg_id'))
+                    if native_history:
+                        # Correct only our own history projection. Never change
+                        # the role or capture mode of an existing live event.
+                        for key in ('role','sender_uid','sender_nick','recipient_nick','staff_name'):
+                            if key in normalized:
+                                current[key] = normalized[key]
+                    if normalized.get('image_url'):
+                        for key in ('image_url','media_url','message_type','image_lookup','raw_type'):
+                            if normalized.get(key):
+                                current[key] = normalized[key]
+                        if str(current.get('content') or '').strip() in {'[图片]','买家发送图片','图片',''}:
+                            current['original_content'] = current.get('content','')
+                            current['content'] = normalized['image_url']
+                    encoded = json_text(current)
+                    if encoded == before:
+                        continue
+                    revision = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+                    connection.execute('UPDATE events SET payload=?,revision=?,updated_at=? WHERE event_id=?',
+                                       (encoded,revision,now,normalized['event_id']))
+                elif normalized.get('capture_mode') == 'history_snapshot':
+                    encoded = json_text(normalized)
+                    revision = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+                    connection.execute("INSERT OR IGNORE INTO events(event_id,payload,revision,status,attempts,last_error,created_at,updated_at,delivered_at) VALUES(?,?,?,'delivered',0,'',?,?,?)",
+                                       (normalized['event_id'],encoded,revision,now,now,now))
+                else:
+                    continue
+                changed = True
+            if changed:
+                self._invalidate_session_cache()
 
     def upsert_local_projection(self, event: dict[str, Any]) -> tuple[str, bool]:
         """Persist a center-side draft for local display without any delivery queue."""
         normalized = normalize_event(event)
         event_id = normalized["event_id"]
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             existing = connection.execute(
                 "SELECT payload,revision,created_at FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -815,7 +966,7 @@ class StateDB:
             return event_id, True
 
     def claim_pending(self, limit: int = 100) -> list[dict[str, Any]]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
                 "SELECT event_id,payload,revision FROM events WHERE status='pending' ORDER BY updated_at LIMIT ?",
@@ -833,7 +984,7 @@ class StateDB:
             ]
 
     def pending(self, limit: int = 100) -> list[dict[str, Any]]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT event_id,payload,revision FROM events WHERE status='pending' ORDER BY updated_at LIMIT ?",
                 (limit,),
@@ -844,7 +995,7 @@ class StateDB:
         ]
 
     def mark_delivered(self, event_id: str, revision: str) -> bool:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             cursor = connection.execute(
                 """
                 UPDATE events SET status='delivered', delivered_at=?, last_error=''
@@ -858,7 +1009,7 @@ class StateDB:
             return changed
 
     def mark_failed(self, rows: list[dict[str, Any]], error: str) -> None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             for row in rows:
                 connection.execute(
                     """
@@ -871,21 +1022,46 @@ class StateDB:
                 self._invalidate_session_cache()
 
     def counts(self) -> dict[str, int]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute("SELECT status,COUNT(*) AS count FROM events GROUP BY status").fetchall()
         result = {"pending": 0, "delivered": 0}
         result.update({row["status"]: int(row["count"]) for row in rows})
         return result
 
     def event_status(self, event_id: str) -> str:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT status FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
         return str(row["status"]) if row else ""
 
+    def event_statuses(self, event_ids: list[str]) -> dict[str, str]:
+        """Batch variant of :meth:`event_status`.
+
+        The local-seat durability ACK used to call ``event_status`` once per
+        event: for a 100-event batch that meant 100 connection opens and 100
+        acquisitions of the global lock while 7 injected pages were writing.
+        That path has a 1.5s client timeout, so on a busy seat every batch timed
+        out and was retried with backoff - which is what turned a slow disk into
+        a 10-30s seat-side reporting delay. One query instead of N.
+        """
+        unique: list[str] = []
+        for raw in event_ids or []:
+            event_id = str(raw or "")
+            if event_id and event_id not in unique:
+                unique.append(event_id)
+        if not unique:
+            return {}
+        placeholders = ",".join("?" for _ in unique)
+        with self.lock, closing(self.connect()) as connection, connection:
+            rows = connection.execute(
+                f"SELECT event_id,status FROM events WHERE event_id IN ({placeholders})",
+                tuple(unique),
+            ).fetchall()
+        return {str(row["event_id"]): str(row["status"]) for row in rows}
+
     def brain_suppressed_message_ids(self, limit: int = WORKBENCH_EVENT_LIMIT) -> set[str]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT payload FROM events ORDER BY updated_at DESC LIMIT ?",
                 (max(1, min(limit, 100000)),),
@@ -908,7 +1084,7 @@ class StateDB:
         return message_ids
 
     def brain_handoff_controls(self) -> dict[tuple[str, str], str]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT account,buyer_id,reason,source FROM session_controls
@@ -921,114 +1097,185 @@ class StateDB:
             if str(row["source"]) == "brain" or tmall_guard_scope(row["account"])
         }
 
-    def workbench_sessions(self) -> list[dict[str, Any]]:
+    def _cached_sessions(self, now_mono: float) -> list[dict[str, Any]] | None:
         with self.lock:
-            now_mono = time.monotonic()
             if (
                 self._session_cache_at
                 and now_mono - self._session_cache_at < WORKBENCH_SESSION_CACHE_SECONDS
             ):
                 return [dict(item) for item in self._session_cache]
-            with self.connect() as connection:
-                rows = connection.execute(
-                    "SELECT payload,status FROM events ORDER BY created_at DESC LIMIT ?",
-                    (WORKBENCH_EVENT_LIMIT,),
-                ).fetchall()
-                controls = connection.execute(
-                    "SELECT account,buyer_id,mode,reason,source,updated_at,expires_at FROM session_controls"
-                ).fetchall()
-                nickname_rows = connection.execute(
-                    "SELECT account,buyer_id,nickname FROM buyer_nicknames"
-                ).fetchall()
-            nickname_map = {
-                (str(row["account"]), str(row["buyer_id"])): str(row["nickname"])
-                for row in nickname_rows
-            }
-            parsed_rows: list[tuple[dict[str, Any], str]] = []
-            suppressed_parent_ids: set[str] = set()
-            for row in rows:
-                try:
-                    event = json.loads(row["payload"])
-                except (TypeError, ValueError):
-                    continue
-                parsed_rows.append((event, str(row["status"])))
-                if event.get("brain_suppressed") or brain_event_suppression_reason(event):
-                    for key in ("original_msg_id", "msg_id"):
-                        value = str(event.get(key) or "").strip()
-                        if value:
-                            suppressed_parent_ids.add(value)
-            now = time.time()
-            control_map = {
-                (str(row["account"]), str(row["buyer_id"])): {
-                    "ai_mode": str(row["mode"]),
-                    "handoff_reason": str(row["reason"]),
-                    "handoff_source": str(row["source"]),
-                    "control_updated_at": float(row["updated_at"]),
-                    "handoff_expires_at": float(row["expires_at"]),
-                }
-                for row in controls
-                if str(row["mode"]) == "human"
-                and (not float(row["expires_at"]) or float(row["expires_at"]) > now)
-            }
-            sessions: dict[tuple[str, str], dict[str, Any]] = {}
-            for event, status in parsed_rows:
-                account = str(event.get("account") or "").strip()
-                buyer_id = str(event.get("buyer_id") or "").strip()
-                content = str(event.get("content") or "")
-                if not account or not buyer_id or not content:
-                    continue
-                if (
-                    str(event.get("role") or "").lower() == "assistant_simulated"
-                    and str(event.get("parent_msg_id") or "") in suppressed_parent_ids
-                ):
-                    continue
-                key = (account, buyer_id)
-                timestamp = event_timestamp(event)
-                session = sessions.setdefault(key, {
-                    "account": account,
-                    "buyer_id": buyer_id,
-                    "buyer_nick": event_nickname(event) or str(event.get("buyer_nick") or buyer_id),
-                    "_buyer_nick_ts": timestamp,
-                    "last_message": "",
-                    "last_ts": 0.0,
-                    "message_count": 0,
-                    "last_status": "",
-                })
-                session["message_count"] += 1
-                event_nick = event_nickname(event) or str(event.get("buyer_nick") or "").strip()
-                current_nick = str(session.get("buyer_nick") or "").strip()
-                event_nick_is_usable = not buyer_nick_is_placeholder(event_nick, buyer_id)
-                current_nick_is_usable = not buyer_nick_is_placeholder(current_nick, buyer_id)
-                if event_nick and (
-                    (event_nick_is_usable and not current_nick_is_usable)
-                    or (
-                        event_nick_is_usable == current_nick_is_usable
-                        and timestamp >= float(session.get("_buyer_nick_ts") or 0.0)
-                    )
-                ):
-                    session["buyer_nick"] = event_nick
-                    session["_buyer_nick_ts"] = timestamp
-                if timestamp >= float(session["last_ts"]):
-                    session["last_ts"] = timestamp
-                    session["last_message"] = content
-                    session["last_status"] = status
-            for key, session in sessions.items():
-                session.pop("_buyer_nick_ts", None)
-                if nickname_map.get(key):
-                    session["buyer_nick"] = nickname_map[key]
-                session.update(control_map.get(key, {
-                    "ai_mode": "ai",
-                    "handoff_reason": "",
-                    "handoff_source": "",
-                    "control_updated_at": 0.0,
-                    "handoff_expires_at": 0.0,
-                }))
-            result = sorted(
-                sessions.values(), key=lambda item: float(item["last_ts"]), reverse=True
-            )[:WORKBENCH_SESSION_LIMIT]
-            self._session_cache = [dict(item) for item in result]
-            self._session_cache_at = time.monotonic()
+        return None
+
+    def workbench_sessions(self) -> list[dict[str, Any]]:
+        """Group recent events into workbench session rows.
+
+        The rebuild scans up to ``WORKBENCH_EVENT_LIMIT`` payloads and JSON-parses
+        each one, so it used to hold ``self.lock`` for the whole scan: while it
+        ran, /api/v1/status, the local-seat durability ACK and event ingestion all
+        waited behind it. On a busy seat (7 injected pages, a big events table,
+        antivirus on the SQLite file) that produced multi-second stalls and the
+        tray reported the bridge as stopped. The scan now runs outside the lock;
+        a dedicated build lock keeps a single rebuild in flight.
+        """
+        cached = self._cached_sessions(time.monotonic())
+        if cached is not None:
+            return cached
+        with self._session_build_lock:
+            cached = self._cached_sessions(time.monotonic())
+            if cached is not None:
+                return cached
+            result = self._build_workbench_sessions()
+            with self.lock:
+                self._session_cache = [dict(item) for item in result]
+                self._session_cache_at = time.monotonic()
             return [dict(item) for item in result]
+
+    def _build_workbench_sessions(self) -> list[dict[str, Any]]:
+        with closing(self.connect()) as connection, connection:
+            rows = connection.execute(
+                "SELECT payload,status,created_at FROM events ORDER BY created_at DESC LIMIT ?",
+                (WORKBENCH_EVENT_LIMIT,),
+            ).fetchall()
+            controls = connection.execute(
+                "SELECT account,buyer_id,mode,reason,source,updated_at,expires_at FROM session_controls"
+            ).fetchall()
+            nickname_rows = connection.execute(
+                "SELECT account,buyer_id,nickname FROM buyer_nicknames"
+            ).fetchall()
+            reply_rows = connection.execute(
+                "SELECT account,buyer_id,reply_ts FROM session_reply_receipts"
+            ).fetchall()
+            confirmed_send_rows = connection.execute(
+                """SELECT json_extract(b.payload,'$.account') AS account,
+                          s.buyer_cid AS buyer_id, MAX(s.created_at) AS reply_ts
+                   FROM brain_commands b JOIN sends s
+                     ON s.request_id=json_extract(b.result,'$.request_id')
+                   WHERE s.status='confirmed'
+                   GROUP BY json_extract(b.payload,'$.account'),s.buyer_cid"""
+            ).fetchall()
+        reply_map = {(str(row["account"]), str(row["buyer_id"])): float(row["reply_ts"]) for row in reply_rows}
+        # Existing installations already have successful send receipts. Their
+        # command identity ties each receipt to the correct shop/seat, including
+        # older AI projections that were saved without a delivery status.
+        for row in confirmed_send_rows:
+            if row["account"]:
+                key = (str(row["account"]), str(row["buyer_id"]))
+                reply_map[key] = max(reply_map.get(key, 0.0), float(row["reply_ts"]))
+        nickname_map = {
+            (str(row["account"]), str(row["buyer_id"])): str(row["nickname"])
+            for row in nickname_rows
+        }
+        parsed_rows: list[tuple[dict[str, Any], str, float]] = []
+        suppressed_parent_ids: set[str] = set()
+        for row in rows:
+            try:
+                event = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            parsed_rows.append((event, str(row["status"]), float(row["created_at"])))
+            if event.get("brain_suppressed") or brain_event_suppression_reason(event):
+                for key in ("original_msg_id", "msg_id"):
+                    value = str(event.get(key) or "").strip()
+                    if value:
+                        suppressed_parent_ids.add(value)
+        now = time.time()
+        control_map = {
+            (str(row["account"]), str(row["buyer_id"])): {
+                "ai_mode": str(row["mode"]),
+                "handoff_reason": str(row["reason"]),
+                "handoff_source": str(row["source"]),
+                "control_updated_at": float(row["updated_at"]),
+                "handoff_expires_at": float(row["expires_at"]),
+            }
+            for row in controls
+            if str(row["mode"]) == "human"
+            and (not float(row["expires_at"]) or float(row["expires_at"]) > now)
+        }
+        sessions: dict[tuple[str, str], dict[str, Any]] = {}
+        waiting_messages: dict[tuple[str, str], list[tuple[float, float, str]]] = {}
+        for event, status, arrived_at in parsed_rows:
+            account = str(event.get("account") or "").strip()
+            buyer_id = str(event.get("buyer_id") or "").strip()
+            content = str(event.get("content") or "")
+            if not account or not buyer_id or not content:
+                continue
+            if (
+                str(event.get("role") or "").lower() == "assistant_simulated"
+                and str(event.get("parent_msg_id") or "") in suppressed_parent_ids
+            ):
+                continue
+            key = (account, buyer_id)
+            timestamp = event_timestamp(event)
+            direction = message_direction(event)
+            if direction:
+                waiting_messages.setdefault(key, []).append((timestamp, arrived_at, direction))
+            session = sessions.setdefault(key, {
+                "account": account,
+                "buyer_id": buyer_id,
+                "buyer_nick": event_nickname(event) or str(event.get("buyer_nick") or buyer_id),
+                "_buyer_nick_ts": timestamp,
+                "last_message": "",
+                "last_ts": 0.0,
+                "_last_message_arrival": 0.0,
+                "message_count": 0,
+                "last_status": "",
+            })
+            session["message_count"] += 1
+            event_nick = event_nickname(event) or str(event.get("buyer_nick") or "").strip()
+            current_nick = str(session.get("buyer_nick") or "").strip()
+            event_nick_is_usable = not buyer_nick_is_placeholder(event_nick, buyer_id)
+            current_nick_is_usable = not buyer_nick_is_placeholder(current_nick, buyer_id)
+            if event_nick and (
+                (event_nick_is_usable and not current_nick_is_usable)
+                or (
+                    event_nick_is_usable == current_nick_is_usable
+                    and timestamp >= float(session.get("_buyer_nick_ts") or 0.0)
+                )
+            ):
+                session["buyer_nick"] = event_nick
+                session["_buyer_nick_ts"] = timestamp
+            if (timestamp, arrived_at) > (float(session["last_ts"]), session["_last_message_arrival"]):
+                session["last_ts"] = timestamp
+                session["last_message"] = content
+                session["last_status"] = status
+                session["_last_message_arrival"] = arrived_at
+        for key, session in sessions.items():
+            session.update(waiting_state(waiting_messages.get(key, []), reply_map.get(key, 0.0)))
+            session.pop("_buyer_nick_ts", None)
+            session.pop("_last_message_arrival", None)
+            if nickname_map.get(key):
+                session["buyer_nick"] = nickname_map[key]
+            session.update(control_map.get(key, {
+                "ai_mode": "ai",
+                "handoff_reason": "",
+                "handoff_source": "",
+                "control_updated_at": 0.0,
+                "handoff_expires_at": 0.0,
+            }))
+        result = sorted(
+            sessions.values(), key=lambda item: (item["ai_mode"] == "human", float(item["last_ts"])), reverse=True
+        )[:WORKBENCH_SESSION_LIMIT]
+        return [dict(item) for item in result]
+
+    def remember_reply_receipt(self, account: str, buyer_id: str, reply_ts: float) -> None:
+        self.remember_reply_receipts([(account, buyer_id, reply_ts)])
+
+    def remember_reply_receipts(self, receipts: list[tuple[str, str, float]]) -> None:
+        now = time.time()
+        valid = [(account, buyer_id, stamp) for account, buyer_id, stamp in receipts
+                 if account and buyer_id and 0 < stamp <= now + 300]
+        if not valid:
+            return
+        with self.lock, closing(self.connect()) as connection, connection:
+            cursor = connection.executemany(
+                """INSERT INTO session_reply_receipts(account,buyer_id,reply_ts) VALUES(?,?,?)
+                ON CONFLICT(account,buyer_id) DO UPDATE SET reply_ts=excluded.reply_ts
+                WHERE session_reply_receipts.reply_ts<excluded.reply_ts""",
+                valid,
+            )
+            connection.execute("DELETE FROM session_reply_receipts WHERE reply_ts<?", (now - 30 * 86400,))
+            if cursor.rowcount:
+                self._invalidate_session_cache()
 
     def set_session_control(
         self,
@@ -1048,7 +1295,7 @@ class StateDB:
             raise ValueError("mode must be ai or human")
         now = time.time()
         expires_at = now + max(60.0, float(ttl_seconds)) if mode == "human" and ttl_seconds else 0.0
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute(
                 """
                 INSERT INTO session_controls(account,buyer_id,mode,reason,source,updated_at,expires_at)
@@ -1073,7 +1320,7 @@ class StateDB:
     def session_control(self, account: str, buyer_id: str) -> dict[str, Any]:
         account = str(account or "").strip()
         buyer_id = str(buyer_id or "").strip()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 """
                 SELECT mode,reason,source,updated_at,expires_at FROM session_controls
@@ -1111,7 +1358,7 @@ class StateDB:
         target = str(buyer_id or "").strip()
         if not target:
             return ""
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT payload FROM events ORDER BY updated_at DESC LIMIT 1000"
             ).fetchall()
@@ -1127,7 +1374,7 @@ class StateDB:
     def workbench_messages(
         self, account: str, buyer_id: str, limit: int = 300
     ) -> list[dict[str, Any]]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT event_id,payload,status FROM events ORDER BY created_at DESC LIMIT ?",
                 (WORKBENCH_MESSAGE_LIMIT,),
@@ -1213,7 +1460,7 @@ class StateDB:
         return messages[-max(1, min(limit, 1000)):]
 
     def get_send(self, request_id: str) -> sqlite3.Row | None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             return connection.execute(
                 "SELECT * FROM sends WHERE request_id=?", (request_id,)
             ).fetchone()
@@ -1225,7 +1472,7 @@ class StateDB:
         buyer_cid: str,
         content: str,
     ) -> tuple[bool, sqlite3.Row | None]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT * FROM sends WHERE request_id=?", (request_id,)
@@ -1253,6 +1500,15 @@ class StateDB:
             )
             return True, None
 
+    def mark_send_unknown(self, request_id: str, payload_hash: str, error: str) -> dict[str, Any]:
+        response = {"ok": False, "request_id": request_id, "status": "unknown",
+                    "confirmed": False, "real_send": False, "error": error[:500],
+                    "error_user": "发送结果未确认，需要核对千牛发送回显；不会盲目重发"}
+        with self.lock, closing(self.connect()) as connection, connection:
+            connection.execute("UPDATE sends SET status='unknown',response=?,updated_at=? WHERE request_id=? AND payload_hash=? AND status='in_flight'",
+                               (json_text(response), time.time(), request_id, payload_hash))
+        return response
+
     def mark_send_submitted(
         self,
         request_id: str,
@@ -1270,7 +1526,7 @@ class StateDB:
         }
         if note:
             response["error_user"] = note
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """
@@ -1302,7 +1558,7 @@ class StateDB:
             "confirmed": False,
             "error": error[:500],
         }
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             cursor = connection.execute(
                 """
                 UPDATE sends SET status='rejected',response=?,updated_at=?
@@ -1322,7 +1578,7 @@ class StateDB:
     def expire_unconfirmed_sends(self, timeout_seconds: float, now: float | None = None) -> int:
         current = time.time() if now is None else now
         cutoff = current - max(1.0, timeout_seconds)
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT request_id,response FROM sends
@@ -1365,7 +1621,7 @@ class StateDB:
         observed_at = event_timestamp(event) or time.time()
         lower_bound = observed_at - max(1.0, max_age_seconds)
         upper_bound = observed_at + 5.0
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
@@ -1431,7 +1687,7 @@ class StateDB:
             "confirmed": True,
             "confirmation_source": "messagesdk_callback",
         }
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             cursor = connection.execute(
                 """
                 UPDATE sends
@@ -1451,7 +1707,7 @@ class StateDB:
             return json.loads(existing["response"])
 
     def send_counts(self) -> dict[str, int]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT status,COUNT(*) AS count FROM sends GROUP BY status"
             ).fetchall()
@@ -1459,7 +1715,7 @@ class StateDB:
 
     def enqueue_brain_event(self, event_id: str) -> bool:
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             event = connection.execute(
                 "SELECT revision FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -1488,7 +1744,7 @@ class StateDB:
 
     def max_event_rowid(self) -> int:
         """Row watermark of the newest locally stored event."""
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT COALESCE(MAX(rowid), 0) FROM events"
             ).fetchone()
@@ -1507,7 +1763,7 @@ class StateDB:
         """
         now = time.time()
         queued = 0
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT e.event_id,e.revision,e.payload
@@ -1525,7 +1781,7 @@ class StateDB:
                 except (TypeError, ValueError):
                     continue
                 if (
-                    payload.get("brain_suppressed")
+                    (payload.get("brain_suppressed") and not tmall_guard_scope(payload.get("account")))
                     or brain_event_suppression_reason(payload)
                     or str(payload.get("capture_mode") or "") == "brain_projection"
                     or str(payload.get("source") or "") == "brain_shadow"
@@ -1546,7 +1802,7 @@ class StateDB:
         if not enrichment:
             return False
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT payload,revision FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -1575,7 +1831,7 @@ class StateDB:
             return True
 
     def event_payload(self, event_id: str) -> dict[str, Any] | None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT payload FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -1595,7 +1851,7 @@ class StateDB:
         encoded = json_text(normalized)
         revision = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT revision FROM events WHERE event_id=?", (event_id,)
             ).fetchone()
@@ -1618,7 +1874,7 @@ class StateDB:
 
     def claim_brain_events(self, min_age_seconds: float, limit: int = 100) -> list[dict[str, Any]]:
         cutoff = time.time() - max(0.0, min_age_seconds)
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
                 """
@@ -1652,7 +1908,7 @@ class StateDB:
         error: str = "",
     ) -> None:
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             for row in rows:
                 event_id = str(row["event_id"])
                 revision = str(row["revision"])
@@ -1676,7 +1932,7 @@ class StateDB:
                     )
 
     def brain_event_counts(self) -> dict[str, Any]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT status,COUNT(*) AS count FROM brain_events GROUP BY status"
             ).fetchall()
@@ -1702,7 +1958,7 @@ class StateDB:
             semantic.pop(key, None)
         payload_hash = hashlib.sha256(json_text(semantic).encode("utf-8")).hexdigest()
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT * FROM brain_commands WHERE command_id=?", (command_id,)
@@ -1733,7 +1989,7 @@ class StateDB:
         return True, dict(row)
 
     def store_brain_command_result(self, command_id: str, result: dict[str, Any]) -> None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute(
                 """
                 UPDATE brain_commands
@@ -1744,7 +2000,7 @@ class StateDB:
             )
 
     def fail_brain_command_report(self, command_id: str, error: str) -> None:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute(
                 """
                 UPDATE brain_commands
@@ -1756,7 +2012,7 @@ class StateDB:
 
     def acknowledge_brain_command(self, command_id: str) -> None:
         now = time.time()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             connection.execute(
                 """
                 UPDATE brain_commands
@@ -1767,7 +2023,7 @@ class StateDB:
             )
 
     def pending_brain_command_results(self, limit: int = 20) -> list[dict[str, Any]]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT command_id,result FROM brain_commands
@@ -1781,7 +2037,7 @@ class StateDB:
         ]
 
     def brain_command_counts(self) -> dict[str, int]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT status,COUNT(*) AS count FROM brain_commands GROUP BY status"
             ).fetchall()
@@ -1790,7 +2046,7 @@ class StateDB:
         return result
 
     def recent_brain_commands(self, limit: int = 20) -> list[dict[str, Any]]:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT command_id,payload,status,result,attempts,last_error,created_at,updated_at
@@ -1838,13 +2094,22 @@ class DeliveryWorker:
             method="POST",
             headers={
                 "Content-Type": "application/json; charset=utf-8",
-                "X-Agent-Token": str(cfg.get("gateway_agent_token") or ""),
-                "X-Agent-Id": str(cfg.get("gateway_agent_id") or ""),
-                "X-Device-Id": str(cfg.get("device_id") or cfg.get("gateway_agent_id") or ""),
+                "X-Agent-Token": http_header_value(cfg.get("gateway_agent_token"), "本地网关令牌"),
+                "X-Agent-Id": http_header_value(cfg.get("gateway_agent_id"), "本地网关 ID"),
+                "X-Device-Id": http_header_value(
+                    cfg.get("device_id") or cfg.get("gateway_agent_id"), "设备标识"
+                ),
             },
         )
         with urllib.request.urlopen(
-            request, timeout=float(cfg.get("delivery_timeout_seconds", 1.5))
+            # This is a *local* durability self-check (default target is the
+            # bundled workbench on 127.0.0.1). A 1.5s budget is below what a
+            # busy seat can honour while 7 injected pages write SQLite, so the
+            # batch timed out, was marked failed and retried with backoff - the
+            # retry backoff, not the message itself, was the 10-30s delay seen
+            # on the brain side. Keep a generous local budget; the loop is
+            # woken by new events and drains immediately.
+            request, timeout=float(cfg.get("delivery_timeout_seconds", 8.0))
         ) as response:
             payload = json.loads(response.read().decode("utf-8", "replace") or "{}")
         if not isinstance(payload, dict) or payload.get("ok") is not True:
@@ -2136,10 +2401,12 @@ class BrainConnector:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
-            "X-Agent-Token": brain_workstation_token(self.app.config),
-            "X-Agent-Id": self.agent_id(),
-            "X-Device-Id": str(
-                self.app.config.get("device_id") or self.agent_id()
+            "X-Agent-Token": http_header_value(
+                brain_workstation_token(self.app.config), "大脑工位令牌"
+            ),
+            "X-Agent-Id": http_header_value(self.agent_id(), "大脑工位 ID"),
+            "X-Device-Id": http_header_value(
+                self.app.config.get("device_id") or self.agent_id(), "设备标识"
             ),
         }
 
@@ -2158,7 +2425,7 @@ class BrainConnector:
             base + path,
             data=data,
             method=method,
-            headers=self._headers(),
+            headers={**self._headers(), "Accept-Encoding": "gzip"},
         )
         started = time.perf_counter()
         request_timeout = timeout or float(
@@ -2166,9 +2433,9 @@ class BrainConnector:
         )
         try:
             with urllib.request.urlopen(request, timeout=request_timeout) as response:
-                raw = response.read().decode("utf-8", "replace")
+                raw = self._read_http_response(response)
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:400]
+            detail = self._read_http_response(error)[:400]
             raise RuntimeError(f"大脑 HTTP {error.code}: {detail or error.reason}") from error
         finally:
             with self.lock:
@@ -2183,6 +2450,18 @@ class BrainConnector:
         if payload.get("ok") is False:
             raise RuntimeError(str(payload.get("error") or "大脑拒绝了请求"))
         return payload
+
+    @staticmethod
+    def _read_http_response(response: Any) -> str:
+        raw = response.read()
+        headers = getattr(response, "headers", None)
+        encoding = str(headers.get("Content-Encoding") or "").strip().lower() if headers else ""
+        if encoding == "gzip":
+            try:
+                raw = gzip.decompress(raw)
+            except (OSError, EOFError, zlib.error) as error:
+                raise RuntimeError("大脑返回了损坏的 gzip 数据") from error
+        return raw.decode("utf-8", "replace")
 
     def register(self) -> dict[str, Any]:
         with self.lock:
@@ -2460,7 +2739,7 @@ class BrainConnector:
         if handoff:
             normalized_reason = str(reason or "大脑判断需要人工介入")[:200]
             if (current["ai_mode"] == "human" and current["handoff_source"] != "brain"
-                    and not (tmall_guard_scope(account) and current["handoff_source"] in {"automatic", "brain_pause"})):
+                    and not tmall_guard_scope(account)):
                 return False
             if (
                 current["ai_mode"] == "human"
@@ -2473,7 +2752,7 @@ class BrainConnector:
             )
             return True
         if (current["ai_mode"] == "human" and (current["handoff_source"] == "brain"
-                or (tmall_guard_scope(account) and current["handoff_source"] == "automatic"))):
+                or (tmall_guard_scope(account) and current["handoff_source"] in {"automatic", "manual"}))):
             self.app.db.set_session_control(account, buyer_id, "ai", "", "brain")
             return True
         return False
@@ -2631,6 +2910,50 @@ class BrainConnector:
             "command_id": command_id, "request_ms": self.last_request_ms,
         })
 
+    def set_ai_takeover(
+        self,
+        account: str,
+        buyer_id: str,
+        enabled: bool,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """开启 / 暂停某个会话的 AI 回复（大脑权威，浮窗与工作台共用）。
+
+        走大脑给本机工位开放的 ``POST /api/session/state``：大脑负责
+        ``ai_takeover_override`` 与 handoff 语义（暂停不等于转人工，除非店铺
+        开了 sticky handoff），本机只把**确认后的**状态落到 ``session_controls``，
+        绝不自己改发送规则。旧实现发的是 ``session_control`` 事件，而大脑侧没有
+        这个 event 类型，所以工作台上的 AI / 人工按钮一直是"点了没反应"。
+        """
+        if not account or not buyer_id:
+            raise ValueError("account and buyer_id required")
+        if not isinstance(enabled, bool):
+            raise ValueError("ai_takeover_enabled must be a boolean")
+        payload = self.request("POST", "/api/session/state", {
+            "account": account,
+            "buyer_id": buyer_id,
+            "ai_takeover_enabled": bool(enabled),
+            "reason": reason or ("本机浮窗暂停 AI 回复" if not enabled else "本机浮窗恢复 AI 回复"),
+        })
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            error = str((payload or {}).get("error") or "大脑未确认 AI 开关状态")
+            raise RuntimeError(error)
+        confirmed = bool(payload.get("ai_takeover_enabled", enabled))
+        mode = "ai" if confirmed else "human"
+        source = "brain" if confirmed else "brain_pause"
+        control = self.app.db.set_session_control(account, buyer_id, mode, reason, source)
+        control["ai_takeover_enabled"] = confirmed
+        control["ai_takeover_state"] = str(payload.get("ai_takeover_state") or ("active" if confirmed else "paused"))
+        control["shop_ai_takeover_enabled"] = bool(payload.get("shop_ai_takeover_enabled", True))
+        control["sticky_handoff"] = bool(payload.get("sticky_handoff", False))
+        return control
+
+    def set_tmall_session_mode(self, account: str, buyer_id: str, mode: str, reason: str = "") -> dict[str, Any]:
+        """工作台的 AI / 人工按钮（兼容旧调用方）。"""
+        if mode not in {"human", "ai"} or not account or not buyer_id:
+            raise ValueError("account, buyer_id and human/ai mode required")
+        return self.set_ai_takeover(account, buyer_id, mode == "ai", reason)
+
     def execute_command(self, command: dict[str, Any]) -> dict[str, Any]:
         command_id = str(command.get("id") or command.get("command_id") or "").strip()
         command_type = str(command.get("type") or "send_text").strip().lower()
@@ -2676,7 +2999,8 @@ class BrainConnector:
                     self.app.db.set_session_control(account, buyer_id, "human", reason, "brain_pause")
             return {**base_result, "ok": True, "status": "applied", "changed": changed, "real_send": False}
         if command_type == "send_text":
-            if not self.app.config.get("brain_ai_reply_enabled", True):
+            central_tmall = tmall_guard_scope(account)
+            if not central_tmall and not self.app.config.get("brain_ai_reply_enabled", True):
                 return {
                     **base_result,
                     "ok": False,
@@ -2685,13 +3009,13 @@ class BrainConnector:
                     "error_user": "本机已暂停 AI 自动回复",
                     "real_send": False,
                 }
-            safety = outbound_safety_result(content)
+            safety = {} if central_tmall else outbound_safety_result(content)
             if safety:
                 return {**base_result, **safety}
             control = self.app.db.session_control(account, buyer_id)
             handoff_notice = (tmall_guard_scope(account) and meta.get("handoff_notice") is True
                               and control["handoff_source"] in {"brain", "automatic"})
-            if control["ai_mode"] == "human" and not handoff_notice:
+            if not central_tmall and control["ai_mode"] == "human" and not handoff_notice:
                 return {
                     **base_result,
                     "ok": False,
@@ -2702,22 +3026,15 @@ class BrainConnector:
                     "real_send": False,
                     "handoff_reason": control["handoff_reason"],
                 }
-            guard_tmall_auto = tmall_guard_scope(account) and meta.get("manual_direct") is not True
-            if guard_tmall_auto:
-                latest = self.app.db.latest_tmall_buyer_event(account, buyer_id, meta.get("takeover_parent_msg_id", ""), meta.get("takeover_parent_msg_ids", ()))
-                reason = tmall_command_blocked(meta, latest)
-                if reason:
-                    return {**base_result, "ok": False, "status": "blocked", "error": reason,
-                            "via": "tmall_parent_guard", "real_send": False,
-                            "parent_guard": tmall_parent_guard_evidence(meta, latest)}
             request_id = "brain-command-" + hashlib.sha256(
                 command_id.encode("utf-8", "surrogatepass")
             ).hexdigest()
             response = self.app.send_text({
                 "request_id": request_id,
+                "account": account,
                 "buyer_cid": buyer_id,
                 "content": content,
-                **({"tmall_account": account, "tmall_command_meta": meta} if guard_tmall_auto else {}),
+                **({"tmall_account": account, "tmall_command_meta": meta} if central_tmall else {}),
             }, brain_authorized=True)
             status = str(response.get("status") or "unknown")
             tmall_receipt = tmall_guard_scope(account)
@@ -2985,8 +3302,19 @@ class BrainConnector:
         if not allowed_rows:
             return scope_blocked | suppressed_ids
         events = []
+        primary_events = []
+        uploaded_rows = []
+        primary_ids = {str(row['event_id']) for row in allowed_rows}
+        history_ids: set[str] = set()
         for row in allowed_rows:
             event = self.compatible_context_event(row["payload"])
+            native_context = getattr(self.app, 'native_context', None)
+            supplemental = []
+            if native_context is not None and tmall_guard_scope(event.get('account')):
+                event, supplemental = native_context.prepare(event)
+            if brain_event_suppression_reason(event):
+                suppressed_ids.add(str(row['event_id']))
+                continue
             account = str(event.get("account") or "").strip()
             event["nickname"] = event_nickname(event) or self.app.db.cached_nickname(
                 account, str(event.get("buyer_id") or "")
@@ -3003,30 +3331,54 @@ class BrainConnector:
                 "agent_id": self.agent_id(),
                 "captured_at": float(captured_at or time.time()),
             })
+            for item in supplemental:
+                snapshot = normalize_event(item)
+                if brain_event_suppression_reason(snapshot):
+                    continue
+                if snapshot['event_id'] in primary_ids or snapshot['event_id'] in history_ids:
+                    continue
+                snapshot.update(shop_id=event['shop_id'], agent_id=event['agent_id'], captured_at=event['captured_at'])
+                history_ids.add(snapshot['event_id'])
+                events.append(snapshot)
             events.append(event)
-        payload: dict[str, Any] | None = None
-        transport = "http"
-        channel = self.event_channel()
-        if channel is not None and channel.available:
-            try:
-                payload = channel.send_events(
-                    events,
-                    timeout=float(
-                        self.app.config.get("brain_ws_ack_timeout_seconds", 10.0)
-                    ),
-                )
-                transport = "ws"
-            except BrainWsError as error:
-                # The link dropped between the availability check and the send;
-                # fall back to HTTP for this batch instead of stalling the queue.
-                payload = None
-                with self.lock:
-                    self.last_error = f"WS 上报失败，回退 HTTP：{error}"[:500]
-        if payload is None:
-            payload = self.request("POST", "/api/bridge/v1/events", {
-                "agent_id": self.agent_id(),
-                "events": events,
-            })
+            primary_events.append(event)
+            uploaded_rows.append(row)
+        allowed_rows = uploaded_rows
+        if not events:
+            return scope_blocked | suppressed_ids
+        def transmit(batch: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+            payload = None
+            transport = 'http'
+            channel = self.event_channel()
+            if channel is not None and channel.available:
+                try:
+                    payload = channel.send_events(batch, timeout=float(self.app.config.get('brain_ws_ack_timeout_seconds',10.0)))
+                    transport = 'ws'
+                except BrainWsError as error:
+                    with self.lock:
+                        self.last_error = f'WS 上报失败，回退 HTTP：{error}'[:500]
+            if payload is None:
+                payload = self.request('POST','/api/bridge/v1/events',{'agent_id':self.agent_id(),'events':batch})
+            return payload,transport
+
+        # Supplemental context can exceed the original claim's batch size.
+        # Await each chunk before transmitting the next one so a transfer's
+        # history is durably acknowledged before its parent reaches the brain.
+        responses = []
+        for start in range(0,len(events),100):
+            response,mode = transmit(events[start:start+100])
+            responses.append((response,mode))
+            if start+100 < len(events) and isinstance(response.get('event_acks'),list):
+                durable = {str(ack.get('event_id')) for ack in response['event_acks']
+                           if isinstance(ack,dict) and ack.get('committed') is True}
+                if any(item['event_id'] not in durable for item in events[start:start+100]):
+                    raise RuntimeError('转接历史尚未获得持久化确认，保留队列稍后重试')
+        payload,transport = responses[0]
+        if len(responses)>1:
+            payload = {'event_acks':[ack for response,_mode in responses for ack in response.get('event_acks',[])]}
+            for key in ('accepted','acknowledged','ingested_local','context_updated','shadow_queued','shadow_stale_skipped','scope_rejected','shop_rejected'):
+                payload[key] = sum(int(response.get(key) or 0) for response,_mode in responses)
+            transport = 'ws' if all(mode=='ws' for _response,mode in responses) else 'http'
         acknowledgements = list(payload.get("event_acks") or [])
         if transport == "http":
             summary = {
@@ -3060,9 +3412,33 @@ class BrainConnector:
                 "transport": transport,
                 **summary,
                 "event_acks": acknowledgements,
+                "business_rejected": sum(
+                    1 for item in acknowledgements
+                    if isinstance(item, dict) and item.get("status") == "rejected"
+                ),
             }
-        for event in events:
+        ack_by_id = {
+            str(item.get("event_id") or ""): item
+            for item in acknowledgements if isinstance(item, dict)
+        }
+        for row, event in zip(allowed_rows, primary_events):
+            ack = ack_by_id.get(str(row["event_id"])) or {}
+            ack_status = str(ack.get("status") or "")
+            if ack_status in {"rejected", "error", "ignored", "context_traced"}:
+                if ack_status == "rejected":
+                    error = ack.get("error") if isinstance(ack.get("error"), dict) else {}
+                    self.record("event_rejected", "error", "大脑拒绝消息，未进入回复流程", {
+                        "event_id": str(row["event_id"]),
+                        "error_code": str(error.get("code") or ""),
+                        "error": str(error.get("message") or "")[:300],
+                    })
+                # A terminal upload ACK is not acceptance into the reply queue.
+                # Polling its nonexistent conversation only creates repeated 404s.
+                continue
             if str(event.get("role") or "").strip().lower() not in {"user", "buyer", "customer"}:
+                continue
+            if event.get("capture_mode") == "history_snapshot" and tmall_guard_scope(event.get("account")):
+                # Transfer history only supplies context; it has no reply job.
                 continue
             self.watch_draft(
                 str(event.get("account") or ""),
@@ -3204,7 +3580,7 @@ class BrainConnector:
                     with self.lock:
                         self.last_event_upload_at = time.time()
                         self.last_error = ""
-                    self.record("events", "ok", f"大脑确认 {len(committed)} 条消息", {
+                    self.record("events", "ok", f"上报队列已处理 {len(committed)} 条消息", {
                         "event_ids": sorted(committed), "request_ms": self.last_request_ms,
                     })
                 backoff = 0.5
@@ -3326,6 +3702,10 @@ class BrowserServer:
             "passive_dom_interval_ms", "passive_cache_interval_ms",
             "recovery_scan_requests", "recovery_scan_runs",
             "recovery_scan_last_reason",
+            "history_poll_enabled", "history_poll_calls", "history_poll_errors",
+            "history_probe_enabled", "history_probe_runs",
+            "history_probe_last_ccode", "history_probe_last_at_ms",
+            "history_probe_imsdk", "history_probe_results",
         )
         snapshot = {key: diagnostics.get(key) for key in allowed if key in diagnostics}
         with self.connection_lock:
@@ -3349,11 +3729,11 @@ class BrowserServer:
         with send_lock:
             connection.send(json.dumps(payload, ensure_ascii=False))
 
-    def execute(self, expression: str, timeout: float = 3.0) -> Any:
+    def execute(self, expression: str, timeout: float = 3.0, *, result_filter: Any = None) -> Any:
         request_id = uuid.uuid4().hex
-        response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         with self.connection_lock:
             connections = list(self.connections)
+            response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(1, len(connections)))
             self.pending[request_id] = response_queue
         if not connections:
             with self.connection_lock:
@@ -3373,16 +3753,34 @@ class BrowserServer:
                     continue
             if not sent:
                 raise RuntimeError("Qianniu browser command could not be sent")
-            try:
-                response = response_queue.get(timeout=timeout)
-            except queue.Empty as error:
-                raise RuntimeError("Qianniu browser command timed out") from error
-            if not response.get("ok"):
-                raise RuntimeError(str(response.get("error") or "Qianniu browser command failed"))
-            return response.get("value")
+            deadline = time.monotonic() + timeout
+            for _ in range(sent):
+                try:
+                    response = response_queue.get(timeout=max(0.0, deadline - time.monotonic()))
+                except queue.Empty as error:
+                    if result_filter is not None:
+                        return None
+                    raise RuntimeError("Qianniu browser command timed out") from error
+                if not response.get("ok"):
+                    if result_filter is not None:
+                        continue
+                    raise RuntimeError(str(response.get("error") or "Qianniu browser command failed"))
+                value = response.get("value")
+                if result_filter is None or result_filter(value):
+                    return value
+            return None
         finally:
             with self.connection_lock:
                 self.pending.pop(request_id, None)
+
+    def lookup_image_url(self, ccode: str, msg_id: str, timeout: float = 1.5) -> str:
+        # dx-h5 commonly answers first with an empty result. Wait for a page
+        # with the matching cache entry, using one shared timeout across pages.
+        expression = ("window.__qn_standalone_image_url && window.__qn_standalone_image_url("
+                      + json.dumps(ccode) + "," + json.dumps(msg_id) + ")")
+        value = self.execute(expression, timeout=timeout, result_filter=lambda value:
+                             isinstance(value, str) and value.startswith(("http://", "https://")))
+        return value if isinstance(value, str) else ""
 
     def execute_all(self, expression: str, timeout: float = 3.0) -> list[Any]:
         """Run an expression on every connected page and return the successes.
@@ -3734,6 +4132,7 @@ class ContextEnricher:
         self.last_buyer_encrypt_id = ""
         self.order_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self.shop_cache: dict[str, dict[str, Any]] = {}
+        self.context_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
     def start(self) -> None:
         self.thread.start()
@@ -3768,7 +4167,7 @@ class ContextEnricher:
         if not self.app.config.get("context_enrich_enabled", True):
             return
         role = str(event.get("role") or "user").strip().lower()
-        if role not in {"user", "buyer", "customer"}:
+        if role not in {"user", "buyer", "customer"} and not tmall_guard_scope(event.get("account")):
             return
         encrypt_id = self.buyer_encrypt_id(event)
         if not encrypt_id:
@@ -3994,7 +4393,16 @@ class ContextEnricher:
 
     def fetch(self, encrypt_id: str, biz_order_id: str = "", account: str = "") -> dict[str, Any]:
         account = str(account or "").strip()
-        cache_key = (account, encrypt_id)
+        cache_key = (account, encrypt_id + ("|" + biz_order_id if tmall_guard_scope(account) and biz_order_id else ""))
+        if tmall_guard_scope(account):
+            # Transfer/history bursts share one buyer lookup, while every raw
+            # platform event is still persisted and uploaded independently.
+            with self.lock:
+                cached = self.context_cache.get(cache_key)
+                if cached and time.monotonic() < cached["expires"]:
+                    result = deepcopy(cached["value"])
+                    result["context_enrich"]["snapshot_cache"] = True
+                    return result
         attempts: list[dict[str, Any]] = []
         found: dict[str, Any] | None = None
         # 店铺信息在会话期间基本不变：命中缓存就不再重复调用 MTop，只做一次。
@@ -4005,11 +4413,32 @@ class ContextEnricher:
         history_orders: list[dict[str, Any]] = []
         for attempt in range(1 + self.EMPTY_ORDER_RETRIES):
             # 店铺/历史订单与订单重试无关，只在第一次尝试里并行取。
-            snapshot = self._fetch_once(
-                encrypt_id, biz_order_id,
-                include_shop and attempt == 0,
-                include_history and attempt == 0,
-            )
+            try:
+                snapshot = self._fetch_once(
+                    encrypt_id, biz_order_id,
+                    include_shop and attempt == 0,
+                    include_history and attempt == 0,
+                )
+            except Exception as error:
+                if not tmall_guard_scope(account):
+                    raise
+                # Publish lookup failure to the brain too; a local diagnostic
+                # alone would leave it unable to distinguish absence from error.
+                snapshot = {
+                    "trace_id": uuid.uuid4().hex, "items": [], "orders": [],
+                    "shop": {}, "history_orders": [], "items_ok": False,
+                    "orders_ok": False, "errors": [str(error)[:500]],
+                    "raw_context": {}, "ret_code": "", "raw_order_count": 0,
+                }
+            if tmall_guard_scope(account):
+                # Invocation success does not prove MTop business success or
+                # an understood empty-order response. Preserve evidence below.
+                raw_orders = snapshot.get("raw_context", {}).get("orders")
+                code = self._mtop_ret_code(raw_orders)
+                lists = self.collect_lists(raw_orders, {"orders", "orderList", "list"})
+                if (code and not all(part.strip().startswith("SUCCESS") for part in code.split(","))) or not lists:
+                    snapshot["orders_ok"] = False
+                    snapshot["errors"].append(code or "unrecognized_order_response")
             attempts.append(snapshot)
             if attempt == 0:
                 shop = dict(snapshot.get("shop") or {}) or dict(cached_shop or {})
@@ -4083,10 +4512,22 @@ class ContextEnricher:
             "order_count": len(orders),
             "total_order_count": len(orders),
         }
+        if tmall_guard_scope(account):
+            order_info["raw_context"] = {
+                **dict(last_attempt.get("raw_context") or {}),
+                "account": account,
+                "buyer_encrypt_id": encrypt_id,
+                "requested_order_id": biz_order_id,
+                "provider": "qianniu_standalone_mtop",
+                "trace_id": trace_id,
+                "lookup_at_ms": int(time.time() * 1000),
+            }
+            # An empty API result is not evidence that this buyer has no order.
+            order_info["empty_response_only"] = status == "confirmed_empty"
         if status != "error_unknown":
             order_info.update({
                 "context_received": True,
-                "no_orders": status == "confirmed_empty",
+                "no_orders": status == "confirmed_empty" and not tmall_guard_scope(account),
                 "ambiguous": len(orders) > 1,
                 "order_status": status,
                 "orders_from_cache": from_cache,
@@ -4154,6 +4595,14 @@ class ContextEnricher:
             enrichment["history_order_count"] = len(history_orders)
             order_info.setdefault("history_order_count", len(history_orders))
             enrichment["order_context"].setdefault("history_order_count", len(history_orders))
+        if tmall_guard_scope(account):
+            with self.lock:
+                self.context_cache[cache_key] = {
+                    "expires": time.monotonic() + (2.0 if status == "error_unknown" else 10.0),
+                    "value": deepcopy(enrichment),
+                }
+                while len(self.context_cache) > 512:
+                    self.context_cache.pop(next(iter(self.context_cache)))
         return enrichment
 
     def _fetch_once(
@@ -4240,6 +4689,11 @@ class ContextEnricher:
             "errors": errors,
             "raw_order_count": raw_order_count,
             "ret_code": ret_code,
+            "raw_context": {
+                "items": items_result.get("value"),
+                "orders": orders_result.get("value"),
+                "history_orders": history_result.get("value") if include_history else None,
+            },
         }
 
     @classmethod
@@ -4411,6 +4865,7 @@ class CdpInjector:
         self.last_error = ""
         self.launched_pid = 0
         self.host_pid = 0
+        self.last_reap_at = 0.0
 
     def start(self) -> None:
         self.thread.start()
@@ -4459,9 +4914,45 @@ class CdpInjector:
                 continue
         return ""
 
+    def reap_orphan_shells(self) -> list[int]:
+        """Kill `AliWorkbench.exe /run:shell` helpers whose client is gone.
+
+        Qianniu spawns those shells itself, so they normally sit under a live
+        AliWorkbench.exe and must be left alone. When the client dies abruptly
+        (crash, forced upgrade, Task Manager, our own restart) the shell keeps
+        running, re-opens a login window and looks to the user like a second
+        Qianniu that the assistant cannot drive. Only shells whose parent is
+        gone are terminated, and at most once every 30 seconds.
+        """
+        if os.name != "nt":
+            return []
+        now = time.monotonic()
+        if now - self.last_reap_at < 30.0:
+            return []
+        self.last_reap_at = now
+        expected = str(self.app.config.resolve("qianniu_exe")).lower()
+        reaped: list[int] = []
+        for process in psutil.process_iter(["pid", "ppid", "exe", "cmdline"]):
+            try:
+                if str(process.info.get("exe") or "").lower() != expected:
+                    continue
+                if "/run:shell" not in " ".join(process.info.get("cmdline") or []):
+                    continue
+                parent = int(process.info.get("ppid") or 0)
+                if parent and psutil.pid_exists(parent):
+                    continue
+                process.terminate()
+                reaped.append(int(process.pid))
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if reaped:
+            LOG.warning("terminated orphan Qianniu shell(s): %s", reaped)
+        return reaped
+
     def maybe_launch(self) -> None:
         if not self.app.config.get("auto_launch_qianniu", False):
             return
+        self.reap_orphan_shells()
         if self.host_processes():
             return
         foreign = self.foreign_qianniu_running()
@@ -4768,11 +5259,24 @@ class AppBizSendAdapter:
                 clean_event["account"] = self.app.db.account_for_buyer(
                     str(clean_event.get("buyer_id") or "")
                 )
+            # Capture durably first. Native media/history reads run on upload
+            # workers so a missing browser cache cannot block this callback.
             try:
                 self.app.ingest_event(clean_event)
                 self.last_error = ""
             except Exception as error:
                 self.last_error = f"AppBiz message ingest failed: {error}"[:500]
+        elif event == "appbiz_message_dump":
+            # 诊断：图片消息原生结构 dump，落盘供离线分析图片 URL 字段。
+            try:
+                target = ROOT / "state" / "appbiz-image-struct-dump.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                self.last_error = ""
+            except OSError as error:
+                self.last_error = f"could not persist image struct dump: {error}"[:500]
+        elif event == "appbiz_message_dump_error":
+            self.last_error = str(payload.get("error") or event)[:500]
         elif event == "appbiz_receive_error":
             self.last_error = str(payload.get("error") or event)[:500]
         elif event == "appbiz_send_observed":
@@ -4805,6 +5309,19 @@ class AppBizSendAdapter:
             self.last_error = ""
 
     def attach(self, process: psutil.Process) -> None:
+        module_path = Path(process.exe()).parent / "AppBiz.dll"
+        if not module_path.is_file():
+            for mapping in process.memory_maps(grouped=True):
+                if Path(mapping.path).name.lower() == "appbiz.dll":
+                    module_path = Path(mapping.path)
+                    break
+        if module_path.is_file():
+            image_size = size_of_image(module_path)
+            if image_size not in agent_profiles(ROOT):
+                raise RuntimeError(
+                    f"千牛版本 {module_path.parent.name} 尚未适配 "
+                    f"(AppBiz 0x{image_size:x})，请更新客服助手"
+                )
         helper_path = self.app.config.resolve("appbiz_adapter_path")
         if not helper_path.is_file():
             raise FileNotFoundError(f"AppBiz adapter not found: {helper_path}")
@@ -4833,7 +5350,11 @@ class AppBizSendAdapter:
                 continue
         source = template.replace(
             "__APPBIZ_ADAPTER_PATH__", json.dumps(str(helper_path))
-        ).replace("__SELECTED_SERVICE__", json.dumps(selected_service_hint))
+        ).replace("__SELECTED_SERVICE__", json.dumps(selected_service_hint)).replace(
+            "__APPBIZ_DUMP_IMAGE_STRUCT__",
+            json.dumps(bool(self.app.config.get("appbiz_dump_image_struct", False))),
+        )
+        source = (ROOT / 'native_message_store.js').read_text(encoding='utf-8') + '\n' + source
         session = frida.get_local_device().attach(process.pid)
         script = None
         try:
@@ -4901,25 +5422,33 @@ class AppBizSendAdapter:
             and self.app.config.get("appbiz_send_abi_validated", False)
         )
 
+    def read_messages(self, account: str, buyer_id: str, before_ms: int, after_ms: int,
+                      message_id: str = '', count: int = 100) -> dict[str, Any]:
+        script = self.script
+        if script is None:
+            return {'ok':False, 'error':'native_client_unavailable', 'rows':[]}
+        return script.exports_sync.readmessages(account, buyer_id, before_ms, after_ms, message_id, count)
+
     def send_text(self, ccode: str, content: str, pcsource: str, *, tmall_account: str = "") -> dict[str, Any]:
         if not self.app.config.get("appbiz_send_abi_validated", False):
-            raise RuntimeError("AppBiz send ABI has not passed a tagged acceptance test")
+            raise ConfirmedSendRejection("AppBiz send ABI has not passed a tagged acceptance test", retryable=False)
         if tmall_guard_scope(tmall_account) and self.script is not None and not self.route_ready:
             exports = getattr(self.script, "exports_sync", None)
             if callable(getattr(exports, "status", None)):
                 self.refresh_status()
             if not self.route_ready and callable(getattr(exports, "preparesend", None)):
-                exports.preparesend(ccode)
+                exports.preparesend(ccode, True)
                 self.refresh_status()
         if not self.route_ready or self.script is None:
-            raise RuntimeError(self.last_error or "AppBiz send service is not selected")
+            raise ConfirmedSendRejection(self.last_error or "AppBiz send service is not selected")
         token = ((self.pid & 0xFFFFFFFF) << 32) | (self.next_send_token & 0xFFFFFFFF)
         self.next_send_token = (self.next_send_token + 1) & 0xFFFFFFFF
         if self.next_send_token == 0:
             self.next_send_token = 1
-        result = int(self.script.exports_sync.sendtext(ccode, content, pcsource, str(token)))
+        send_args = (ccode, content, pcsource, str(token))
+        result = int(self.script.exports_sync.sendtext(*send_args, True) if tmall_guard_scope(tmall_account) else self.script.exports_sync.sendtext(*send_args))
         if result != 0:
-            raise RuntimeError(f"AppBiz adapter rejected send with code {result}")
+            raise ConfirmedSendRejection(f"AppBiz adapter rejected send with code {result}")
         # Once the native call accepted the message, a telemetry/read failure
         # must not re-label it as unsent or make another send safe.
         if tmall_guard_scope(tmall_account):
@@ -4974,11 +5503,11 @@ class AppBizSendAdapter:
                 pass
         if callback_received and result_code not in {0, -2147483648}:
             if result_code == 5:
-                raise RuntimeError(
+                raise ConfirmedSendRejection(
                     "Qianniu MessageSDK rejected send: conversation context is not ready "
                     "(result code 5, CheckConvExist_error)"
                 )
-            raise RuntimeError(f"Qianniu MessageSDK rejected send with result code {result_code}")
+            raise ConfirmedSendRejection(f"Qianniu MessageSDK rejected send with result code {result_code}")
         return {
             "native_submitted": True,
             "callback_received": callback_received,
@@ -5263,6 +5792,28 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 "recent_commands": self.app.db.recent_brain_commands(),
             })
             return
+        if path == "/api/v1/support-diagnostics":
+            state = self.app.status(include_brain=False)
+            try:
+                build = json.loads((ROOT / "build-info.json").read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                build = {}
+            sessions = self.app.db.workbench_sessions()
+            self.send_json(200, {
+                "ok": True, "version": VERSION, "build_hash": BUILD_HASH,
+                "build": {key: build.get(key) for key in ("version", "variant", "commit", "exe_sha256")},
+                "captured_at": time.time(),
+                "nicknames": state["nicknames"],
+                "missing_nicknames": sum(buyer_nick_is_placeholder(row.get("buyer_nick"), row["buyer_id"]) for row in sessions),
+                "sessions": len(sessions),
+                "client_support": state["client_support"],
+                "native": state["appbiz_send"],
+                "browser": {"connected": self.app.browser.connected,
+                    "capabilities": [{key: page.get(key) for key in (
+                        "version", "imsdk_hooked", "has_db", "has_msgDataMap", "event_callbacks")}
+                        for page in self.app.browser.diagnostics_by_connection()]},
+            })
+            return
         self.send_json(404, {"ok": False, "error": "not_found"})
 
     def do_POST(self) -> None:
@@ -5276,19 +5827,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 events = body.get("events")
                 if not isinstance(events, list) or not events:
                     raise ValueError("events must be a non-empty list")
-                acknowledgements = []
-                for event in events[:100]:
-                    if not isinstance(event, dict):
-                        continue
-                    event_id = canonical_event_id(event)
-                    status = self.app.db.event_status(event_id)
-                    acknowledgements.append({
-                        "event_id": event_id,
-                        "committed": status in {"sending", "delivered"},
-                    })
-                if not acknowledgements or not all(row["committed"] for row in acknowledgements):
-                    raise RuntimeError("event batch is not durable in the standalone database")
-                self.send_json(200, {"ok": True, "event_acks": acknowledgements})
+                self.send_json(200, local_seat_ack_payload(self.app.db, events))
             except (ValueError, RuntimeError) as error:
                 self.send_json(400, {"ok": False, "error": str(error)})
             return
@@ -5325,12 +5864,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             try:
                 body = self.read_json()
                 mode = str(body.get("mode") or "").strip().lower()
-                control = self.app.db.set_session_control(
-                    str(body.get("account") or ""),
-                    str(body.get("buyer_id") or ""),
-                    mode,
-                    str(body.get("reason") or ("人工接管" if mode == "human" else "")),
-                    "manual",
+                account = str(body.get("account") or "")
+                buyer_id = str(body.get("buyer_id") or "")
+                reason = str(body.get("reason") or ("人工接管" if mode == "human" else ""))
+                # 大脑是唯一权威：只要配置了大脑就走 /api/session/state，让大脑
+                # 真正把 auto_send 拦住。旧逻辑只对「联想官方旗舰店」走大脑、其它店
+                # 静默写本地——那些店点了开关 AI 照样回，属于同类"点了没反应"。
+                control = (
+                    self.app.brain.set_tmall_session_mode(account, buyer_id, mode, reason)
+                    if self.app.brain.configured()
+                    else self.app.db.set_session_control(account, buyer_id, mode, reason, "manual")
                 )
                 self.app.brain.record(
                     "handoff",
@@ -5341,6 +5884,8 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 self.send_json(200, {"ok": True, "control": control})
             except ValueError as error:
                 self.send_json(400, {"ok": False, "error": str(error)})
+            except (OSError, RuntimeError) as error:
+                self.send_json(502, {"ok": False, "error": str(error)})
             return
         if path == "/api/v1/reply":
             if not self.workbench_authorized():
@@ -5369,7 +5914,6 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 account = str(body.get("account") or "").strip()
                 buyer_id = str(body.get("buyer_id") or "").strip()
-                requested_nick = str(body.get("buyer_nick") or "").strip()
                 if not account or not buyer_id:
                     raise ValueError("account and buyer_id are required")
                 session = next(
@@ -5382,19 +5926,26 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 )
                 if session is None:
                     raise ValueError("conversation is not present in the local workbench")
-                buyer_nick = str(session.get("buyer_nick") or requested_nick or "").strip()
+                buyer_nick = valid_nickname(session.get("buyer_nick"), buyer_id)
                 if not buyer_nick:
-                    raise ValueError("conversation has no buyer nickname")
-                focused = self.app.focus_qianniu()
-                if self.app.browser.connected:
+                    raise ValueError("该会话暂未获取到有效买家昵称，请等待昵称同步后重试")
+                try:
+                    # dx-h5 can be connected without any native openChat API.
+                    # WWCmd targets the seller account explicitly and works
+                    # even when the message-center web page is not loaded.
+                    response = self.app.open_conversation_protocol(account, buyer_nick, buyer_id)
+                except FileNotFoundError as error:
+                    if not self.app.browser.connected:
+                        raise RuntimeError("未找到千牛会话跳转入口，请确认千牛已启动") from error
                     security_uid = ContextEnricher.buyer_encrypt_id({"buyer_id": buyer_id})
                     response = self.app.browser.open_conversation(
                         buyer_nick,
                         buyer_id,
                         security_uid=security_uid,
                     )
-                else:
-                    response = self.app.open_conversation_protocol(account, buyer_nick)
+                # WWCmd restores the conversation itself. Activating the old
+                # chat first adds a redundant render on software-rendered seats.
+                focused = self.app.focus_qianniu()
                 response["focused"] = focused
                 response.update(account=account, buyer_id=buyer_id)
                 self.send_json(200, response)
@@ -5486,10 +6037,12 @@ class StandaloneBridge:
         self.delivery = DeliveryWorker(self)
         self.brain = BrainConnector(self)
         self.browser = BrowserServer(self)
+        self.nicknames = NicknameResolver(self)
         self.context = ContextEnricher(self)
         self.cdp = CdpInjector(self)
         self.updater = UpdaterGuard(self)
         self.appbiz = AppBizSendAdapter(self)
+        self.native_context = NativeContext(self)
         self.native = NativeAdapter(self)
         # Qianniu upgrades itself in place; this watch keeps a re-injected
         # webui.zip and surfaces builds the agent has no profile for.
@@ -5506,8 +6059,19 @@ class StandaloneBridge:
         self.api_error = ""
         self.workbench_error = ""
         self.native_frames = 0
+        self._conversation_open_lock = threading.Lock()
+        self._conversation_watch: ConversationSelectionWatch | None = None
+        self._conversation_watch_pid = 0
 
-    def open_conversation_protocol(self, account: str, buyer_nick: str) -> dict[str, Any]:
+    def open_conversation_protocol(
+        self, account: str, buyer_nick: str, expected_ccode: str = ""
+    ) -> dict[str, Any]:
+        with self._conversation_open_lock:
+            return self._open_conversation_protocol(account, buyer_nick, expected_ccode)
+
+    def _open_conversation_protocol(
+        self, account: str, buyer_nick: str, expected_ccode: str
+    ) -> dict[str, Any]:
         account = str(account or "").strip()
         buyer_nick = str(buyer_nick or "").strip()
         if not account or not buyer_nick:
@@ -5515,29 +6079,71 @@ class StandaloneBridge:
         if buyer_nick_is_placeholder(buyer_nick):
             raise RuntimeError("conversation has no usable buyer nickname")
         runtime_root = self.config.resolve("qianniu_exe").parent
-        candidates = sorted(runtime_root.rglob("WWCmd.exe"), reverse=True)
-        if not candidates:
-            raise RuntimeError("Qianniu WWCmd.exe is unavailable")
+        # A staged client upgrade can sit beside the active build. Use the
+        # launcher's selected version instead of choosing the largest name.
+        version = launcher_version(runtime_root)
+        candidates = [runtime_root / version / "WWCmd.exe"] if version else []
+        candidates.append(runtime_root / "WWCmd.exe")
+        command = next((path for path in candidates if path.is_file()), None)
+        if command is None:
+            available = list(runtime_root.glob("*/WWCmd.exe"))
+            if len(available) == 1:
+                command = available[0]
+        if command is None:
+            raise FileNotFoundError("Qianniu WWCmd.exe is unavailable for the active client")
+        paths = list(self.nicknames.log.paths)
+        process_id = int(self.appbiz.pid or 0)
+        if (self._conversation_watch is None or self._conversation_watch_pid != process_id
+                or self._conversation_watch.paths != paths):
+            self._conversation_watch = ConversationSelectionWatch(
+                paths, process_id=process_id, recent_bytes=1024 * 1024 if process_id else 0
+            )
+            self._conversation_watch_pid = process_id
+        watch = self._conversation_watch
+        # Read new native selections too, so a manual switch in Qianniu
+        # invalidates the cached current conversation before the next click.
+        watch.poll()
+        selection_revision = watch.revisions.get(account, 0)
+        def ali_id(nick: str) -> str:
+            return nick if nick.startswith("cntaobao") else "cntaobao" + nick
         query = urllib.parse.urlencode({
-            "uid": f"cntaobao{account}",
-            "touid": f"cntaobao{buyer_nick}",
+            "uid": ali_id(account),
+            "touid": ali_id(self.db.conversation_route_nickname(account, expected_ccode) or buyer_nick),
             "siteid": "cntaobao",
             "status": "1",
         })
-        completed = subprocess.run(
-            [str(candidates[0]), f"aliim:sendmsg?{query}"],
-            cwd=str(candidates[0].parent),
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            timeout=5.0,
-            check=False,
-        )
+        try:
+            # No text/content parameter: this only opens the existing chat.
+            completed = subprocess.run(
+                [str(command), f"aliim:sendmsg?{query}"],
+                cwd=str(command.parent),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=5.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError("千牛会话跳转命令未能完成，请重试") from error
         if completed.returncode != 0:
             raise RuntimeError(f"Qianniu WWCmd failed with code {completed.returncode}")
+        verified = False
+        if expected_ccode and watch.paths:
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and not self.stop_event.is_set():
+                watch.poll()
+                if (watch.revisions.get(account, 0) > selection_revision
+                        and watch.selected.get(account) == expected_ccode):
+                    verified = True
+                    break
+                self.stop_event.wait(0.02 if deadline - time.monotonic() > 2.5 else 0.05)
+            if (watch.revisions.get(account, 0) > selection_revision
+                    and watch.selected.get(account) and not verified):
+                raise RuntimeError("千牛未切换到目标会话，请确认当前登录店铺后重试")
         return {
             "ok": True,
             "buyer_nick": buyer_nick,
             "via": "qianniu_wwcmd",
-            "verified": False,
+            "verified": verified,
+            "opened_ccode": expected_ccode if verified else "",
         }
 
     def focus_qianniu(self) -> bool:
@@ -5585,7 +6191,37 @@ class StandaloneBridge:
         user32.ShowWindow(hwnd, 9)
         user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
         user32.BringWindowToTop(hwnd)
-        return bool(user32.SetForegroundWindow(hwnd))
+        # A background process cannot take the foreground on Windows: only the
+        # thread that owns the current foreground window (or one that just
+        # received input) may call SetForegroundWindow successfully. Every call
+        # from the bridge therefore returned 0, which surfaced as
+        # focused=false and made the workbench report a switch failure even
+        # though the conversation had changed. Attaching to the foreground
+        # thread's input queue for the duration of the call lifts that limit.
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.AttachThreadInput.restype = wintypes.BOOL
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        foreground_thread = 0
+        foreground = user32.GetForegroundWindow()
+        if foreground:
+            foreground_pid = wintypes.DWORD()
+            foreground_thread = int(user32.GetWindowThreadProcessId(foreground, ctypes.byref(foreground_pid)))
+        current_thread = int(kernel32.GetCurrentThreadId())
+        attached = False
+        if foreground_thread and foreground_thread != current_thread:
+            attached = bool(user32.AttachThreadInput(current_thread, foreground_thread, True))
+        try:
+            if user32.SetForegroundWindow(hwnd):
+                return True
+            # Last resort for shells that still refuse: raising the window
+            # without the foreground lock at least makes the switch visible.
+            return bool(user32.BringWindowToTop(hwnd))
+        finally:
+            if attached:
+                user32.AttachThreadInput(current_thread, foreground_thread, False)
 
     def ingest_event(self, event: dict[str, Any]) -> tuple[str, bool]:
         normalized = normalize_event(event)
@@ -5594,6 +6230,11 @@ class StandaloneBridge:
         role = str(normalized.get("role") or "user").strip().lower()
         account = str(normalized.get("account") or "").strip()
         buyer_id = str(normalized.get("buyer_id") or "").strip()
+        if role in {"user", "buyer", "customer"} and not normalized["nickname"]:
+            normalized["nickname"] = (
+                self.db.cached_nickname(account, buyer_id)
+                or self.nicknames.cached_nickname(account, buyer_id)
+            )
         if normalized.get("type") == "nickname_update":
             if not account or not buyer_id or not normalized["nickname"]:
                 return canonical_event_id(normalized), False
@@ -5626,13 +6267,15 @@ class StandaloneBridge:
                     float(self.config.get("brain_handoff_ttl_seconds", 3600.0)),
                 )
                 control = self.db.session_control(account, buyer_id)
-            if control["ai_mode"] == "human":
+            if control["ai_mode"] == "human" and not tmall_guard_scope(account):
                 normalized.update({
                     "handoff": True,
                     "handoff_reason": control["handoff_reason"],
                     "ai_suppressed": True,
                 })
         event_id, changed = self.db.upsert_event(normalized)
+        if role in {"user", "buyer", "customer"} and not normalized["nickname"]:
+            self.nicknames.enqueue(account, buyer_id)
         confirmed_request = self.db.confirm_send_from_event(normalized, event_id)
         if confirmed_request:
             LOG.info("Qianniu confirmed send request_id=%s event_id=%s", confirmed_request, event_id)
@@ -5663,7 +6306,8 @@ class StandaloneBridge:
     def send_text(
         self, body: dict[str, Any], *, brain_authorized: bool = False
     ) -> dict[str, Any]:
-        if not self.config.get("send_enabled", False):
+        central_tmall = brain_authorized and tmall_guard_scope(body.get("tmall_account"))
+        if not central_tmall and not self.config.get("send_enabled", False):
             raise RuntimeError("real sending is disabled by configuration")
         if not brain_authorized:
             raise RuntimeError("real sending requires a backend brain command")
@@ -5687,25 +6331,35 @@ class StandaloneBridge:
         if not claimed:
             raise RuntimeError("send request could not be claimed")
         pcsource = f"QianniuStandaloneBridge/{VERSION}"
+        send_started_at = time.time()
         try:
             # Never fetch new messages to prepare a send: GetNewMsg can advance
             # Qianniu's UI cursor. The passive AppBiz observation must already
             # have a route, otherwise sending fails safely.
-            if tmall_guard_scope(body.get("tmall_account")):
-                meta = body.get("tmall_command_meta") or {}
-                latest = self.db.latest_tmall_buyer_event(body["tmall_account"], ccode, meta.get("takeover_parent_msg_id", ""), meta.get("takeover_parent_msg_ids", ()))
-                reason = tmall_command_blocked(meta, latest)
-                if reason:
-                    response = {"status": "blocked", "error": reason, "real_send": False,
-                                "parent_guard": tmall_parent_guard_evidence(meta, latest)}
-                    self.db.mark_send_rejected(request_id, payload_hash, reason)
-                    return response
-            if tmall_guard_scope(body.get("tmall_account")):
-                native_receipt = self.appbiz.send_text(ccode, content, pcsource, tmall_account=body["tmall_account"])
-            else:
-                native_receipt = self.appbiz.send_text(ccode, content, pcsource)
+            attempts = 0
+            while True:
+                attempts += 1
+                try:
+                    native_receipt = (self.appbiz.send_text(ccode, content, pcsource, tmall_account=body["tmall_account"])
+                                      if central_tmall else self.appbiz.send_text(ccode, content, pcsource))
+                    break
+                except ConfirmedSendRejection as error:
+                    if not central_tmall or not error.retryable or attempts >= 3:
+                        raise
+                    # Same request remains in_flight throughout these attempts.
+                    # Only proven rejection permits another native call.
+                    self.stop_event.wait(min(0.5 * attempts, 1.0))
+        except ConfirmedSendRejection as error:
+            response = self.db.mark_send_rejected(request_id, payload_hash, str(error))
+            if not central_tmall:
+                raise
+            return {**response, "real_send": False, "send_attempts": attempts,
+                    "failure_class": "confirmed_native_rejection", "retry_exhausted": error.retryable}
         except Exception as error:
-            self.db.mark_send_rejected(request_id, payload_hash, str(error))
+            if central_tmall:
+                self.db.mark_send_unknown(request_id, payload_hash, str(error))
+            else:
+                self.db.mark_send_rejected(request_id, payload_hash, str(error))
             raise
         unconfirmed_note = ""
         if (tmall_guard_scope(body.get("tmall_account"))
@@ -5720,6 +6374,10 @@ class StandaloneBridge:
             and native_receipt.get("result_code") == 0
         ):
             response = self.db.confirm_send_from_callback(request_id, payload_hash, 0)
+            reply_account = str(body.get("tmall_account") or body.get("account") or "").strip()
+            if not reply_account:
+                reply_account = self.db.account_for_buyer(ccode)
+            self.db.remember_reply_receipt(reply_account, ccode, send_started_at)
         return response
 
     def expire_unconfirmed_sends(self) -> int:
@@ -5756,7 +6414,9 @@ class StandaloneBridge:
     def backfill_nicknames(self) -> None:
         # Browser pages validate that these sessions are still loaded/online.
         # Keep RPC work off the websocket receive thread so responses can arrive.
-        if not self.browser.connected:
+        if not self.browser.connected or not any(
+            item.get("imsdk_hooked") for item in self.browser.diagnostics_by_connection()
+        ):
             return
         cutoff = time.time() - 24 * 3600
         targets = [
@@ -5793,6 +6453,7 @@ class StandaloneBridge:
         self.native.start()
         self.client_support.start()
         self.api_thread.start()
+        self.nicknames.thread.start()
         threading.Thread(
             target=self._nickname_backfill_loop, name="nickname-backfill", daemon=True
         ).start()
@@ -5817,6 +6478,7 @@ class StandaloneBridge:
             "ok": not bool(self.api_error or self.workbench_error or self.browser.error),
             "version": VERSION,
             "build_hash": BUILD_HASH,
+            "nicknames": self.nicknames.status(),
             "uptime_seconds": round(time.time() - self.started_at, 3),
             "browser": {
                 "connected": self.browser.connected,
@@ -5827,6 +6489,7 @@ class StandaloneBridge:
                 "error": self.browser.error,
             },
             "context_enrich": self.context.status(),
+            "native_context": self.native_context.status(),
             "cdp": {
                 "enabled": bool(self.config.get("cdp_injection_enabled", False)),
                 "port": self.cdp.cdp_port,

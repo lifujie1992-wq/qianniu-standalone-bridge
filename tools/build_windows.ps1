@@ -37,7 +37,7 @@ Invoke-Checked -Program $python -Arguments @('-m', 'PyInstaller', '--noconfirm',
     '--workpath', (Join-Path $output 'work'), '--specpath', $output,
     '--hidden-import', 'taobao_message_contract', '--hidden-import', 'tmall_delivery_guard',
     '--collect-all', 'frida', '--collect-all', 'websockets', 'qianniu_app.py')
-foreach ($name in @('browser_bridge.js', 'appbiz_agent.js', 'native_agent.js', 'workbench.html', 'config.example.json')) {
+foreach ($name in @('browser_bridge.js', 'appbiz_agent.js', 'native_message_store.js', 'native_agent.js', 'workbench.html', 'config.example.json')) {
     Copy-Item -LiteralPath (Join-Path $root $name) -Destination $package
 }
 New-Item -ItemType Directory -Path (Join-Path $package 'build') | Out-Null

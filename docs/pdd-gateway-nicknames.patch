@@ -1,0 +1,119 @@
+--- a/run_frontend_service.py
++++ b/run_frontend_service.py
+@@ -19,6 +19,7 @@
+ import json
+ import mimetypes
+ import os
++import re
+ import subprocess
+ import sys
+ import threading
+@@ -34,7 +35,7 @@
+ WEB = BASE / "web"
+ DEFAULT_BACKEND = "http://47.107.138.228:18765"
+ DEFAULT_PORT = 18767
+-LOCAL_GATEWAY_VERSION = "0.5.19.14"
++LOCAL_GATEWAY_VERSION = "0.5.19.15"
+ _SENSITIVE_PROXY_HEADERS = {
+     "host",
+     "content-length",
+@@ -376,6 +377,19 @@
+     return [message for index, message in enumerate(messages) if index not in suppressed]
+ 
+ 
++def _taobao_nickname(value, buyer_id: str = "") -> str:
++    if not isinstance(value, str):
++        return ""
++    nick = value.strip()
++    if not nick or len(nick) > 128 or any(ord(c) < 32 for c in nick):
++        return ""
++    if nick == buyer_id or re.fullmatch(r"\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?(?:#\d+)?", nick):
++        return ""
++    if "#" in nick and "@" in nick:
++        return ""
++    return nick
++
++
+ class LocalSeatState:
+     """Durable local-first conversation cache for a Windows customer-service seat."""
+ 
+@@ -383,6 +397,7 @@
+         self.path = Path(path)
+         self.lock = threading.RLock()
+         self.sessions: dict[str, dict] = {}
++        self.buyer_nicknames: dict[str, str] = {}
+         self.active_shop_ids: set[str] = set()
+         self.observed_shop_ids: set[str] = set()
+         self.shop_names: dict[str, str] = {}
+@@ -617,6 +632,12 @@
+             return
+         if not isinstance(data, dict):
+             return
++        nicknames = data.get("buyer_nicknames")
++        if isinstance(nicknames, dict):
++            self.buyer_nicknames = {
++                key: nick for key, value in nicknames.items()
++                if isinstance(key, str) and (nick := _taobao_nickname(value, key.split("\x00")[-1]))
++            }
+         sessions = data.get("sessions")
+         if isinstance(sessions, dict):
+             self.sessions = {
+@@ -708,6 +729,7 @@
+                         "shop_ai_takeover": self.shop_ai_takeover,
+                         "auth_user": self.auth_user,
+                         "sessions": self.sessions,
++                        "buyer_nicknames": self.buyer_nicknames,
+                     },
+                     ensure_ascii=False,
+                     separators=(",", ":"),
+@@ -781,6 +803,27 @@
+                 "event_id": str(event.get("event_id") or f"shop-metadata-{shop_id}"),
+                 "version": version,
+             }
++        if str(event.get("type") or "").strip().lower() == "nickname_update":
++            account = str(event.get("account") or "").strip()
++            buyer_id = str(event.get("buyer_id") or "").strip()
++            nick = _taobao_nickname(event.get("nickname"), buyer_id)
++            if event.get("platform") != "taobao" or not account or not buyer_id or not nick:
++                raise ValueError("valid Taobao account, buyer_id and nickname are required")
++            key = self._key(account, buyer_id)
++            with self.lock:
++                session = self.sessions.get(key)
++                changed = self.buyer_nicknames.get(key) != nick
++                self.buyer_nicknames[key] = nick
++                if isinstance(session, dict):
++                    changed = session.get("nickname") != nick or changed
++                    session["nickname"] = nick
++                self._save_locked()
++                if changed:
++                    self.event_version += 1
++                    self.event_condition.notify_all()
++                return {"accepted": changed, "committed": True,
++                        "visible": bool(session), "version": self.event_version,
++                        "event_id": str(event.get("event_id") or event.get("idempotency_key") or "")}
+         if _is_pdd_system_event(event):
+             return {
+                 "accepted": False,
+@@ -831,6 +874,11 @@
+         )
+         role = str(event.get("role") or "user").strip() or "user"
+         explicit_nickname = str(event.get("buyer_nick") or event.get("nickname") or "").strip()
++        if platform == "taobao":
++            explicit_nickname = (_taobao_nickname(event.get("nickname"), buyer_id)
++                                 or _taobao_nickname(event.get("buyer_nick"), buyer_id))
++            with self.lock:
++                explicit_nickname = explicit_nickname or self.buyer_nicknames.get(self._key(account, buyer_id), "")
+         message = {
+             "msg_id": msg_id,
+             "buyer_id": buyer_id,
+@@ -1203,6 +1251,10 @@
+                 merged_row = {**current, **row, "msg_count": max(
+                     int(current.get("msg_count") or 0), int(row.get("msg_count") or 0)
+                 )}
++                if row.get("platform") == "taobao" or "@cntaobao" in str(row.get("buyer_id") or ""):
++                    merged_row["nickname"] = (_taobao_nickname(row.get("nickname"), row.get("buyer_id", ""))
++                                              or _taobao_nickname(current.get("nickname"), row.get("buyer_id", ""))
++                                              or row.get("nickname") or row.get("buyer_id"))
+                 for state_key in (
+                     "shop_ai_takeover_enabled", "ai_takeover_enabled", "ai_takeover_override",
+                     "ai_takeover_state", "ai_takeover_updated_at", "ai_takeover_reason",

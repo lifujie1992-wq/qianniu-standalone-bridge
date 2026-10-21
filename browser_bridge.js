@@ -12,7 +12,7 @@
   }
   window.__qn_standalone_bridge_v1_installed = true;
 
-  var BRIDGE_VERSION = "qn-standalone-browser-v8-tmall-guards";
+  var BRIDGE_VERSION = "qn-standalone-browser-v12-tmall-central-delivery";
   // Message-source switches, written by the injector from config.json. The
   // three extra sources mirror what the commercial agent does inside the page:
   // observing imsdk.invoke (conversation discovery only), mirroring the client's
@@ -23,6 +23,10 @@
   var WS_MIRROR = OPTIONS.ws_mirror !== false;
   var HISTORY_POLL = OPTIONS.history_poll === true;
   var DISCOVERY_POLL = OPTIONS.discovery_poll !== false;
+  // 诊断用：转接时一次性探测历史 API，默认关闭，不影响正常收发。
+  var HISTORY_PROBE = OPTIONS.history_probe === true;
+  var HISTORY_PROBE_PARAMS = (OPTIONS.history_probe_params && typeof OPTIONS.history_probe_params === "object")
+    ? OPTIONS.history_probe_params : {};
   // 被动扫描间隔可在注入时通过 bridge_passive_dom_ms / bridge_passive_cache_ms
   // 调整；缺失或非法值回落到默认。
   function clampIntervalMs(value, fallback, minimum, maximum) {
@@ -173,6 +177,12 @@
     history_poll_enabled: HISTORY_POLL,
     history_poll_calls: 0,
     history_poll_errors: 0,
+    history_probe_enabled: HISTORY_PROBE,
+    history_probe_runs: 0,
+    history_probe_last_ccode: "",
+    history_probe_last_at_ms: 0,
+    history_probe_imsdk: false,
+    history_probe_results: [],
     discovery_poll_enabled: DISCOVERY_POLL,
     discovery_calls: 0,
     discovery_hits: 0,
@@ -254,7 +264,7 @@
   function writeOutboxNow() {
     try {
       if (window.localStorage) {
-        var batch = outboxOrder.slice(-MAX_OUTBOX).map(function (id) { return outbox[id]; });
+        var batch = outboxOrder.map(function (id) { return outbox[id]; });
         window.localStorage.setItem(OUTBOX_KEY, JSON.stringify(batch));
       }
       return true;
@@ -283,8 +293,15 @@
       outbox[id] = { type: "chat_event", event_id: id, payload: row };
       if (nicknamePending) outbox[id].nickname_pending = true;
       outboxOrder.push(id);
-      while (outboxOrder.length > MAX_OUTBOX) {
-        var old = outboxOrder.shift();
+      // Tmall raw input must survive bursts. Keep every unacknowledged Tmall
+      // envelope; the original 500-entry policy still bounds other shops.
+      var otherIds = outboxOrder.filter(function (pendingId) {
+        var pending = outbox[pendingId] && outbox[pendingId].payload;
+        return pending && !tmallGuardScope(pending.account);
+      });
+      while (otherIds.length > MAX_OUTBOX) {
+        var old = otherIds.shift();
+        outboxOrder.splice(outboxOrder.indexOf(old), 1);
         delete outbox[old];
         diagnostics.outbox_overflow_dropped += 1;
       }
@@ -876,7 +893,10 @@
     if (typeof records !== "object" || records.ok === false || records.success === false) return "";
     var identity = conversationIdOf(records.cid || records.ccode || records.conversationId || "") ||
       String(records.uid || records.userId || records.userid || records.targetId || recordKey || "");
-    var matched = identity === buyerId || identity === uid;
+    var matched = identity === buyerId || identity === uid || (
+      /^\d+(?:\.1)?$/.test(identity) && /^\d+(?:\.1)?$/.test(String(uid || "")) &&
+      identity.replace(/\.1$/, "") === String(uid).replace(/\.1$/, "")
+    );
     // A mismatched row must never provide another buyer's (or the seller's) nick.
     if (matched || (trusted && !identity)) {
       var nick = firstNickname([records.nickname, records.nick, records.senderNick, records.senderName,
@@ -975,6 +995,23 @@
     return nickPending[key] || Promise.resolve(cachedNickname(account, buyerId));
   }
 
+  function cachedLoginAccount(buyerId) {
+    // Native AppBiz capture does not necessarily produce a browser callback.
+    // Read explicit loginid from this exact conversation's cached messages;
+    // never infer the shop from the requested target or a sender nickname.
+    var value = localMessageValue(buyerId);
+    var rows = Array.isArray(value) ? value : [value];
+    var accounts = {};
+    rows.slice(-100).forEach(function (record) {
+      var detail = adaptLocalMessage(buyerId, record);
+      if (!detail || conversationIdOf(detail.cid || "") !== buyerId) return;
+      var account = nickOf(detail.loginid || detail.loginId || {});
+      if (account) accounts[account] = true;
+    });
+    var names = Object.keys(accounts);
+    return names.length === 1 ? names[0] : "";
+  }
+
   async function backfillNicknames(targets) {
     if (!Array.isArray(targets) || !targets.length) return [];
     await refreshNicknameSessions();
@@ -983,8 +1020,10 @@
     // Only touch targets belonging to this page's observed seller account.
     for (var i = 0; i < Math.min(targets.length, 100); i++) {
       var target = targets[i];
-      if (!target || !lastSellerNick || target.account !== lastSellerNick) continue;
+      if (!target) continue;
       var buyerId = String(target.buyer_id || "");
+      var seller = lastSellerNick || cachedLoginAccount(buyerId);
+      if (!seller || target.account !== seller) continue;
       var mdm = window._db && window._db.msgDataMap;
       var loaded = mdm instanceof Map ? mdm.has(buyerId) : mdm && Object.prototype.hasOwnProperty.call(mdm, buyerId);
       if (!loaded && !knownConversations[buyerId]) continue;
@@ -995,7 +1034,7 @@
   }
   window.__qn_standalone_backfill_nicknames = backfillNicknames;
 
-  function normalizeDetail(detail, sellerHint, captureMode) {
+  function normalizeDetail(detail, sellerHint, captureMode, transferHistory) {
     if (!detail || typeof detail !== "object") return null;
     var product = extractProduct(detail);
     var contextOrder = extractOrder(detail);
@@ -1005,7 +1044,6 @@
     var content = extractText(detail);
     if (imageUrl && !isProduct) content = imageUrl;
     if (!content && productImage) content = "咨询商品";
-    if (!content) return null;
     var fromid = detail.fromid || detail.fromId || {};
     var toid = detail.toid || detail.toId || {};
     var fromNick = nickOf(fromid);
@@ -1017,6 +1055,7 @@
     // loginid is the authoritative current account. Without it, an outbound
     // message can make fromid look like the buyer and reverse the session.
     var seller = textOf(loginNick || sellerHint || lastSellerNick || "");
+    if (!content && !tmallGuardScope(seller)) return null;
     var role = "user";
     var buyer = "";
     if (seller && fromNick && fromNick === seller) {
@@ -1074,10 +1113,20 @@
     var tsRaw = detail.sendTime || detail.sortTimeMicrosecond || detail.ts || 0;
     var hasOriginalTimestamp = Number(tsRaw) > 0;
     var ts = timestampSeconds(tsRaw);
+    if (transferHistory && tmallGuardScope(seller) && hasOriginalTimestamp
+        && ts * 1000 < transferHistory) {
+      captureMode = "history_snapshot";
+    }
     var historyCapture = /GetRemoteHisMsg|GetLocalHisMsg|history_snapshot|event-remote:|event-local-db:|poll:/.test(String(captureMode || ""));
     if (historyCapture && hasOriginalTimestamp && (ts * 1000) < STARTED_AT_MS - RECOVERY_WINDOW_MS) {
-      diagnostics.stale_history_skipped += 1;
-      return null;
+      if (tmallGuardScope(seller)) {
+        // Retain available history as context. Business relevance is decided
+        // by the server, regardless of whether this cache contains a transfer.
+        captureMode = "history_snapshot";
+      } else {
+        diagnostics.stale_history_skipped += 1;
+        return null;
+      }
     }
     var incomplete = !msgId || !hasOriginalTimestamp;
     if (incomplete && tmallGuardScope(seller)) captureMode = "history_snapshot";
@@ -1109,6 +1158,18 @@
       captured_at_ms: Date.now(),
       raw_type: textOf(detail.templateId || detail.templateid || detail.msgType || detail.type || ""),
     };
+    if (tmallGuardScope(seller)) {
+      // Observed identifiers, not an instruction for the brain to trust role.
+      // Individual platform message only: include entry product/order fields
+      // the normalized projection cannot anticipate. Never capture the window.
+      try { row.raw_message = JSON.parse(JSON.stringify(detail)); }
+      catch (error) { row.raw_message_error = String(error); }
+      row.sender_uid = partyUid(fromid);
+      row.recipient_uid = partyUid(toid);
+      row.login_uid = partyUid(loginid);
+      row.sender_nick = fromNick;
+      row.recipient_nick = toNick;
+    }
     if (loginNick) row.seller_identity_source = "loginid";
     if (contextOrder.order_id) {
       row.order_id = contextOrder.order_id;
@@ -1148,7 +1209,7 @@
     depth = depth || 0;
     if (!obj || depth > 8) return;
     if (Array.isArray(obj)) {
-      for (var i = 0; i < Math.min(obj.length, 100); i++) walkDetails(obj[i], out, depth + 1);
+      for (var i = 0; i < (tmallGuardScope(lastSellerNick) ? obj.length : Math.min(obj.length, 100)); i++) walkDetails(obj[i], out, depth + 1);
       return;
     }
     if (typeof obj !== "object") return;
@@ -1179,7 +1240,47 @@
     });
   }
 
-  function emitChatPayload(payload, sellerHint, captureMode) {
+  var historyProbeCcodes = {};
+
+  function sameDayStartSeconds() {
+    var now = new Date();
+    return Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+  }
+
+  function probeHistory(ccode) {
+    if (!HISTORY_PROBE || !ccode || historyProbeCcodes[ccode]) return;
+    diagnostics.history_probe_last_ccode = ccode;
+    diagnostics.history_probe_last_at_ms = Date.now();
+    diagnostics.history_probe_imsdk = !!(window.imsdk && typeof window.imsdk.invoke === "function");
+    if (!diagnostics.history_probe_imsdk) {
+      diagnostics.history_probe_results.push({ api: "", ok: false, error: "imsdk_unavailable" });
+      if (diagnostics.history_probe_results.length > 4) diagnostics.history_probe_results.shift();
+      return;
+    }
+    historyProbeCcodes[ccode] = true;
+    diagnostics.history_probe_runs += 1;
+    var params = Object.assign({ ccode: ccode, count: 100 }, HISTORY_PROBE_PARAMS);
+    // Parameter-name experiments must not redirect a transfer's probe to a
+    // different buyer. The event's full conversation ID is authoritative.
+    params.ccode = ccode;
+    // 只拉当天：本地零点。服务端仍会按 original_timestamp 再过滤一次。
+    if (!("startTime" in params) && !("start_time" in params) && !("beginTime" in params)) {
+      params.startTime = sameDayStartSeconds();
+    }
+    ["im.singlemsg.GetRemoteHisMsg", "im.singlemsg.GetLocalHisMsg"].forEach(function (api) {
+      invokeWithTimeout(api, params, INVOKE_TIMEOUT_MS).then(function (res) {
+        var ok = !!res && res.ok !== false;
+        var payload = res && res.result != null ? res.result : res;
+        var record = ok
+          ? { api: api, ok: true, shape: diagnosticSample(payload) }
+          : { api: api, ok: false, error: diagnosticSample(res) };
+        diagnostics.history_probe_results.push(record);
+        if (diagnostics.history_probe_results.length > 4) diagnostics.history_probe_results.shift();
+      });
+    });
+  }
+
+  function emitChatPayload(payload, sellerHint, captureMode, transferHistory) {
     var result = { details: 0, captured: 0, sent: 0, ccodes: [] };
     try {
       // A duplicate callback may be the first activity after sleep/network
@@ -1192,8 +1293,12 @@
       // walkDetails only returns individual message-shaped records.
       result.details = details.length;
       details.forEach(function (detail) {
-        var row = normalizeDetail(detail, sellerHint, captureMode);
+        var row = normalizeDetail(detail, sellerHint, captureMode, transferHistory);
         if (!row) return;
+        // 转接通知：诊断模式下一次性探测该会话的历史 API。
+        if (/^由\s*.+?\s*转交给\s*.+$/.test(String(row.content || ""))) {
+          probeHistory(String(row.buyer_id || ""));
+        }
         var immediate = tmallGuardScope(row.account);
         var queuedId = queueEnvelope(row, !immediate && !row.nickname && !!row.account);
         rememberSeen(row.msg_id);
@@ -1285,6 +1390,35 @@
     return null;
   }
 
+  // Native AppBiz callbacks only carry "[图片]"; recover the real image URL
+  // from Qianniu's local msgDataMap so the brain's vision pipeline can read it.
+  function imageUrlForMessage(ccode, msgId) {
+    try {
+      var wanted = String(msgId || "").replace(/^qn-msg-v1\|taobao\|/, "");
+      var value = localMessageValue(ccode);
+      if (!value) return "";
+      var rows = Array.isArray(value) ? value : [value];
+      var exact = "";
+      var fallback = [];
+      for (var i = 0; i < rows.length; i++) {
+        var adapted = adaptLocalMessage(ccode, rows[i]);
+        if (!adapted) continue;
+        var mcode = adapted.mcode && typeof adapted.mcode === "object" ? adapted.mcode : {};
+        var id = textOf(mcode.messageId || mcode.clientId || adapted.messageId || adapted.msg_id || adapted.clientId || "");
+        var url = extractImage(adapted);
+        if (!url || isProductImageUrl(url)) continue;
+        if (wanted && id === wanted) exact = url;
+        if (fallback.indexOf(url) < 0) fallback.push(url);
+      }
+      if (wanted) return exact;
+      // 找不到精确消息时，只在会话里恰好只有一张聊天图片时兜底，避免拿旧图。
+      return fallback.length === 1 ? fallback[0] : "";
+    } catch (e) {
+      return "";
+    }
+  }
+  window.__qn_standalone_image_url = imageUrlForMessage;
+
   function passiveConversationKeys(limit) {
     try {
       var mdm = window._db && window._db.msgDataMap;
@@ -1375,6 +1509,7 @@
     });
     // Nested source objects were merged above. Remove them from the adapted
     // copy so walkDetails cannot emit the same cache row a second time.
+    if (tmallGuardScope(lastSellerNick)) merged.raw_cache_record = record;
     delete merged.originalData;
     delete merged.originData;
     delete merged.originBanamaMessage;
@@ -1393,14 +1528,35 @@
     var value = localMessageValue(ccode);
     if (!value) return { details: 0, captured: 0, sent: 0, ccodes: [] };
     var rows = Array.isArray(value) ? value : [value];
-    var adapted = rows.slice(-100).map(function (record) { return adaptLocalMessage(ccode, record); });
+    var historyRows = tmallGuardScope(lastSellerNick) ? rows : rows.slice(-100);
+    var adapted = historyRows.map(function (record) { return adaptLocalMessage(ccode, record); });
+    var transferHistory = 0;
+    adapted.forEach(function (detail) {
+      if (!detail || conversationIdOf(detail.cid || "") !== ccode) return;
+      var seller = nickOf(detail.loginid || detail.loginId || {}) || lastSellerNick;
+      var text = extractText(detail);
+      var originalTime = Number(detail.sendTime || detail.sortTimeMicrosecond || detail.ts || 0);
+      var stamp = timestampSeconds(originalTime) * 1000;
+      if (tmallGuardScope(seller) && originalTime > 0
+        && stamp >= STARTED_AT_MS - RECOVERY_WINDOW_MS && stamp <= Date.now() + 30000
+        && /^由\s*.+?\s*转交给\s*.+$/.test(text)) {
+        transferHistory = Math.max(transferHistory, stamp);
+      }
+    });
+    if (transferHistory) {
+      adapted.sort(function (a, b) {
+        return timestampSeconds(a && (a.sendTime || a.sortTimeMicrosecond || a.ts))
+          - timestampSeconds(b && (b.sendTime || b.sortTimeMicrosecond || b.ts));
+      });
+    }
     diagnostics.msgdb_last_arrlen = rows.length;
     diagnostics.msgdb_last_reason = adapted.length ? "adapted_local_cache" : "empty_local_cache";
     diagnostics.msgdb_dump = JSON.stringify(diagnosticShape(adapted.slice(-1), 0)).slice(0, 3000);
     var result = emitChatPayload(
       { source: "msgDataMap", ccode: ccode, data: adapted },
       lastSellerNick,
-      "event-local-db:im.singlemsg.onReceiveNewMsg"
+      "event-local-db:im.singlemsg.onReceiveNewMsg",
+      transferHistory
     );
     diagnostics.msgdb_last_normalized = !!(result && result.captured);
     if (result && result.captured) diagnostics.local_db_hits += result.captured;

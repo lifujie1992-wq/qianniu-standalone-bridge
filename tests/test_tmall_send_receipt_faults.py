@@ -84,7 +84,8 @@ class ReceiptFaultTests(unittest.TestCase):
             self.assertFalse(result['ok'])
             self.assertIn('CheckConvExist_error', result['error'])
             self.assertEqual(brain.app.db.send_counts(), {'rejected': 1})
-            exports.sendtext.assert_called_once()
+            self.assertEqual(exports.sendtext.call_count, 3)
+            self.assertEqual(result["send_attempts"], 3)
 
     def test_delayed_success_reaches_confirmed_ledger(self):
         with tempfile.TemporaryDirectory() as directory:

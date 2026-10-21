@@ -27,7 +27,8 @@ rpc.exports = {
     var a = Memory.alloc(4), b = Memory.alloc(4), c = Memory.alloc(4);
     var rc = layout(a, b, c);
     var names = ['appbiz_send_text_v1', 'appbiz_send_text_v2',
-                 'appbiz_poll_send_result_v1', 'appbiz_cancel_send_result_v1'];
+                 'appbiz_poll_send_result_v1', 'appbiz_cancel_send_result_v1',
+                 'appbiz_adapter_profile_supported_v1'];
     var exports = {};
     names.forEach(function (name) { exports[name] = mod.findExportByName(name) !== null; });
     return {
@@ -55,6 +56,7 @@ def find_qianniu() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Probe the adapter inside the running Qianniu process")
+    parser.add_argument('--pid', type=int, default=0, help='exact native process to inspect')
     parser.add_argument(
         "--dll",
         type=Path,
@@ -67,7 +69,7 @@ def main() -> int:
         print(f"adapter not found: {dll}", file=sys.stderr)
         return 2
 
-    pid = find_qianniu()
+    pid = args.pid or find_qianniu()
     if not pid:
         print("Qianniu is not running", file=sys.stderr)
         return 2

@@ -34,17 +34,19 @@ class TrayStatusTests(unittest.TestCase):
 
     def test_build_status_distinguishes_healthy_degraded_and_stopped(self):
         config = {"api_port": 42111}
+        tray_app._BRIDGE_PROBE_STATE.clear()
         with patch.object(launcher, "load_config_silent", return_value=config), \
-                patch.object(launcher, "fetch_status", return_value={"ok": True, "version": "1.5.2"}), \
+                patch.object(launcher, "fetch_status_with_reason", return_value=({"ok": True, "version": "1.5.2"}, "")), \
                 patch.object(tray_app, "_managed_qianniu_count", return_value=2):
             self.assertEqual(tray_app.build_status(PROJECT).state, "healthy")
         with patch.object(launcher, "load_config_silent", return_value=config), \
-                patch.object(launcher, "fetch_status", return_value={"ok": True}), \
+                patch.object(launcher, "fetch_status_with_reason", return_value=({"ok": True}, "")), \
                 patch.object(tray_app, "_managed_qianniu_count", return_value=0):
             self.assertEqual(tray_app.build_status(PROJECT).state, "degraded")
         with patch.object(launcher, "load_config_silent", return_value=config), \
-                patch.object(launcher, "fetch_status", return_value=None), \
+                patch.object(launcher, "fetch_status_with_reason", return_value=(None, "not_listening")), \
                 patch.object(tray_app, "_managed_qianniu_count", return_value=0):
+            self.assertEqual(tray_app.build_status(PROJECT).state, "degraded")
             self.assertEqual(tray_app.build_status(PROJECT).state, "stopped")
 
 

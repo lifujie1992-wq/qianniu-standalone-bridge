@@ -69,6 +69,8 @@
     .pane-heading { height: 47px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid var(--border); }
     .pane-heading h2 { margin: 0; font: 600 13px Bahnschrift, "Microsoft YaHei UI", sans-serif; }
     .count { color: var(--muted); font: 11px "Cascadia Mono", Consolas, monospace; }
+    .pane-clear { margin-left: auto; margin-right: 8px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--muted); font: 11px "Microsoft YaHei UI", sans-serif; cursor: pointer; }
+    .pane-clear:hover { color: var(--fg, #222); border-color: #bbb; }
     .search-wrap { padding: 10px 12px; border-bottom: 1px solid var(--border); }
     .search-wrap input, .field input {
       width: 100%; min-height: 34px; border: 1px solid var(--border); border-radius: 4px;
@@ -105,7 +107,21 @@
     .session-preview { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .session-side { align-self: stretch; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; gap: 6px; }
     .session-time { color: var(--subtle); font-size: 10px; white-space: nowrap; }
+    .reply-countdown { padding: 2px 5px; border: 1px solid #dfb765; border-radius: 4px; background: #fff8e7; color: #895300; font-size: 10px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .reply-countdown.urgent { border-color: #e59367; background: #fff0e6; color: #a24116; }
+    .reply-countdown.expired { border-color: #df8590; background: #fff0f2; color: var(--danger); }
+    .session-row.reply-overdue { box-shadow: inset -3px 0 0 #cf4858; }
     .open-glyph { color: var(--accent); font-size: 14px; }
+    /* Dock-only AI switch: one tap pauses/resumes AI for that conversation
+       without opening the chat in 千牛 (the conversation pane is hidden in dock
+       mode, so the AI / 人工 buttons there are unreachable). */
+    .ai-toggle { flex: 0 0 auto; padding: 1px 5px; border-radius: 999px; border: 1px solid #2f8f5b; background: #e8f7ee; color: #1c6b43; font-size: 10px; line-height: 1.5; cursor: pointer; user-select: none; }
+    .ai-toggle.paused { border-color: #d9a13a; background: #fff4df; color: #9a4f00; }
+    .ai-toggle.busy { opacity: 0.55; cursor: progress; }
+    .ai-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .session-row .ai-toggle { margin-right: 2px; }
+    .dock-toast { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); max-width: 88%; padding: 6px 10px; border-radius: 8px; background: rgba(28, 32, 36, 0.92); color: #fff; font-size: 12px; line-height: 1.4; z-index: 60; box-shadow: 0 6px 20px rgba(0,0,0,0.22); }
+    .dock-toast.error { background: #b5372f; }
     .conversation-pane { min-width: 0; width: 100%; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 58px auto minmax(0, 1fr) var(--composer); }
     .conversation-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--border); }
     .conversation-title { min-width: 0; }
@@ -280,7 +296,7 @@
 
   <main class="workspace">
     <aside class="pane sessions-pane" aria-label="会话列表">
-      <div class="pane-heading"><h2 id="sessionsTitle">实时会话</h2><span class="count" id="sessionCount">0</span></div>
+      <div class="pane-heading"><h2 id="sessionsTitle">实时会话</h2><button class="pane-clear" id="clearSessionsButton" type="button" title="清空列表，之后有新消息的会话会自动重新出现">清空</button><span class="count" id="sessionCount">0</span></div>
       <div class="session-tabs" role="tablist" aria-label="会话筛选">
         <button class="session-tab active" id="allSessionsTab" type="button" role="tab" aria-selected="true">全部 0</button>
         <button class="session-tab handoff" id="handoffSessionsTab" type="button" role="tab" aria-selected="false">待人工 0</button>
@@ -304,10 +320,10 @@
       <div class="messages" id="messages"><div class="empty">请选择左侧会话</div></div>
       <div class="composer">
         <label class="sr-only" for="replyInput">回复内容</label>
-        <textarea id="replyInput" placeholder="输入回复内容" disabled></textarea>
+        <textarea id="replyInput" placeholder="人工回复请在千牛会话中完成" readonly disabled></textarea>
         <div class="composer-footer">
           <span class="send-state" id="sendState" aria-live="polite"></span>
-          <button class="button primary" id="sendButton" type="button" disabled>发送</button>
+          <button class="button primary" id="sendButton" type="button" disabled>在千牛回复</button>
         </div>
       </div>
     </section>
@@ -366,6 +382,11 @@
           <label class="toggle-row"><span><strong>AI 自动回复</strong><small>允许大脑命令调用当前千牛发送链路</small></span><input id="aiReplyInput" type="checkbox"></label>
           <label class="toggle-row"><span><strong>远程打开会话</strong><small>允许大脑主动切换千牛当前聊天</small></span><input id="remoteOpenInput" type="checkbox"></label>
         </section>
+        <section class="form-section">
+          <h3>故障诊断</h3>
+          <p>昵称显示为数字或千牛连接异常时，导出本机版本和链路状态供排查。</p>
+          <button class="button" id="exportDiagnosticsButton" type="button">导出诊断文件</button>
+        </section>
       </div>
       <footer class="drawer-footer">
         <span class="form-state" id="settingsState" aria-live="polite"></span>
@@ -388,7 +409,9 @@
       sessions: [], current: null, messages: [], status: null, diagnostics: null,
       busy: false, sending: false, canSend: false, openingKey: '', lastNewest: '',
       lastMessageRevision: '', settingsOpen: false, tokenConfigured: false, controlBusy: false,
+      controlKey: '', pendingOpen: null, openingPromise: null, openSequence: 0, messageLoadSequence: 0,
       sessionFilter: 'all', sessionRevision: null,
+      clearedAt: (function () { try { return Number(localStorage.getItem('qn_dock_cleared_at') || 0) || 0; } catch (e) { return 0; } })(),
       handoffKeysSeen: new Set(), lastHandoffTitle: '',
     };
     const conversationSearch = el('conversationSearchInput');
@@ -467,21 +490,71 @@
         });
       } catch (error) { /* 提示音失败不影响功能 */ }
     }
+    function dockToast(text, isError) {
+      document.querySelectorAll('.dock-toast').forEach(node => node.remove());
+      const node = document.createElement('div');
+      node.className = `dock-toast${isError ? ' error' : ''}`;
+      node.textContent = text;
+      document.body.append(node);
+      setTimeout(() => node.remove(), isError ? 4000 : 2200);
+    }
+    function aiToggleChip(session) {
+      const paused = session.ai_mode === 'human';
+      const chip = document.createElement('span');
+      chip.className = `ai-toggle${paused ? ' paused' : ''}${state.controlBusy && state.controlKey === keyOf(session) ? ' busy' : ''}`;
+      chip.setAttribute('role', 'button');
+      chip.setAttribute('tabindex', '0');
+      chip.textContent = paused ? 'AI 暂停中' : 'AI 开启';
+      chip.title = paused
+        ? `点击恢复 AI 回复${session.handoff_reason ? `（当前：${session.handoff_reason}）` : ''}`
+        : '点击暂停该会话的 AI 回复（不影响其它会话）';
+      const activate = event => {
+        event.stopPropagation();
+        event.preventDefault();
+        toggleSessionAI(session);
+      };
+      chip.addEventListener('click', activate);
+      chip.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') activate(event);
+      });
+      return chip;
+    }
+    async function toggleSessionAI(session) {
+      const key = keyOf(session);
+      if (state.controlBusy) return;
+      const next = session.ai_mode === 'human' ? 'ai' : 'human';
+      state.controlBusy = true; state.controlKey = key; renderSessions();
+      try {
+        const data = await api('/api/v1/session/control', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({account: session.account, buyer_id: session.buyer_id, mode: next}),
+        });
+        Object.assign(session, data.control || {});
+        const stored = state.sessions.find(item => keyOf(item) === key);
+        if (stored && stored !== session) Object.assign(stored, data.control || {});
+        if (state.current && keyOf(state.current) === key) Object.assign(state.current, data.control || {});
+        dockToast(next === 'human' ? 'AI 已暂停（仅这个会话）' : 'AI 已恢复');
+      } catch (error) {
+        dockToast(error.message || '大脑未确认 AI 开关', true);
+      } finally {
+        state.controlBusy = false; state.controlKey = '';
+        renderSessions(); renderSessionMode();
+      }
+    }
     function renderSessions() {
       const query = conversationSearch.value.trim().toLowerCase();
-      const handoffSessions = state.sessions.filter(item => item.ai_mode === 'human');
+      // "清空" only hides what was already in the list: anything that receives a
+      // newer message (last_ts > clearedAt) comes straight back, so the dock
+      // cannot silently swallow a real conversation.
+      const visible = state.clearedAt > 0
+        ? state.sessions.filter(item => Number(item.last_ts || 0) > state.clearedAt)
+        : state.sessions;
+      const clearButton = el('clearSessionsButton');
+      if (clearButton) clearButton.title = '清空列表，之后有新消息的会话会自动重新出现';
+      const handoffSessions = visible.filter(item => item.ai_mode === 'human');
       const handoffCount = handoffSessions.length;
-      let oldestWaitSeconds = 0;
-      const seenKeys = new Set();
-      for (const item of handoffSessions) {
-        seenKeys.add(keyOf(item));
-        const since = Number(item.control_updated_at || 0);
-        if (since > 0) oldestWaitSeconds = Math.max(oldestWaitSeconds, (Date.now() - since) / 1000);
-      }
-      const staleBadge = oldestWaitSeconds >= 600 ? ' ⚠超10分钟' : '';
-      el('allSessionsTab').textContent = `全部 ${state.sessions.length}`;
-      el('handoffSessionsTab').textContent = `待人工 ${handoffCount}${staleBadge}`;
-      el('handoffSessionsTab').classList.toggle('alert', handoffCount > 0 && oldestWaitSeconds >= 600);
+      el('allSessionsTab').textContent = `全部 ${visible.length}`;
+      el('handoffSessionsTab').textContent = `待人工 ${handoffCount}`;
       document.title = handoffCount > 0 ? `(${handoffCount} 待人工) 千牛聚合接待` : '千牛聚合接待';
       const freshKeys = handoffSessions.map(keyOf).filter(key => !state.handoffKeysSeen.has(key));
       if (freshKeys.length) {
@@ -492,13 +565,19 @@
       for (const [id, active] of [['allSessionsTab', state.sessionFilter === 'all'], ['handoffSessionsTab', state.sessionFilter === 'handoff']]) {
         el(id).classList.toggle('active', active); el(id).setAttribute('aria-selected', String(active));
       }
-      const rows = state.sessions.filter(item => {
+      const rows = visible.filter(item => {
         if (state.sessionFilter === 'handoff' && item.ai_mode !== 'human') return false;
         return !query || `${item.buyer_nick} ${item.buyer_id} ${item.last_message} ${item.handoff_reason || ''}`.toLowerCase().includes(query);
-      });
+      }).sort((a, b) => Number(b.ai_mode === 'human') - Number(a.ai_mode === 'human') || Number(b.last_ts || 0) - Number(a.last_ts || 0));
       el('sessionCount').textContent = String(rows.length);
       const list = el('sessionList'); list.replaceChildren();
-      if (!rows.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = state.sessionFilter === 'handoff' ? '暂无待人工会话' : '暂无接待消息'; list.append(empty); return; }
+      updateReplyCountdowns();
+      if (!rows.length) {
+        const empty = document.createElement('div'); empty.className = 'empty';
+        empty.textContent = state.sessionFilter === 'handoff' ? '暂无待人工会话'
+          : (state.clearedAt > 0 ? '列表已清空，新消息会自动出现' : '暂无接待消息');
+        list.append(empty); return;
+      }
       for (const session of rows) {
         const sessionKey = keyOf(session);
         const button = document.createElement('button');
@@ -514,12 +593,34 @@
         main.append(nameWrap, preview);
         const side = document.createElement('span'); side.className = 'session-side';
         const time = document.createElement('span'); time.className = 'session-time'; time.textContent = shortTime(session.last_ts);
+        if (Number(session.reply_due_at || 0) > 0 && session.last_message_role === 'user') {
+          time.className = 'reply-countdown';
+          time.dataset.replyDueAt = String(session.reply_due_at);
+        }
         const glyph = document.createElement('span'); glyph.className = 'open-glyph';
         glyph.textContent = session.ai_mode === 'human' ? (dockMode ? '人↗' : '人工') : (dockMode ? '↗' : '›');
-        side.append(time, glyph); button.append(avatar, main, side);
+        if (dockMode) side.append(aiToggleChip(session), time, glyph);
+        else side.append(time, glyph);
+        button.append(avatar, main, side);
         button.addEventListener('click', () => selectSession(session, dockMode));
         list.append(button);
       }
+      updateReplyCountdowns();
+    }
+    function updateReplyCountdowns() {
+      const now = Date.now() / 1000;
+      for (const node of document.querySelectorAll('[data-reply-due-at]')) {
+        const left = Math.max(0, Math.ceil(Number(node.dataset.replyDueAt) - now));
+        node.classList.toggle('expired', left === 0);
+        node.classList.toggle('urgent', left > 0 && left <= 30);
+        node.closest('.session-row')?.classList.toggle('reply-overdue', left === 0);
+        node.textContent = left === 0 ? '已超时' : `待回复 ${String(Math.floor(left / 60)).padStart(2, '0')}:${String(left % 60).padStart(2, '0')}`;
+        node.title = left === 0 ? '买家消息超过 180 秒未回复' : `回复倒计时：剩余 ${left} 秒`;
+      }
+      const overdue = state.sessions.filter(item => item.ai_mode === 'human' && item.last_message_role === 'user' && Number(item.reply_due_at) > 0 && Number(item.reply_due_at) <= now).length;
+      const handoffCount = state.sessions.filter(item => item.ai_mode === 'human').length;
+      el('handoffSessionsTab').textContent = `待人工 ${handoffCount}${overdue ? ` · 超时 ${overdue}` : ''}`;
+      el('handoffSessionsTab').classList.toggle('alert', overdue > 0);
     }
     function renderContext() {
       const context = [...state.messages].reverse().find(item => item.context && Object.keys(item.context).length)?.context || {};
@@ -557,8 +658,10 @@
     }
     async function loadMessages(forceScroll = false) {
       if (!state.current || dockMode) return;
+      const sessionKey = keyOf(state.current), sequence = ++state.messageLoadSequence;
       const query = new URLSearchParams({account: state.current.account, buyer_id: state.current.buyer_id});
       const data = await api(`/api/v1/session?${query}`);
+      if (!state.current || keyOf(state.current) !== sessionKey || sequence !== state.messageLoadSequence) return;
       const newest = data.messages.length ? data.messages[data.messages.length - 1].event_id : '';
       const revision = data.messages.map(item => `${item.event_id}\u0000${item.msg_id}\u0000${item.role}\u0000${item.status}\u0000${item.content}`).join('\u0001');
       const changed = newest !== state.lastNewest || revision !== state.lastMessageRevision;
@@ -566,21 +669,46 @@
       if (changed || forceScroll) renderMessages(forceScroll || changed);
     }
     async function openInQianniu(session) {
-      const sessionKey = keyOf(session); if (state.openingKey) return;
-      state.openingKey = sessionKey; el('openState').textContent = `正在打开 ${session.buyer_nick || session.buyer_id}`; renderSessions();
-      try {
-        await api('/api/v1/open-conversation', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(session)});
-        el('openState').textContent = `已在千牛打开 ${session.buyer_nick || session.buyer_id}`;
-      } catch (error) { el('openState').textContent = error.message; el('openState').className = 'open-state error'; }
-      finally { state.openingKey = ''; renderSessions(); }
+      const sequence = ++state.openSequence;
+      state.pendingOpen = {session, sequence};
+      const name = session.buyer_nick || session.buyer_id;
+      state.openingKey = keyOf(session); el('openState').textContent = `正在打开 ${name}`;
+      el('openState').className = 'open-state'; renderSessions();
+      updateSendButton();
+      if (dockMode) dockToast(`正在打开 ${name}…`);
+      if (!state.openingPromise) {
+        state.openingPromise = (async () => {
+          // Keep the newest click while the native command is in flight.
+          // Older replies must not overwrite the state of that newer target.
+          while (state.pendingOpen) {
+            const request = state.pendingOpen; state.pendingOpen = null;
+            const target = request.session, targetName = target.buyer_nick || target.buyer_id;
+            try {
+              const result = await api('/api/v1/open-conversation', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({account: target.account, buyer_id: target.buyer_id}), timeout: 15000});
+              if (request.sequence !== state.openSequence) continue;
+              const message = result.verified ? `已在千牛打开 ${targetName}` : `已请求打开 ${targetName}，尚未确认切换，请检查千牛窗口和登录店铺`;
+              el('openState').textContent = message;
+              if (dockMode) dockToast(message, !result.verified);
+            } catch (error) {
+              if (request.sequence !== state.openSequence) continue;
+              el('openState').textContent = error.message; el('openState').className = 'open-state error';
+              if (dockMode) dockToast(`打开会话失败：${error.message}`, true);
+            }
+          }
+        })().finally(() => {
+          state.openingPromise = null; state.openingKey = ''; renderSessions(); updateSendButton();
+        });
+      }
+      await state.openingPromise;
     }
     async function selectSession(session, open = false) {
-      state.current = session; state.lastNewest = ''; state.lastMessageRevision = '';
-      el('buyerName').textContent = session.buyer_nick || session.buyer_id;
+      state.current = session; state.messages = []; state.lastNewest = ''; state.lastMessageRevision = '';
       renderSessionMode();
       el('replyInput').disabled = false;
-      renderSessions(); await loadMessages(true); updateSendButton(); renderEvidence();
-      if (open) await openInQianniu(session);
+      renderSessions(); renderMessages();
+      const opening = open ? openInQianniu(session) : null;
+      await loadMessages(true); updateSendButton(); renderEvidence();
+      if (opening) await opening;
       if (innerWidth <= 760) document.body.classList.remove('show-sessions');
     }
     function renderSessionMode() {
@@ -590,6 +718,7 @@
       el('aiModeButton').disabled = !current || state.controlBusy;
       el('humanModeButton').disabled = !current || state.controlBusy;
       if (!current) return;
+      el('buyerName').textContent = current.buyer_nick || current.buyer_id;
       const modeText = mode === 'human' ? `人工接管${current.handoff_reason ? ` · ${current.handoff_reason}` : ''}` : 'AI 可回复';
       el('conversationMeta').textContent = `${current.account} · ${current.buyer_id} · ${modeText}`;
     }
@@ -616,7 +745,8 @@
       const bridge = state.status.bridge;
       const connected = bridge.browser.connected > 0 && !bridge.browser.error;
       const appbiz = bridge.appbiz_send || {};
-      const receiveReady = connected || !!appbiz.receive_ready;
+      const sdkReady = (bridge.browser.connections || []).some(page => page.imsdk_hooked);
+      const receiveReady = sdkReady || !!appbiz.receive_ready;
       const wasSendReady = state.canSend;
       state.canSend = receiveReady && bridge.send_enabled && appbiz.ready;
       if (!wasSendReady && state.canSend && el('sendState').textContent === '千牛发送链路尚未就绪') {
@@ -624,7 +754,8 @@
         el('sendState').textContent = '';
       }
       dotState(el('qianniuDot'), receiveReady ? (state.canSend ? 'ok' : 'warn') : 'bad');
-      el('qianniuText').textContent = !receiveReady ? '接收链路断开' : (state.canSend ? (connected ? '收发就绪' : '原生收发就绪') : '仅接收就绪');
+      el('qianniuText').textContent = !receiveReady ? (appbiz.last_error || '接收链路断开') : (state.canSend ? '收发就绪' : '仅接收就绪');
+      el('qianniuConnection').title = !receiveReady ? (appbiz.last_error || '千牛消息接收通道未就绪') : '';
       const brain = bridge.brain || {};
       const server = brain.server_status || {};
       const serverKnown = !!brain.last_server_status_at;
@@ -717,6 +848,7 @@
         const nextSessionRevision = nextSessions.map(item => [
           item.account, item.buyer_id, item.buyer_nick, item.last_message, item.last_ts,
           item.message_count, item.last_status, item.ai_mode, item.handoff_reason,
+          item.last_message_role, item.reply_wait_started_at, item.reply_due_at,
         ].join('\u0000')).join('\u0001');
         const sessionsChanged = state.sessionRevision !== nextSessionRevision;
         state.status = status; state.sessions = nextSessions; state.sessionRevision = nextSessionRevision;
@@ -731,17 +863,8 @@
         dotState(el('qianniuDot'), 'bad'); el('qianniuText').textContent = error.message;
       } finally { state.busy = false; }
     }
-    function updateSendButton() { el('sendButton').disabled = !state.current || !el('replyInput').value.trim() || state.sending; }
-    async function sendReply() {
-      const content = el('replyInput').value.trim(); if (!state.current || !content) return;
-      if (!state.canSend) { el('sendState').className = 'send-state error'; el('sendState').textContent = '千牛发送链路尚未就绪'; return; }
-      state.sending = true; updateSendButton(); el('replyInput').disabled = true; el('sendState').className = 'send-state'; el('sendState').textContent = '正在提交给千牛';
-      try {
-        const result = await api('/api/v1/reply', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({request_id: `workbench-${crypto.randomUUID()}`, buyer_cid: state.current.buyer_id, content})});
-        el('replyInput').value = ''; el('sendState').textContent = result.confirmed ? '千牛已确认' : '已提交，等待千牛确认'; await loadMessages(true);
-      } catch (error) { el('sendState').className = 'send-state error'; el('sendState').textContent = error.message; }
-      finally { state.sending = false; el('replyInput').disabled = !state.current; updateSendButton(); el('replyInput').focus(); }
-    }
+    function updateSendButton() { el('sendButton').disabled = !state.current || !!state.openingKey; }
+    async function replyInQianniu() { if (state.current) await openInQianniu(state.current); }
     async function openSettings() {
       state.settingsOpen = true; el('settingsBackdrop').classList.add('visible'); el('settingsState').textContent = '读取配置';
       try {
@@ -755,6 +878,19 @@
       } catch (error) { el('settingsState').className = 'form-state error'; el('settingsState').textContent = error.message; }
     }
     function closeSettings() { state.settingsOpen = false; el('settingsBackdrop').classList.remove('visible'); el('settingsButton').focus(); }
+    async function exportDiagnostics() {
+      const button = el('exportDiagnosticsButton'); button.disabled = true;
+      try {
+        const data = await api('/api/v1/support-diagnostics');
+        const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
+        const link = document.createElement('a'); link.href = url;
+        link.download = `千牛故障诊断-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+        document.body.append(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        el('settingsState').textContent = '诊断文件已导出';
+      } catch (error) { el('settingsState').textContent = error.message; }
+      finally { button.disabled = false; }
+    }
     function brainSettingsBody() {
       return {
         server_url: el('brainServerInput').value.trim(), agent_token: el('brainTokenInput').value.trim(),
@@ -781,17 +917,23 @@
       catch (error) { el('settingsState').className = 'form-state error'; el('settingsState').textContent = error.message; }
     }
     el('refreshButton').addEventListener('click', refresh);
+    el('clearSessionsButton').addEventListener('click', () => {
+      state.clearedAt = Date.now() / 1000;
+      try { localStorage.setItem('qn_dock_cleared_at', String(state.clearedAt)); } catch (e) {}
+      renderSessions();
+    });
     el('sessionsButton').addEventListener('click', () => document.body.classList.toggle('show-sessions'));
     el('allSessionsTab').addEventListener('click', () => { state.sessionFilter = 'all'; renderSessions(); });
     el('handoffSessionsTab').addEventListener('click', () => { state.sessionFilter = 'handoff'; renderSessions(); });
     conversationSearch.addEventListener('input', () => { if (!rejectUnexpectedSearchAutofill()) renderSessions(); });
     for (const delay of [0, 250, 1000, 2500]) setTimeout(rejectUnexpectedSearchAutofill, delay);
     el('replyInput').addEventListener('input', updateSendButton);
-    el('replyInput').addEventListener('keydown', event => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); sendReply(); } });
-    el('sendButton').addEventListener('click', sendReply);
+    el('replyInput').addEventListener('keydown', event => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); replyInQianniu(); } });
+    el('sendButton').addEventListener('click', replyInQianniu);
     el('aiModeButton').addEventListener('click', () => setSessionMode('ai'));
     el('humanModeButton').addEventListener('click', () => setSessionMode('human'));
     el('settingsButton').addEventListener('click', openSettings);
+    el('exportDiagnosticsButton').addEventListener('click', exportDiagnostics);
     el('closeSettings').addEventListener('click', closeSettings);
     el('saveBrainButton').addEventListener('click', () => saveBrainSettings(true));
     el('testBrainButton').addEventListener('click', testBrain);
@@ -799,7 +941,7 @@
     document.addEventListener('keydown', event => { if (event.key === 'Escape' && state.settingsOpen) closeSettings(); });
     for (const id of ['qianniuConnection', 'brainConnection']) el(id).addEventListener('click', () => document.body.classList.toggle('inspector-open'));
     if (new URLSearchParams(location.search).get('settings') === '1') openSettings();
-    refresh(); setInterval(refresh, 5000);
+    refresh(); setInterval(refresh, 5000); setInterval(updateReplyCountdowns, 1000);
   </script>
 </body>
 </html>

@@ -309,7 +309,11 @@ class CaptureCadenceTests(unittest.TestCase):
 
     def test_config_revision_backfills_cadence(self) -> None:
         source = (ROOT / "config_defaults.py").read_text(encoding="utf-8")
-        self.assertIn("CONFIG_DEFAULTS_REVISION = 5", source)
+        from config_defaults import apply_operational_defaults
+        config = {"config_defaults_revision": 4}
+        apply_operational_defaults(config)
+        self.assertEqual(config["bridge_passive_dom_ms"], 5000)
+        self.assertEqual(config["bridge_passive_cache_ms"], 10000)
         self.assertIn('setdefault("bridge_passive_dom_ms", 5000)', source)
         self.assertIn('setdefault("bridge_passive_cache_ms", 10000)', source)
 

@@ -14,6 +14,7 @@ import ctypes
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -186,6 +187,9 @@ def build_injection(config: dict, bridge_source: str) -> str:
         "invoke_observer": bool(config.get("bridge_invoke_observer", True)),
         "ws_mirror": bool(config.get("bridge_ws_mirror", True)),
         "history_poll": bool(config.get("bridge_history_poll", False)),
+        "history_probe": bool(config.get("bridge_history_probe", False)),
+        "history_probe_params": config.get("bridge_history_probe_params")
+        if isinstance(config.get("bridge_history_probe_params"), dict) else {},
         "discovery_poll": bool(config.get("bridge_discovery_poll", True)),
         # Passive scan cadence for the in-page bridge (milliseconds). Lower =
         # faster recovery for messages the SDK event did not carry, at the cost
@@ -286,15 +290,40 @@ def status_url(config: dict) -> str:
     return f"http://127.0.0.1:{int(config.get('api_port', 42111))}/api/v1/status"
 
 
-def fetch_status(config: dict, timeout: float = 2.0) -> dict | None:
+def fetch_status_with_reason(config: dict, timeout: float = 2.0) -> tuple[dict | None, str]:
+    """Probe the local API and report *why* it failed.
+
+    ``fetch_status`` collapses every failure to ``None``, which is why the tray
+    used to print "未监听" for a bridge that was simply too busy to answer in
+    time. The reason lets the owner panel distinguish the two cases.
+    """
+    if not config:
+        return None, "no_config"
     request = urllib.request.Request(status_url(config), method="GET")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status != 200:
-                return None
-            return json.loads(response.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, ValueError):
-        return None
+                return None, f"http_{response.status}"
+            return json.loads(response.read().decode("utf-8")), ""
+    except urllib.error.HTTPError as error:
+        return None, f"http_{error.code}"
+    except (socket.timeout, TimeoutError):
+        return None, "timeout"
+    except urllib.error.URLError as error:
+        if isinstance(getattr(error, "reason", None), (socket.timeout, TimeoutError)):
+            return None, "timeout"
+        return None, "refused"
+    except ConnectionError:
+        return None, "refused"
+    except ValueError:
+        return None, "bad_response"
+    except OSError:
+        return None, "refused"
+
+
+def fetch_status(config: dict, timeout: float = 2.0) -> dict | None:
+    status, _reason = fetch_status_with_reason(config, timeout=timeout)
+    return status
 
 
 def live_managed_pid(pid_file: Path) -> int:

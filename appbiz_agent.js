@@ -2,6 +2,24 @@
 
 const appBiz = Process.getModuleByName('AppBiz.dll');
 const HOOK_PROFILES = {
+  0x2039000: {
+    version: '9.98.49N',
+    serviceVtable: 0x19b1788,
+    secondaryVtable1: 0x19b18f0,
+    secondaryVtable2: 0x19b1900,
+    serviceGetNewMsg: 0xa81760,
+    serviceOnMessageArrive: 0xa85080,
+    serviceSendText: 0xa8d700,
+  },
+  0x1f31000: {
+    version: '9.97.86N',
+    serviceVtable: 0x18d2bd8,
+    secondaryVtable1: 0x18d2d40,
+    secondaryVtable2: 0x18d2d50,
+    serviceGetNewMsg: 0xa78bc0,
+    serviceOnMessageArrive: 0xa7c4e0,
+    serviceSendText: 0xa84b40,
+  },
   0x1f05000: {
     version: '9.97.59N',
     serviceVtable: 0x18af478,
@@ -68,7 +86,10 @@ if (!serviceVtable.add(0x90).readPointer().equals(serviceSendText)) {
 }
 const helperPath = __APPBIZ_ADAPTER_PATH__;
 const selectedServiceHint = __SELECTED_SERVICE__;
-const SERVICE_CCACHE_TTL_MS = 120000;
+const DUMP_IMAGE_STRUCT = (typeof __APPBIZ_DUMP_IMAGE_STRUCT__ !== 'undefined')
+  ? __APPBIZ_DUMP_IMAGE_STRUCT__ : false;
+// Retain bounded passive routes; legacy callers still enforce 120s on send.
+const SERVICE_CCACHE_TTL_MS = 8 * 60 * 60 * 1000;
 const SERVICE_CCACHE_MAX = 256;
 const MESSAGE_SIZE = 584;
 const MESSAGE_CCODE_OFFSET = 8;
@@ -90,6 +111,7 @@ let helperSendText = null;
 let helperPollSend = null;
 let helperCancelSend = null;
 let lastCandidateScanMs = 0;
+let imageStructDumpSent = false;
 
 function readMsvcString(address) {
   try {
@@ -165,6 +187,12 @@ function scanCandidates() {
 }
 
 scanCandidates();
+let nativeMessageStore;
+try { nativeMessageStore = createNativeMessageStore(() => candidates.map(candidateDetails)); }
+catch (error) {
+  const reason=String(error.message||error).slice(0,160);
+  nativeMessageStore={read(){return {ok:false,error:reason,rows:[]};},status(){return {databases:0,error:reason};}};
+}
 
 // Login and shift changes can create the service objects after this script is
 // attached. Keep retrying only while no service object is available.
@@ -254,6 +282,28 @@ Interceptor.attach(serviceOnMessageArrive, {
           !ccode || ccode.indexOf('#') < 0 || ccode.indexOf('@') < 0 ||
           !messageId || !content
         ) continue;
+        // 诊断：图片消息只拿到 "[图片]"；把首条图片的 0x248 字节结构 dump 出来，
+        // 供离线定位图片 URL 字段。默认关闭，不影响任何收发行为。
+        if (DUMP_IMAGE_STRUCT && !imageStructDumpSent && /\[图片\]|^图片$/.test(String(content).trim())) {
+          imageStructDumpSent = true;
+          try {
+            send({
+              event: 'appbiz_message_dump',
+              reason: 'image_struct',
+              size: MESSAGE_SIZE,
+              message: {
+                ccode: ccode,
+                message_id: messageId,
+                buyer_id: buyerId,
+                seller_id: sellerId,
+                content: content,
+              },
+              struct_hex: readHex(message, MESSAGE_SIZE),
+            });
+          } catch (dumpError) {
+            send({event: 'appbiz_message_dump_error', error: String(dumpError)});
+          }
+        }
         pruneServiceCcache(now);
         serviceByCcode.set(ccode, {service: service, seen_at_ms: now});
         receivedMessages += 1;
@@ -327,6 +377,15 @@ Interceptor.attach(serviceSendText, {
 function ensureHelper() {
   if (helperSendText !== null) return;
   helperModule = Module.load(helperPath);
+  const supportedAddress = helperModule.findExportByName('appbiz_adapter_profile_supported_v1');
+  if (supportedAddress !== null) {
+    const supported = new NativeFunction(supportedAddress, 'int', ['uint64']);
+    if (supported(new UInt64(String(hookProfile.serviceVtable))) !== 1) {
+      throw new Error('native adapter does not support ' + hookProfile.version);
+    }
+  } else if (hookProfile.version === '9.98.49N') {
+    throw new Error('9.98.49N requires the updated native adapter; update both JS and DLL');
+  }
   helperSendText = new NativeFunction(
     helperModule.getExportByName('appbiz_send_text_v2'),
     'int',
@@ -345,6 +404,9 @@ function ensureHelper() {
 }
 
 rpc.exports = {
+  readmessages(account, ccode, beforeMs, afterMs, messageId, count) {
+    return nativeMessageStore.read(String(account),String(ccode),beforeMs,afterMs,String(messageId||''),count);
+  },
   status() {
     if ((selectedService === null || candidates.length === 0) && Date.now() - lastCandidateScanMs >= 30000) {
       scanCandidates();
@@ -369,18 +431,19 @@ rpc.exports = {
       received_messages: receivedMessages,
       last_receive_at_ms: lastReceiveAtMs,
       helper_loaded: helperModule !== null,
+      message_store: nativeMessageStore.status(),
     };
   },
-  preparesend(ccode) {
+  preparesend(ccode, centralExecution) {
     // Passive cached route validation only: no GetNewMsg or native send call.
     const route = serviceByCcode.get(String(ccode));
-    if (!route || Date.now() - route.seen_at_ms > 120000) return {ok: false};
+    if (!route || (!centralExecution && Date.now() - route.seen_at_ms > 120000)) return {ok: false};
     return {ok: selectService(route.service, 'singlemsg_getnewmsg')};
   },
-  sendtext(arg1, arg2, arg3, receiptToken) {
+  sendtext(arg1, arg2, arg3, receiptToken, centralExecution) {
     const ccode = String(arg1);
     const route = serviceByCcode.get(ccode);
-    if (!route || Date.now() - route.seen_at_ms > 120000) {
+    if (!route || (!centralExecution && Date.now() - route.seen_at_ms > 120000)) {
       throw new Error('Qianniu has no recent GetNewMsg context for the target ccode');
     }
     if (!selectService(route.service, 'singlemsg_getnewmsg')) {

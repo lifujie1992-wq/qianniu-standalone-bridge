@@ -74,6 +74,7 @@ function loadBridge(options = {}) {
     setItem(key, value) { this.values.set(key, value); },
   };
   const window = {
+    __qn_standalone_options: options.bridgeOptions || {},
     imsdk,
     _db: {msgDataMap: new Map(), ...(options.db || {})},
     _conversationId: {ccode: 'foreground#1@cntaobao'},
@@ -308,6 +309,7 @@ test('UID lookup is coalesced, messages wait for nick, and later messages use ca
   receive(uidMessage('resolve-2'));
   assert.equal(captured(b).length, 0);
   await settle();
+  await settle();
   const pending = JSON.parse(b.window.localStorage.getItem('qn_standalone_v1_pending_events'));
   assert.equal(pending.filter(e => e.nickname_pending).length, 2);
   await settle();
@@ -476,4 +478,183 @@ test('Tmall transfer emitted by a staff seat keeps a buyer-eligible parent witho
   assert.equal(row.role,'user');
   assert.notEqual(row.nickname,'联想官方旗舰店:雪晴');
   assert.equal(row.original_msg_id,'tmall-staff-transfer');
+});
+
+test('native-only nickname backfill reads explicit cached login identity without replaying chat', async () => {
+  const buyer = '2212089943099.1-126446588.1#11001@cntaobao';
+  const account = '联想官方旗舰店:小山';
+  const cached = {...message(buyer, '2212089943099', '4337282500251.PNM', '你好，我买的随身WiFi用不了'), loginid: {nick: account}};
+  const b = loadBridge({asyncRpc: true, invoke(api) {
+    return api === 'util.GetUserNick' ? {result: {uid: '2212089943099.1', nick: 'dysileib'}} : {result: {list: []}};
+  }});
+  b.window._db.msgDataMap.set(buyer, [cached]);
+  const result = await b.window.__qn_standalone_backfill_nicknames([{account, buyer_id: buyer}]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].nickname, 'dysileib');
+  assert.equal(captured(b).length, 0);
+  assert.equal(captured(b, 'nickname_update')[0].account, account);
+  assert.equal(captured(b, 'nickname_update')[0].buyer_id, buyer);
+});
+
+test('native-only backfill cannot infer login account from target or buyer nickname', async () => {
+  const b = loadBridge({asyncRpc: true});
+  b.window._db.msgDataMap.set(NUMERIC_BUYER, [uidMessage('cached-no-login', {loginid: undefined})]);
+  const result = await b.window.__qn_standalone_backfill_nicknames([{account: 'seller', buyer_id: NUMERIC_BUYER}]);
+  assert.equal(result.length, 0);
+  assert.equal(captured(b, 'nickname_update').length, 0);
+});
+
+test('native-only backfill rejects a different or conflicting cached seller', async () => {
+  for (const accounts of [['other-shop'], ['seller', 'other-shop']]) {
+    const b = loadBridge({asyncRpc: true});
+    b.window._db.msgDataMap.set(NUMERIC_BUYER, accounts.map((account, i) => uidMessage('cached-' + i, {loginid: {nick: account}})));
+    const result = await b.window.__qn_standalone_backfill_nicknames([{account: 'seller', buyer_id: NUMERIC_BUYER}]);
+    assert.equal(result.length, 0);
+    assert.equal(captured(b, 'nickname_update').length, 0);
+    assert.equal(b.calls.some(call => call.api === 'util.GetUserNick'), false);
+  }
+});
+
+test('transfer cache preserves an older buyer question as context before the live notice', () => {
+  const account = '联想官方旗舰店:燕燕';
+  const bridge = loadBridge();
+  const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
+  const question = uidMessage('old-pre-transfer', {...common, summary: '设备怎么打开', sendTime: Date.now()-6*60*1000});
+  const notice = uidMessage('live-transfer', {...common, summary: '由 服务助手 转交给 燕燕', sendTime: Date.now()});
+  bridge.window._db.msgDataMap.set(NUMERIC_BUYER, [question, notice]);
+  bridge.window.__qn_standalone_self_heal('transfer-history-test');
+  const events = captured(bridge);
+  const old = events.find(event => event.msg_id === 'old-pre-transfer');
+  assert.ok(old, 'buyer question visible in Qianniu must not be dropped');
+  assert.equal(old.capture_mode, 'history_snapshot');
+  assert.equal(old.content, '设备怎么打开');
+  assert.equal(old.buyer_id, NUMERIC_BUYER);
+  assert.equal(old.account, account);
+  assert.ok(events.findIndex(event => event.msg_id === 'old-pre-transfer') < events.findIndex(event => event.msg_id === 'live-transfer'));
+  assert.equal(bridge.invokeCalls, 0);
+});
+
+test('transfer context marking preserves a newer buyer question and does not enable other shops', () => {
+  for (const account of ['联想官方旗舰店:燕燕', '普通淘宝店:客服']) {
+    const bridge = loadBridge();
+    const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
+    const now = Date.now();
+    bridge.window._db.msgDataMap.set(NUMERIC_BUYER, [
+      uidMessage('older', {...common, summary: '物联卡是什么', sendTime: now-6*60*1000}),
+      uidMessage('transfer', {...common, summary: '由 服务助手 转交给 燕燕', sendTime: now}),
+      uidMessage('newer', {...common, summary: '怎么续费', sendTime: now+1000}),
+    ]);
+    bridge.window.__qn_standalone_self_heal('transfer-context-boundaries');
+    const events = captured(bridge);
+    const newer = events.find(event => event.msg_id === 'newer');
+    assert.ok(newer);
+    assert.equal(newer.capture_mode, 'event-local-db:im.singlemsg.onReceiveNewMsg');
+    if (account.startsWith('联想')) assert.equal(events.find(event => event.msg_id === 'older').capture_mode, 'history_snapshot');
+    else assert.equal(events.some(event => event.msg_id === 'older'), false);
+  }
+});
+
+test('old Tmall cache stays available as context without triggering live replay', () => {
+  const bridge = loadBridge();
+  const account = '联想官方旗舰店:燕燕';
+  const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
+  bridge.window._db.msgDataMap.set(NUMERIC_BUYER, [
+    uidMessage('old-q', {...common, summary: '设备怎么打开', sendTime: Date.now()-7*60*1000}),
+    uidMessage('old-notice', {...common, summary: '由 服务助手 转交给 燕燕', sendTime: Date.now()-6*60*1000}),
+  ]);
+  bridge.window.__qn_standalone_self_heal('stale-transfer-context');
+  const rows = captured(bridge);
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every(row => row.capture_mode === 'history_snapshot'));
+});
+
+
+test('Tmall uploads observed sender evidence even when role cannot be resolved', () => {
+  const b=loadBridge();
+  const raw=uidMessage('raw-identity',{loginid:{nick:'联想官方旗舰店:燕燕',uid:'126446588.1'},fromid:{uid:'4007146934.1',nick:'真实买家'},toid:{nick:'联想官方旗舰店:燕燕',uid:'126446588.1'}});
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(raw);
+  const row=captured(b)[0];
+  assert.equal(row.sender_uid,'4007146934.1');
+  assert.equal(row.login_uid,'126446588.1');
+  assert.equal(row.sender_nick,'真实买家');
+  assert.equal(row.recipient_nick,'联想官方旗舰店:燕燕');
+});
+
+test('other shops do not get the Tmall raw-evidence contract', async () => {
+  const b=loadBridge();
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('other-raw'));
+  await settle();
+  assert.equal(captured(b)[0].sender_uid,undefined);
+});
+
+
+test('Tmall history burst preserves every raw event and the pending live message', async () => {
+  const b = loadBridge({asyncRpc:true});
+  const account = '联想官方旗舰店:燕燕';
+  const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('live-pending', common));
+  for (let batch = 0; batch < 6; batch++) {
+    b.window._db.msgDataMap.set(NUMERIC_BUYER, Array.from({length:100}, (_, i) =>
+      uidMessage(`history-${batch}-${i}`, {...common, sendTime:Date.now()-7*60*1000})));
+    b.window.__qn_standalone_self_heal('history-capacity');
+  }
+  await settle();
+  const pending = JSON.parse(b.window.localStorage.getItem('qn_standalone_v1_pending_events'));
+  assert.equal(pending.length, 601);
+  assert.ok(pending.some(envelope => envelope.payload.msg_id === 'live-pending'));
+});
+
+test('Tmall retains entry order and product fields from the individual raw message', () => {
+  const b=loadBridge();
+  const raw=uidMessage('entry-context',{loginid:{nick:'联想官方旗舰店:燕燕'},toid:{nick:'联想官方旗舰店:燕燕'},entryContext:{orderId:'1234567890123456789',product:{sku:'unknown-field'}}});
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(raw);
+  assert.deepEqual(captured(b)[0].raw_message.entryContext,raw.entryContext);
+});
+
+test('Tmall uploads rich entry context even without a text summary', () => {
+  const b=loadBridge();
+  const raw=uidMessage('entry-empty',{loginid:{nick:'联想官方旗舰店:燕燕'},toid:{nick:'联想官方旗舰店:燕燕'},summary:'',content:'',entryContext:{orderId:'1234567890123456789'}});
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(raw);
+  assert.equal(captured(b).length,1);
+  assert.equal(captured(b)[0].raw_message.entryContext.orderId,'1234567890123456789');
+});
+
+test('history probe is opt-in, targets only the transferred conversation and runs once', async () => {
+  const common = {loginid:{nick:'联想官方旗舰店:燕燕'},toid:{nick:'联想官方旗舰店:燕燕'},
+    summary:'由 服务助手 转交给 燕燕'};
+  const off = loadBridge({asyncRpc:true});
+  off.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('probe-off', common));
+  await settle();
+  assert.equal(off.calls.filter(call => /Get(?:Remote|Local)HisMsg/.test(call.api)).length, 0);
+  const on = loadBridge({asyncRpc:true,bridgeOptions:{history_probe:true,
+    history_probe_params:{ccode:'another-customer',count:10}},invoke:() => ({ok:true,result:[]})});
+  on.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('probe-on-1', common));
+  on.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('probe-on-2', common));
+  await settle();
+  const calls = on.calls.filter(call => /Get(?:Remote|Local)HisMsg/.test(call.api));
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.params.ccode === NUMERIC_BUYER));
+  assert.ok(calls.every(call => call.params.startTime > 0 && call.params.count === 10));
+  assert.equal(on.window.__qn_standalone_diag.history_probe_results.length, 2);
+});
+
+test('history probe retries after the SDK becomes available', async () => {
+  const b = loadBridge({asyncRpc:true,bridgeOptions:{history_probe:true},invoke:() => ({ok:true})});
+  const sdk = b.window.imsdk;
+  const common = {loginid:{nick:'联想官方旗舰店:燕燕'},toid:{nick:'联想官方旗舰店:燕燕'},
+    summary:'由 服务助手 转交给 燕燕'};
+  b.window.imsdk = undefined;
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('probe-no-sdk', common));
+  b.window.imsdk = sdk;
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('probe-sdk-ready', common));
+  await settle();
+  assert.equal(b.calls.filter(call => /Get(?:Remote|Local)HisMsg/.test(call.api)).length, 2);
+});
+
+test('native image lookup never substitutes one older image for a different message ID', () => {
+  const b = loadBridge();
+  const url = 'https://img.alicdn.com/imgextra/i1/100/chat-image.jpg';
+  b.window._db.msgDataMap.set(NUMERIC_BUYER, [uidMessage('older-image', {summary:url,image_url:url})]);
+  assert.equal(b.window.__qn_standalone_image_url(NUMERIC_BUYER, 'missing-new-image'), '');
+  assert.equal(b.window.__qn_standalone_image_url(NUMERIC_BUYER, 'qn-msg-v1|taobao|older-image'), url);
 });

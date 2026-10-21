@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app_version import VERSION
-from device_identity import brain_workstation_token
+from device_identity import brain_workstation_token, http_header_value
 
 
 def version_key(value: str) -> tuple[int, ...]:
@@ -46,8 +46,8 @@ def fetch_update_manifest(config: dict[str, Any], timeout: float = 8.0) -> dict[
         raise ValueError("更新清单地址无效")
     request = urllib.request.Request(url, headers={
         "Accept": "application/json",
-        "X-Agent-Token": brain_workstation_token(config),
-        "X-Agent-Id": str(config.get("brain_agent_id") or ""),
+        "X-Agent-Token": http_header_value(brain_workstation_token(config), "大脑工位令牌"),
+        "X-Agent-Id": http_header_value(config.get("brain_agent_id"), "大脑工位 ID"),
     })
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

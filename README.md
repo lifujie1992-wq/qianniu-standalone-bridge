@@ -120,6 +120,12 @@ node --check .\appbiz_agent.js
 | `bridge_ws_mirror` | true | 探测并镜像千牛自身的 IM WebSocket 帧（先调原函数再镜像） |
 | `bridge_discovery_poll` | true | 每 4 秒轮换一个"最近会话列表"API，只为发现 ccode |
 | `bridge_history_poll` | **false** | 主动拉取 `GetNewMsg` / `PeekNewMsg`。会推进千牛自己的消息游标，默认关闭 |
+| `bridge_native_image_lookup` | **true** | 原生 AppBiz 回调只带「[图片]」时，从千牛页面本地 `msgDataMap` 取真实图片 URL，供大脑视觉链路使用；置 false 回退为文字追问 |
+| `bridge_history_probe` | **false** | 诊断用：收到转接通知时，只对该 ccode 各调一次 `GetRemoteHisMsg` / `GetLocalHisMsg`，参数默认 `{ccode, count:100, startTime: 当天零点}`，结果写入 `window.__qn_standalone_diag.history_probe_results`。不改变正常消息处理 |
+| `bridge_history_probe_params` | `{}` | 覆盖上面的探测参数（例如接口需要的字段名/时间单位）；未提供时间字段时自动补当天零点 |
+| `appbiz_dump_image_struct` | **false** | 诊断用：首条 `[图片]` 到达时，把 AppBiz 584 字节消息结构 hex dump 成 `appbiz_message_dump` 事件，用于离线定位图片 URL 字段 |
+
+> 诊断开关只用于采集真实 Windows 客户端的 API 参数/结构，默认关闭。图片 URL 的本地缓存回查使用独立的 `bridge_native_image_lookup` 开关。
 
 改动后需要重新注入并让千牛重新加载聊天页：
 

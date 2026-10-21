@@ -1,7 +1,7 @@
 #define AppName "淘宝千牛 AI 客服助手"
-#define AppVersion "1.6.10"
+#define AppVersion "1.6.21"
 #define AppPublisher "Qianniu AI Service"
-#define SourceDir "..\delivery\淘宝千牛AI客服-安装版-1.6.10"
+#define SourceDir "..\delivery\淘宝千牛AI客服-安装版-1.6.21"
 
 [Setup]
 AppId={{C31C8BA7-A990-4B80-99D2-E69EF3AD91CA}
@@ -13,8 +13,8 @@ UsePreviousAppDir=no
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=..\delivery
-OutputBaseFilename=淘宝千牛AI客服安装包-1.6.10
-Compression=lzma2/ultra64
+OutputBaseFilename=淘宝千牛AI客服安装包-1.6.21
+Compression=lzma2/normal
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
@@ -36,7 +36,8 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "autostart"; Description: "登录 Windows 后自动启动客服助手"; GroupDescription: "自动启动："; Flags: unchecked
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "config.json,state\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\config.json"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall
 
 [Icons]
 Name: "{group}\启动客服助手"; Filename: "{app}\QianniuAgent.exe"
