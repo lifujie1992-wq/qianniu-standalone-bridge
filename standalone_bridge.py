@@ -3677,6 +3677,8 @@ class BrowserServer:
         self.last_diagnostics: dict[str, Any] = {}
         self.connection_diagnostics: dict[Any, dict[str, Any]] = {}
         self.error = ""
+        self.event_error = ""
+        self.rejected_events = 0
         self.connection_lock = threading.Lock()
         self.connection_ready = threading.Event()
         self.connections: dict[Any, threading.Lock] = {}
@@ -4068,10 +4070,12 @@ class BrowserServer:
                     nickname_update = message["payload"].get("type") == "nickname_update"
                     required = ("account", "buyer_id", "nickname" if nickname_update else "content")
                     if any(not is_nonempty(message["payload"].get(key)) for key in required):
-                        self.error = "browser event missing " + ", ".join(required)
+                        self.event_error = "browser event missing " + ", ".join(required)
+                        self.rejected_events += 1
                         continue
                     if nickname_update and not event_nickname(message["payload"]):
-                        self.error = "browser nickname_update has no valid nickname"
+                        self.event_error = "browser nickname_update has no valid nickname"
+                        self.rejected_events += 1
                         continue
                     event_id, _changed = self.app.ingest_event(message["payload"])
                     self.total_events += 1
@@ -6558,6 +6562,8 @@ class StandaloneBridge:
                 "diagnostics": self.browser.last_diagnostics,
                 "connections": self.browser.diagnostics_by_connection(),
                 "error": self.browser.error,
+                "event_error": self.browser.event_error,
+                "rejected_events": self.browser.rejected_events,
             },
             "context_enrich": self.context.status(),
             "native_context": self.native_context.status(),

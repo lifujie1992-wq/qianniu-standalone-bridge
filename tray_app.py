@@ -117,10 +117,23 @@ def _probe_bridge(config: dict) -> tuple[bool, str, dict | None]:
     status, reason = launcher.fetch_status_with_reason(config, timeout=5.0)
     key = str(port)
     state = _BRIDGE_PROBE_STATE.setdefault(key, {"failures": 0, "ever_ok": False})
-    if status and status.get("ok"):
+    if isinstance(status, dict) and status.get("ok"):
         state["failures"] = 0
         state["ever_ok"] = True
         return True, f"127.0.0.1:{port}", status
+    if isinstance(status, dict):
+        # The API answered. A component fault is not a stopped process or an
+        # unbound port, and must not be hidden by the timeout grace period.
+        state["failures"] = 0
+        error = "本地状态异常"
+        for name in ("api", "workbench", "browser"):
+            component = status.get(name)
+            if isinstance(component, dict) and component.get("error"):
+                error = str(component["error"])[:200]
+                break
+        return False, "服务运行中：" + error, status
+    if status is not None:
+        status, reason = None, "bad_response"
     state["failures"] += 1
     detail = _bridge_failure_detail(reason, port)
     if state["ever_ok"] and state["failures"] < _BRIDGE_STOP_AFTER_FAILURES:
@@ -136,12 +149,13 @@ def build_status(root: Path) -> AppStatus:
     # perfectly healthy bridge as stopped, leaving the tray stuck on
     # "部分组件未就绪".
     bridge_ok, bridge_detail, bridge = _probe_bridge(config)
+    bridge_reachable = isinstance(bridge, dict)
     qianniu_count = _managed_qianniu_count(root)
     dock_running = _pid_file_running(root / "state" / "docked_workbench.pid")
 
     components = {
         "bridge": ComponentStatus(
-            state="healthy" if bridge_ok else "stopped",
+            state="healthy" if bridge_ok else ("degraded" if bridge_reachable else "stopped"),
             detail=bridge_detail,
         ),
         "qianniu": ComponentStatus(
@@ -156,13 +170,13 @@ def build_status(root: Path) -> AppStatus:
         ),
     }
     required_healthy = bridge_ok and qianniu_count > 0
-    any_running = bridge_ok or qianniu_count > 0 or dock_running
+    any_running = bridge_ok or bridge_reachable or qianniu_count > 0 or dock_running
     if required_healthy:
         state = "healthy"
         error = ""
     elif any_running:
         state = "degraded"
-        error = "部分组件未就绪，可右键托盘图标重新启动全部。"
+        error = "部分组件未就绪，请查看组件详情。"
     else:
         state = "stopped"
         error = ""
