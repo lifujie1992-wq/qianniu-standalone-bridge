@@ -3729,7 +3729,10 @@ class BrowserServer:
         with send_lock:
             connection.send(json.dumps(payload, ensure_ascii=False))
 
-    def execute(self, expression: str, timeout: float = 3.0, *, result_filter: Any = None) -> Any:
+    def execute(
+        self, expression: str, timeout: float = 3.0, *, result_filter: Any = None,
+        raise_on_no_match: bool = False,
+    ) -> Any:
         request_id = uuid.uuid4().hex
         with self.connection_lock:
             connections = list(self.connections)
@@ -3754,20 +3757,25 @@ class BrowserServer:
             if not sent:
                 raise RuntimeError("Qianniu browser command could not be sent")
             deadline = time.monotonic() + timeout
+            last_error: RuntimeError | None = None
             for _ in range(sent):
                 try:
                     response = response_queue.get(timeout=max(0.0, deadline - time.monotonic()))
                 except queue.Empty as error:
-                    if result_filter is not None:
+                    if result_filter is not None and not raise_on_no_match:
                         return None
                     raise RuntimeError("Qianniu browser command timed out") from error
                 if not response.get("ok"):
+                    last_error = RuntimeError(str(response.get("error") or "Qianniu browser command failed"))
                     if result_filter is not None:
                         continue
-                    raise RuntimeError(str(response.get("error") or "Qianniu browser command failed"))
+                    raise last_error
                 value = response.get("value")
                 if result_filter is None or result_filter(value):
                     return value
+                last_error = RuntimeError("Qianniu browser response did not match the requested capability")
+            if raise_on_no_match:
+                raise last_error or RuntimeError("Qianniu browser returned no matching response")
             return None
         finally:
             with self.connection_lock:
@@ -4101,6 +4109,10 @@ class BrowserServer:
             LOG.exception("browser WebSocket server stopped")
 
 
+class ContextChannelUnavailable(RuntimeError):
+    """No connected page can currently invoke the order channel."""
+
+
 class ContextEnricher:
     ITEM_METHOD = "mtop.taobao.qianniu.cs.item.record.query"
     ORDER_METHOD = "mtop.taobao.qianniu.cs.trade.query"
@@ -4126,6 +4138,10 @@ class ContextEnricher:
         self.requests = 0
         self.successes = 0
         self.skipped = 0
+        self.enqueue_calls = 0
+        self.enqueued = 0
+        self.skip_reasons: dict[str, int] = {}
+        self.result_counts: dict[str, int] = {}
         self.last_success_at = 0.0
         self.last_error = ""
         self.last_event_id = ""
@@ -4164,17 +4180,34 @@ class ContextEnricher:
         return ""
 
     def enqueue(self, event_id: str, event: dict[str, Any]) -> None:
+        with self.lock:
+            self.enqueue_calls += 1
         if not self.app.config.get("context_enrich_enabled", True):
+            self._record_skip("disabled")
             return
         role = str(event.get("role") or "user").strip().lower()
         if role not in {"user", "buyer", "customer"} and not tmall_guard_scope(event.get("account")):
+            self._record_skip("role_filtered")
             return
         encrypt_id = self.buyer_encrypt_id(event)
         if not encrypt_id:
-            self.skipped += 1
+            with self.lock:
+                self.skipped += 1
+            self._record_skip("missing_buyer_encrypt_id")
+            # Persist the reason before ingestion queues the event for upload.
+            # Absence of a lookup must never look like evidence of no orders.
+            db = getattr(self.app, "db", None)
+            if db is not None:
+                db.enrich_event(event_id, {"context_enrich": {
+                    "ok": False, "status": "error_unknown",
+                    "error": "missing_buyer_encrypt_id", "retry_count": 0,
+                    "provider": "qianniu_standalone_mtop", "build_hash": BUILD_HASH,
+                    "mtop_api": self.ORDER_METHOD, "trace_id": uuid.uuid4().hex,
+                }})
             return
         with self.lock:
             if event_id in self.queued:
+                self._record_skip("already_queued")
                 return
             self.queued.add(event_id)
         # Bound memory without dropping enrichment: a full queue applies
@@ -4182,13 +4215,20 @@ class ContextEnricher:
         while True:
             try:
                 self.pending.put(event_id, timeout=0.5)
+                with self.lock:
+                    self.enqueued += 1
                 return
             except queue.Full:
                 stop_event = getattr(self.app, "stop_event", None)
                 if stop_event is not None and stop_event.is_set():
                     with self.lock:
                         self.queued.discard(event_id)
+                    self._record_skip("stopped")
                     return
+
+    def _record_skip(self, reason: str) -> None:
+        with self.lock:
+            self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
 
     @staticmethod
     def decode(value: Any) -> Any:
@@ -4413,6 +4453,8 @@ class ContextEnricher:
         history_orders: list[dict[str, Any]] = []
         for attempt in range(1 + self.EMPTY_ORDER_RETRIES):
             # 店铺/历史订单与订单重试无关，只在第一次尝试里并行取。
+            lookup_failed = False
+            channel_unavailable = False
             try:
                 snapshot = self._fetch_once(
                     encrypt_id, biz_order_id,
@@ -4420,8 +4462,8 @@ class ContextEnricher:
                     include_history and attempt == 0,
                 )
             except Exception as error:
-                if not tmall_guard_scope(account):
-                    raise
+                lookup_failed = True
+                channel_unavailable = isinstance(error, ContextChannelUnavailable)
                 # Publish lookup failure to the brain too; a local diagnostic
                 # alone would leave it unable to distinguish absence from error.
                 snapshot = {
@@ -4430,7 +4472,7 @@ class ContextEnricher:
                     "orders_ok": False, "errors": [str(error)[:500]],
                     "raw_context": {}, "ret_code": "", "raw_order_count": 0,
                 }
-            if tmall_guard_scope(account):
+            if tmall_guard_scope(account) and not lookup_failed:
                 # Invocation success does not prove MTop business success or
                 # an understood empty-order response. Preserve evidence below.
                 raw_orders = snapshot.get("raw_context", {}).get("orders")
@@ -4445,6 +4487,10 @@ class ContextEnricher:
                 history_orders = list(snapshot.get("history_orders") or [])
             if snapshot["orders_ok"] and snapshot["orders"]:
                 found = snapshot
+                break
+            if channel_unavailable:
+                # Repeating the same script cannot create an SDK or reconnect
+                # a page. A later event can try again after the short cache TTL.
                 break
             if attempt < self.EMPTY_ORDER_RETRIES:
                 time.sleep(min(0.6, 0.15 * (attempt + 1)))
@@ -4649,10 +4695,26 @@ class ContextEnricher:
             if include_history
             else "Promise.resolve({ok: false, error: 'history orders disabled'})",
         )
-        result = self.app.browser.execute(
-            expression,
-            timeout=float(self.app.config.get("context_enrich_timeout_seconds", 6.0)),
-        )
+        try:
+            result = self.app.browser.execute(
+                expression,
+                timeout=float(self.app.config.get("context_enrich_timeout_seconds", 6.0)),
+                # A dx-h5/control page may answer before recent.html. Accept
+                # an MTop envelope (including business errors), not that page's
+                # missing-SDK error or null response. Keep one shared deadline.
+                result_filter=lambda value: (
+                    isinstance(value, dict) and isinstance(value.get("orders"), dict)
+                ),
+                raise_on_no_match=True,
+            )
+        except RuntimeError as error:
+            if str(error) in {
+                "Qianniu imsdk is unavailable",
+                "Qianniu browser bridge is not connected",
+                "Qianniu browser command could not be sent",
+            }:
+                raise ContextChannelUnavailable(str(error)) from error
+            raise
         if not isinstance(result, dict):
             raise RuntimeError("Qianniu context response is not an object")
         items_result = result.get("items") if isinstance(result.get("items"), dict) else {}
@@ -4808,6 +4870,8 @@ class ContextEnricher:
                 enrichment = self.fetch(encrypt_id, biz_order_id, account)
                 self.app.db.enrich_event(event_id, enrichment)
                 status = str(enrichment.get("context_enrich", {}).get("status") or "")
+                with self.lock:
+                    self.result_counts[status] = self.result_counts.get(status, 0) + 1
                 if status != "error_unknown":
                     self.successes += 1
                     self.last_success_at = time.time()
@@ -4840,12 +4904,19 @@ class ContextEnricher:
                 self.pending.task_done()
 
     def status(self) -> dict[str, Any]:
+        with self.lock:
+            skip_reasons = dict(self.skip_reasons)
+            result_counts = dict(self.result_counts)
         return {
             "enabled": bool(self.app.config.get("context_enrich_enabled", True)),
             "pending": self.pending.qsize(),
             "requests": self.requests,
             "successes": self.successes,
             "skipped": self.skipped,
+            "enqueue_calls": self.enqueue_calls,
+            "enqueued": self.enqueued,
+            "skip_reasons": skip_reasons,
+            "result_counts": result_counts,
             "last_success_at": self.last_success_at,
             "last_event_id": self.last_event_id,
             "last_buyer_encrypt_id": self.last_buyer_encrypt_id,
