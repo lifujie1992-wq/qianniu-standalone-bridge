@@ -47,6 +47,7 @@ from nickname_support import event_nickname, nickname_event_id, valid_nickname
 from native_image_lookup import enrich_native_image_event
 from native_context import NativeContext
 from nickname_resolver import ConversationSelectionWatch, NicknameResolver
+from qn_catalog import QnCatalog, QnCatalogError, mtop_ret
 from reception_wait import message_direction, waiting_state
 from device_identity import (
     DeviceIdentityError,
@@ -5859,6 +5860,128 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 "config": self.app.config.public_brain_settings(),
             })
             return
+        if path == "/api/v1/catalog":
+            self.send_json(200, {"ok": True, **self.app.catalog.status()})
+            return
+        if path == "/api/v1/catalog/goods":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                all_flag = str(query.get("all", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                page_size = int(str(query.get("page_size", ["20"])[0]) or 20)
+                if all_flag:
+                    payload = self.app.catalog.goods_all(
+                        max_pages=int(str(query.get("max_pages", ["20"])[0]) or 20),
+                        page_size=page_size,
+                    )
+                else:
+                    payload = self.app.catalog.goods_page(
+                        page_no=int(str(query.get("page_no", ["1"])[0]) or 1),
+                        page_size=page_size,
+                    )
+            except (QnCatalogError, ValueError) as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **payload})
+            return
+        if path == "/api/v1/catalog/shop":
+            try:
+                payload = self.app.catalog.shop_info()
+            except QnCatalogError as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **payload})
+            return
+        if path == "/api/v1/catalog/goods-detail":
+            query = urllib.parse.parse_qs(parsed.query)
+            item_id = str(query.get("item_id", [""])[0]).strip()
+            if not item_id:
+                self.send_json(400, {"ok": False, "error": "item_id is required"})
+                return
+            payload = self.app.catalog.goods_detail(
+                item_id,
+                str(query.get("buyer_encrypt_id", [""])[0]),
+            )
+            self.send_json(200 if payload.get("detail") else 502, {"ok": bool(payload.get("detail")), **payload})
+            return
+        if path == "/api/v1/catalog/goods-desc":
+            query = urllib.parse.parse_qs(parsed.query)
+            item_id = str(query.get("item_id", [""])[0]).strip()
+            if not item_id:
+                self.send_json(400, {"ok": False, "error": "item_id is required"})
+                return
+            try:
+                payload = self.app.catalog.goods_desc(item_id)
+            except QnCatalogError as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **payload})
+            return
+        if path == "/api/v1/catalog/orders":
+            query = urllib.parse.parse_qs(parsed.query)
+            buyer = str(query.get("buyer_encrypt_id", [""])[0]).strip()
+            if not buyer:
+                self.send_json(400, {"ok": False, "error": "buyer_encrypt_id is required"})
+                return
+            history = str(query.get("history", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+            try:
+                if history:
+                    payload = self.app.catalog.buyer_order_history(
+                        buyer,
+                        page_num=int(str(query.get("page_num", ["1"])[0]) or 1),
+                        page_size=int(str(query.get("page_size", ["20"])[0]) or 20),
+                    )
+                else:
+                    payload = self.app.catalog.buyer_orders(
+                        buyer,
+                        str(query.get("biz_order_id", [""])[0]),
+                    )
+            except (QnCatalogError, ValueError) as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **payload})
+            return
+        if path == "/api/v1/catalog/order-memo":
+            query = urllib.parse.parse_qs(parsed.query)
+            order_id = str(query.get("order_id", [""])[0]).strip()
+            if not order_id:
+                self.send_json(400, {"ok": False, "error": "order_id is required"})
+                return
+            try:
+                payload = self.app.catalog.order_memo(order_id)
+            except QnCatalogError as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **payload})
+            return
+        if path == "/api/v1/catalog/mtop":
+            # 逆向调试通道：直接指定 mtop 方法与参数（对齐福客 invoke_mtopchannel_service）
+            query = urllib.parse.parse_qs(parsed.query)
+            method = str(query.get("method", [""])[0]).strip()
+            if not method:
+                self.send_json(400, {"ok": False, "error": "method is required"})
+                return
+            raw_param = str(query.get("param", ["{}"])[0] or "{}")
+            strict = str(query.get("strict", ["1"])[0]).strip().lower() not in {"0", "false", "no"}
+            version = str(query.get("version", ["1.0"])[0] or "1.0")
+            try:
+                param = json.loads(raw_param)
+                if not isinstance(param, dict):
+                    raise ValueError("param must be a JSON object")
+            except ValueError as error:
+                self.send_json(400, {"ok": False, "error": str(error)[:300]})
+                return
+            try:
+                value = self.app.catalog.raw(method, param, strict=strict, version=version)
+            except QnCatalogError as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {
+                "ok": True,
+                "method": method,
+                "ret": mtop_ret(value),
+                "value": value,
+            })
+            return
         if path == "/api/v1/diagnostics":
             self.send_json(200, {
                 "ok": True,
@@ -6114,6 +6237,8 @@ class StandaloneBridge:
         self.browser = BrowserServer(self)
         self.nicknames = NicknameResolver(self)
         self.context = ContextEnricher(self)
+        # 福客同款 mtop 取数通道：商品目录 / 订单 / 店铺（页面 imsdk → invokeMTopChannelService）
+        self.catalog = QnCatalog(self)
         self.cdp = CdpInjector(self)
         self.updater = UpdaterGuard(self)
         self.appbiz = AppBizSendAdapter(self)
@@ -6566,6 +6691,7 @@ class StandaloneBridge:
                 "rejected_events": self.browser.rejected_events,
             },
             "context_enrich": self.context.status(),
+            "catalog": self.catalog.status(),
             "native_context": self.native_context.status(),
             "cdp": {
                 "enabled": bool(self.config.get("cdp_injection_enabled", False)),

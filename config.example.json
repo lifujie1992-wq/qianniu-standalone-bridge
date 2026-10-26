@@ -36,6 +36,7 @@
   "context_enrich_shop_info": true,
   "context_enrich_history_orders": false,
   "context_enrich_timeout_seconds": 6.0,
+  "catalog_timeout_seconds": 8.0,
   "delivery_enabled": true,
   "send_enabled": true,
   "appbiz_send_adapter_enabled": true,
