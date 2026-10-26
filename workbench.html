@@ -181,7 +181,14 @@
     .metric strong { display: block; font: 600 16px Bahnschrift, sans-serif; }
     .metric span { color: var(--muted); font-size: 10px; }
     .signal-rail { position: relative; margin-left: 4px; padding-left: 18px; }
-    .signal-rail::before { content: ""; position: absolute; left: 3px; top: 4px; bottom: 6px; width: 1px; background: var(--border); }
+    .catalog-orders, .catalog-goods { display: grid; gap: 6px; max-height: 232px; overflow: auto; }
+    .catalog-row { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; background: rgba(255,255,255,.02); }
+    .catalog-row b { display: block; font: 600 11px Bahnschrift, "Microsoft YaHei UI", sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .catalog-row small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; line-height: 1.45; }
+    .catalog-tools { display: flex; gap: 6px; margin: 8px 0 7px; }
+    .catalog-tools input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: inherit; font-size: 11px; }
+    .catalog-tools button { padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
+    .catalog-tools button:disabled { opacity: .5; cursor: default; }    .signal-rail::before { content: ""; position: absolute; left: 3px; top: 4px; bottom: 6px; width: 1px; background: var(--border); }
     .signal-item { position: relative; padding: 0 0 13px; }
     .signal-dot { position: absolute; left: -18px; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--subtle); box-shadow: 0 0 0 3px var(--surface); }
     .signal-dot.ok { background: var(--success); }
@@ -351,6 +358,15 @@
           <div class="metric"><strong id="queueDelivered">0</strong><span>已确认</span></div>
           <div class="metric"><strong id="commandPending">0</strong><span>待回执</span></div>
         </div>
+      </section>
+      <section class="evidence-section">
+        <div class="section-title"><h2>订单 / 商品</h2><span class="state-label" id="catalogState">--</span></div>
+        <div class="catalog-orders" id="catalogOrders"><div class="empty">选择会话后加载买家订单</div></div>
+        <div class="catalog-tools">
+          <input id="catalogSearchInput" name="qn-catalog-search" type="search" placeholder="搜商品（标题/ID/价格）" autocomplete="off" spellcheck="false" data-form-type="other" data-lpignore="true">
+          <button id="catalogSyncButton" type="button" title="立即同步在售商品到本地库">同步</button>
+        </div>
+        <div class="catalog-goods" id="catalogGoods"><div class="empty">暂无商品目录</div></div>
       </section>
       <section class="evidence-section">
         <div class="section-title"><h2>信号轨</h2><span class="state-label" id="detailCount">0 条会话消息</span></div>
@@ -708,6 +724,7 @@
       renderSessions(); renderMessages();
       const opening = open ? openInQianniu(session) : null;
       await loadMessages(true); updateSendButton(); renderEvidence();
+      if (typeof loadCatalogOrders === 'function') void loadCatalogOrders(session);
       if (opening) await opening;
       if (innerWidth <= 760) document.body.classList.remove('show-sessions');
     }
@@ -838,6 +855,97 @@
       else for (const item of entries.slice(0, 30)) rail.append(signalEntry(item.stage, item.mode, item.detail, item.ts, item.evidence));
       el('rawStatus').textContent = safeJson(bridge); el('evidenceUpdated').textContent = shortTime(Date.now() / 1000);
     }
+    // ---- 订单 / 商品（学福客：页面 mtop → 桥接 API，本地库靐时检索） ----
+    const encryptIdOf = buyerId => {
+      const match = String(buyerId || '').match(/^(\d{6,22})\./);
+      return match ? match[1] : '';
+    };
+    function catalogRow(title, lines, options = {}) {
+      const row = document.createElement('div'); row.className = 'catalog-row';
+      const strong = document.createElement('b'); strong.textContent = String(title || '-'); strong.title = String(title || ''); row.append(strong);
+      for (const line of (lines || []).filter(Boolean)) {
+        const small = document.createElement('small'); small.textContent = line; row.append(small);
+      }
+      if (options.href) { row.style.cursor = 'pointer'; row.addEventListener('click', () => window.open(options.href, '_blank')); }
+      return row;
+    }
+    async function loadCatalogOrders(session) {
+      const box = el('catalogOrders'); if (!box) return;
+      const encryptId = encryptIdOf(session?.buyer_id);
+      if (!encryptId) { box.innerHTML = '<div class="empty">当前会话没有可用的买家标识</div>'; return; }
+      box.innerHTML = '<div class="empty">查询中…</div>';
+      try {
+        const data = await api(`/api/v1/catalog/orders?buyer_encrypt_id=${encodeURIComponent(encryptId)}`);
+        box.replaceChildren();
+        if (!data.orders || !data.orders.length) box.innerHTML = '<div class="empty">该买家暂无订单</div>';
+        for (const order of (data.orders || []).slice(0, 5)) {
+          box.append(catalogRow(order.order_id, [
+            `${order.order_status_text || '-'} · ¥${order.order_price || '-'} · ${order.item_count || 0} 件`,
+            [order.express_company, order.express_order_number].filter(Boolean).join(' '),
+            (order.items || []).map(item => item.goods_name).filter(Boolean).slice(0, 2).join(' / '),
+          ]));
+        }
+        el('catalogState').textContent = `${data.count || 0} 单`;
+      } catch (error) {
+        box.replaceChildren(catalogRow('订单查询失败', [error.message]));
+        el('catalogState').textContent = '失败';
+      }
+    }
+    async function loadCatalogGoods(query = '') {
+      const box = el('catalogGoods'); if (!box) return;
+      try {
+        const data = await api(`/api/v1/catalog/search?limit=20&q=${encodeURIComponent(query)}`);
+        box.replaceChildren();
+        if (!data.goods || !data.goods.length) {
+          box.innerHTML = `<div class="empty">${query ? '没有匹配的商品' : '本地库暂无商品，点“同步”拉取'}</div>`;
+        }
+        for (const goods of data.goods || []) {
+          box.append(catalogRow(goods.goods_name || goods.goods_id, [
+            `¥${goods.goods_price || '-'} · 库存 ${goods.stock ?? '-'} · 已售 ${goods.sold_count ?? '-'}`,
+          ], {href: goods.goods_url}));
+        }
+      } catch (error) {
+        box.replaceChildren(catalogRow('商品查询失败', [error.message]));
+      }
+    }
+    async function refreshCatalogState() {
+      try {
+        const data = await api('/api/v1/catalog');
+        const sync = data.sync || {}; const stored = data.stored || {};
+        el('catalogState').textContent = sync.syncing
+          ? `同步中 ${sync.last_written || 0}/${sync.last_total ?? '?'}`
+          : `${stored.stored_goods || 0} 款 · ${sync.last_success_at ? relativeTime(sync.last_success_at) : '未同步'}`;
+      } catch (_) { /* 状态栏失败不打断面板 */ }
+    }
+    async function syncCatalog() {
+      const button = el('catalogSyncButton');
+      button.disabled = true; button.textContent = '同步中';
+      try {
+        await api('/api/v1/catalog/sync', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+        for (let i = 0; i < 40; i += 1) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          const data = await api('/api/v1/catalog');
+          const sync = data.sync || {};
+          el('catalogState').textContent = `同步 ${sync.last_written || 0}/${sync.last_total ?? '?'}`;
+          if (!sync.syncing && sync.last_success_at) break;
+        }
+        await loadCatalogGoods(el('catalogSearchInput').value.trim());
+      } catch (error) {
+        el('catalogState').textContent = error.message;
+      } finally { button.disabled = false; button.textContent = '同步'; }
+    }
+    (function wireCatalog() {
+      const search = el('catalogSearchInput');
+      let timer = null;
+      search.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => { void loadCatalogGoods(search.value.trim()); }, 250);
+      });
+      el('catalogSyncButton').addEventListener('click', () => { void syncCatalog(); });
+      void loadCatalogGoods('');
+      void refreshCatalogState();
+      setInterval(refreshCatalogState, 30000);
+    })();
     async function refresh() {
       if (state.busy) return; state.busy = true;
       try {

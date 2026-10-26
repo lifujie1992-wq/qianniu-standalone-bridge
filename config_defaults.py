@@ -24,6 +24,7 @@ OPERATIONAL_DEFAULTS: dict[str, bool] = {
     "brain_remote_open_chat_enabled": True,
     "brain_draft_sync_enabled": True,
     "context_enrich_enabled": True,
+    "catalog_sync_enabled": True,
     "delivery_enabled": True,
     "send_enabled": True,
     "appbiz_send_adapter_enabled": True,

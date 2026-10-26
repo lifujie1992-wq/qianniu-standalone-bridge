@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any, Iterable
 
@@ -648,9 +649,138 @@ class QnCatalog:
         }
 
 
+class CatalogSyncer:
+    """把在售商品目录定时沉凌到本地 SQLite，供工作台与 AI 检索。
+
+    设计要点（对齐福客 `js_sync_job` 的意图，但更保守）：
+      - 只在页面已连接且无进行中任务时跑，避免与聊天取数抢 mtop 通道；
+      - 分批翻页，每批入库一次，失败只记错误并等下一轮，不影响主流程；
+      - 默认开，间隔 30 分钟，页大小 100，最多 20 页（≈2000 款）。
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+        self.thread = threading.Thread(target=self.run, name="catalog-sync", daemon=True)
+        self.wakeup = threading.Event()
+        self.lock = threading.Lock()
+        self.runs = 0
+        self.failures = 0
+        self.last_run_at = 0.0
+        self.last_success_at = 0.0
+        self.last_error = ""
+        self.last_written = 0
+        self.last_total: int | None = None
+        self.syncing = False
+
+    # -- 配置 -----------------------------------------------------------
+    def _config(self) -> dict[str, Any]:
+        get = getattr(self.app.config, "get", None)
+        if not callable(get):
+            return {}
+        return {
+            "enabled": bool(get("catalog_sync_enabled", True)),
+            "interval": max(60.0, float(get("catalog_sync_interval_seconds", 1800) or 1800)),
+            "page_size": max(1, min(MAX_PAGE_SIZE, int(get("catalog_sync_page_size", MAX_PAGE_SIZE) or MAX_PAGE_SIZE))),
+            "max_pages": max(1, min(200, int(get("catalog_sync_max_pages", 20) or 20))),
+        }
+
+    # -- 生命周期 -------------------------------------------------------
+    def start(self) -> None:
+        self.thread.start()
+
+    def request_sync(self) -> None:
+        self.wakeup.set()
+
+    def run(self) -> None:
+        stop_event = getattr(self.app, "stop_event", None)
+        # 启动后先等 20s，避开启动时与消息采集/订单富化的高峰
+        if stop_event is not None and stop_event.wait(20.0):
+            return
+        while True:
+            cfg = self._config()
+            if cfg.get("enabled", True):
+                try:
+                    self.sync_once()
+                except Exception as error:  # noqa: BLE001 - 后台任务不允许把进程拉挂
+                    self.failures += 1
+                    self.last_error = str(error)[:300]
+            stop_event = getattr(self.app, "stop_event", None)
+            interval = self._config().get("interval", 1800.0)
+            if stop_event is not None:
+                if stop_event.wait(interval):
+                    return
+            else:
+                time.sleep(interval)
+            self.wakeup.clear()
+
+    # -- 干活 -----------------------------------------------------------
+    def sync_once(self) -> dict[str, Any]:
+        if not self.lock.acquire(blocking=False):
+            return {"ok": False, "error": "sync already running"}
+        try:
+            self.syncing = True
+            self.runs += 1
+            self.last_run_at = time.time()
+            browser = getattr(self.app, "browser", None)
+            if browser is None or not getattr(browser, "connected", 0):
+                self.last_error = "Qianniu browser bridge is not connected"
+                return {"ok": False, "error": self.last_error}
+            cfg = self._config()
+            written = 0
+            total: int | None = None
+            pages = 0
+            for page_no in range(1, int(cfg["max_pages"]) + 1):
+                page = self.app.catalog.goods_page(page_no, int(cfg["page_size"]))
+                pages = page_no
+                if page.get("total") is not None:
+                    total = int(page["total"])
+                batch = page.get("goods") or []
+                if not batch:
+                    break
+                written += self.app.db.catalog_upsert_goods(batch)
+                if total is not None and written >= total:
+                    break
+                if len(batch) < int(cfg["page_size"]):
+                    break
+            self.last_written = written
+            self.last_total = total
+            self.last_success_at = time.time()
+            self.last_error = ""
+            summary = {
+                "ok": True,
+                "written": written,
+                "total": total,
+                "pages": pages,
+                "at": self.last_success_at,
+            }
+            self.app.db.catalog_set_meta("last_sync", summary)
+            return summary
+        finally:
+            self.syncing = False
+            self.lock.release()
+
+    def status(self) -> dict[str, Any]:
+        cfg = self._config()
+        return {
+            "enabled": cfg.get("enabled"),
+            "interval_seconds": cfg.get("interval"),
+            "page_size": cfg.get("page_size"),
+            "max_pages": cfg.get("max_pages"),
+            "syncing": self.syncing,
+            "runs": self.runs,
+            "failures": self.failures,
+            "last_run_at": self.last_run_at,
+            "last_success_at": self.last_success_at,
+            "last_written": self.last_written,
+            "last_total": self.last_total,
+            "last_error": self.last_error,
+        }
+
+
 __all__ = [
     "QnCatalog",
     "QnCatalogError",
+    "CatalogSyncer",
     "normalize_goods",
     "normalize_orders",
     "normalize_order_items",

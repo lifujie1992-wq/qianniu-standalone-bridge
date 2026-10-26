@@ -210,3 +210,81 @@ class CatalogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CatalogStoreTests(unittest.TestCase):
+    """商品目录落库 + 同步器（用真实 StateDB + 假页面）。"""
+
+    def test_upsert_and_search_roundtrip(self):
+        import tempfile, pathlib
+        from standalone_bridge import StateDB
+        with tempfile.TemporaryDirectory() as directory:
+            db = StateDB(pathlib.Path(directory) / "state.sqlite3")
+            written = db.catalog_upsert_goods([
+                {"goods_id": "7001", "goods_name": "联想无线鼠标", "goods_price": "62.00",
+                 "stock": 1165, "sold_count": 905385, "goods_url": "https://item/7001"},
+                {"goods_id": "7002", "goods_name": "联想移动硬盘", "goods_price": "659.00", "stock": 1640},
+                {"goods_id": "", "goods_name": "无ID应被丢弃"},
+            ])
+            self.assertEqual(written, 2)
+            hits = db.catalog_search("硬盘")
+            self.assertEqual([row["goods_id"] for row in hits], ["7002"])
+            self.assertEqual(len(db.catalog_search("")), 2)
+            db.catalog_set_meta("last_sync", {"written": 2})
+            meta = db.catalog_meta()
+            self.assertEqual(meta["stored_goods"], 2)
+            self.assertEqual(meta["last_sync"]["written"], 2)
+
+    def test_syncer_pages_until_total(self):
+        import tempfile, pathlib
+        from standalone_bridge import StateDB
+        pages = {
+            1: {"goods": [{"goods_id": "1", "goods_name": "A"}, {"goods_id": "2", "goods_name": "B"}], "total": 3},
+            2: {"goods": [{"goods_id": "3", "goods_name": "C"}], "total": 3},
+        }
+
+        class FakeCatalog:
+            def goods_page(self, page_no, page_size):
+                return pages.get(page_no, {"goods": [], "total": 3})
+
+        class FakeConfig:
+            def get(self, key, default=None):
+                return {
+                    "catalog_sync_enabled": True,
+                    "catalog_sync_interval_seconds": 1800,
+                    "catalog_sync_page_size": 2,
+                    "catalog_sync_max_pages": 5,
+                }.get(key, default)
+
+        class FakeBrowser:
+            connected = 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            app = type("App", (), {})()
+            app.catalog = FakeCatalog()
+            app.config = FakeConfig()
+            app.browser = FakeBrowser()
+            app.db = StateDB(pathlib.Path(directory) / "state.sqlite3")
+            app.stop_event = None
+            syncer = qc.CatalogSyncer(app)
+            summary = syncer.sync_once()
+            self.assertTrue(summary["ok"])
+            self.assertEqual(summary["written"], 3)
+            self.assertEqual(summary["total"], 3)
+            self.assertEqual(app.db.catalog_meta()["stored_goods"], 3)
+            self.assertEqual(syncer.status()["last_total"], 3)
+
+    def test_syncer_skips_when_browser_offline(self):
+        class FakeBrowser:
+            connected = 0
+
+        app = type("App", (), {})()
+        app.catalog = object()
+        app.config = type("C", (), {"get": lambda self, key, default=None: default})()
+        app.browser = FakeBrowser()
+        app.db = object()
+        app.stop_event = None
+        syncer = qc.CatalogSyncer(app)
+        summary = syncer.sync_once()
+        self.assertFalse(summary["ok"])
+        self.assertIn("not connected", summary["error"])

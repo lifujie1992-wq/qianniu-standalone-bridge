@@ -47,7 +47,7 @@ from nickname_support import event_nickname, nickname_event_id, valid_nickname
 from native_image_lookup import enrich_native_image_event
 from native_context import NativeContext
 from nickname_resolver import ConversationSelectionWatch, NicknameResolver
-from qn_catalog import QnCatalog, QnCatalogError, mtop_ret
+from qn_catalog import CatalogSyncer, QnCatalog, QnCatalogError, mtop_ret
 from reception_wait import message_direction, waiting_state
 from device_identity import (
     DeviceIdentityError,
@@ -696,6 +696,23 @@ class StateDB:
                     nickname TEXT NOT NULL,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY(account,buyer_id)
+                );
+                CREATE TABLE IF NOT EXISTS catalog_goods (
+                    item_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    price TEXT NOT NULL DEFAULT '',
+                    stock INTEGER,
+                    sold_count INTEGER,
+                    url TEXT NOT NULL DEFAULT '',
+                    thumb TEXT NOT NULL DEFAULT '',
+                    category_id TEXT NOT NULL DEFAULT '',
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    updated_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS catalog_goods_title ON catalog_goods(title);
+                CREATE TABLE IF NOT EXISTS catalog_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );
                 UPDATE events SET status='pending' WHERE status='sending';
                 UPDATE brain_events SET status='pending' WHERE status='sending';
@@ -2070,6 +2087,111 @@ class StateDB:
                 "updated_at": float(row["updated_at"]),
             })
         return output
+
+    # ---- 商品目录（学习福客 /getQNList1 的长期沉淀） ----
+    def catalog_upsert_goods(self, rows: list[dict[str, Any]]) -> int:
+        """按 item_id upsert；返回写入行数。"""
+        if not rows:
+            return 0
+        now = time.time()
+        payload = []
+        for row in rows:
+            item_id = str(row.get("goods_id") or "").strip()
+            if not item_id:
+                continue
+            def as_int(value: Any) -> int | None:
+                try:
+                    return int(str(value).strip())
+                except (TypeError, ValueError):
+                    return None
+            payload.append((
+                item_id,
+                str(row.get("goods_name") or ""),
+                str(row.get("goods_price") or ""),
+                as_int(row.get("stock")),
+                as_int(row.get("sold_count")),
+                str(row.get("goods_url") or ""),
+                str(row.get("goods_thumb_url") or ""),
+                str(row.get("category_id") or ""),
+                json.dumps({k: v for k, v in row.items() if k != "raw"}, ensure_ascii=False),
+                now,
+            ))
+        if not payload:
+            return 0
+        with self.lock, closing(self.connect()) as connection, connection:
+            connection.executemany(
+                """
+                INSERT INTO catalog_goods(
+                    item_id,title,price,stock,sold_count,url,thumb,category_id,payload,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(item_id) DO UPDATE SET
+                    title=excluded.title, price=excluded.price, stock=excluded.stock,
+                    sold_count=excluded.sold_count, url=excluded.url, thumb=excluded.thumb,
+                    category_id=excluded.category_id, payload=excluded.payload,
+                    updated_at=excluded.updated_at
+                """,
+                payload,
+            )
+        return len(payload)
+
+    def catalog_set_meta(self, key: str, value: Any) -> None:
+        with self.lock, closing(self.connect()) as connection, connection:
+            connection.execute(
+                "INSERT INTO catalog_meta(key,value) VALUES(?,?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(key), json.dumps(value, ensure_ascii=False)),
+            )
+
+    def catalog_meta(self) -> dict[str, Any]:
+        with self.lock, closing(self.connect()) as connection, connection:
+            rows = connection.execute("SELECT key,value FROM catalog_meta").fetchall()
+            total = connection.execute("SELECT count(*) FROM catalog_goods").fetchone()[0]
+        output: dict[str, Any] = {"stored_goods": int(total or 0)}
+        for row in rows:
+            try:
+                output[str(row["key"])] = json.loads(row["value"])
+            except ValueError:
+                output[str(row["key"])] = row["value"]
+        return output
+
+    def catalog_search(self, text: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        """商品搜索：空串返回最近更新的商品；命中标题/ID/价格。"""
+        limit = max(1, min(int(limit or 20), 100))
+        keyword = str(text or "").strip()
+        with self.lock, closing(self.connect()) as connection, connection:
+            if keyword:
+                like = f"%{keyword}%"
+                rows = connection.execute(
+                    """
+                    SELECT item_id,title,price,stock,sold_count,url,thumb,category_id,updated_at
+                    FROM catalog_goods
+                    WHERE title LIKE ? OR item_id LIKE ? OR price LIKE ?
+                    ORDER BY sold_count DESC NULLS LAST, updated_at DESC LIMIT ?
+                    """,
+                    (like, like, like, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT item_id,title,price,stock,sold_count,url,thumb,category_id,updated_at
+                    FROM catalog_goods ORDER BY updated_at DESC, item_id LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        return [
+            {
+                "goods_id": str(row["item_id"]),
+                "goods_name": str(row["title"]),
+                "goods_price": str(row["price"]),
+                "stock": row["stock"],
+                "sold_count": row["sold_count"],
+                "goods_url": str(row["url"]),
+                "goods_thumb_url": str(row["thumb"]),
+                "category_id": str(row["category_id"]),
+                "updated_at": float(row["updated_at"]),
+            }
+            for row in rows
+        ]
 
 
 class DeliveryWorker:
@@ -5861,7 +5983,21 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             })
             return
         if path == "/api/v1/catalog":
-            self.send_json(200, {"ok": True, **self.app.catalog.status()})
+            self.send_json(200, {
+                "ok": True,
+                **self.app.catalog.status(),
+                "sync": self.app.catalog_sync.status(),
+                "stored": self.app.db.catalog_meta(),
+            })
+            return
+        if path == "/api/v1/catalog/search":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = int(str(query.get("limit", ["20"])[0]) or 20)
+            except ValueError:
+                limit = 20
+            rows = self.app.db.catalog_search(str(query.get("q", [""])[0]), limit)
+            self.send_json(200, {"ok": True, "goods": rows, "count": len(rows)})
             return
         if path == "/api/v1/catalog/goods":
             query = urllib.parse.parse_qs(parsed.query)
@@ -6028,6 +6164,17 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 self.send_json(200, local_seat_ack_payload(self.app.db, events))
             except (ValueError, RuntimeError) as error:
                 self.send_json(400, {"ok": False, "error": str(error)})
+            return
+        if path == "/api/v1/catalog/sync":
+            if not self.workbench_authorized():
+                self.send_json(401, {"ok": False, "error": "unauthorized"})
+                return
+            self.app.catalog_sync.request_sync()
+            self.send_json(202, {
+                "ok": True,
+                "triggered": True,
+                "sync": self.app.catalog_sync.status(),
+            })
             return
         if path == "/api/v1/brain/config":
             if not self.workbench_authorized():
@@ -6239,6 +6386,8 @@ class StandaloneBridge:
         self.context = ContextEnricher(self)
         # 福客同款 mtop 取数通道：商品目录 / 订单 / 店铺（页面 imsdk → invokeMTopChannelService）
         self.catalog = QnCatalog(self)
+        # 商品目录定时沉凌（供工作台与 AI 检索）
+        self.catalog_sync = CatalogSyncer(self)
         self.cdp = CdpInjector(self)
         self.updater = UpdaterGuard(self)
         self.appbiz = AppBizSendAdapter(self)
@@ -6647,6 +6796,7 @@ class StandaloneBridge:
         self.brain.start()
         self.browser.start()
         self.context.start()
+        self.catalog_sync.start()
         self.cdp.start()
         self.updater.start()
         self.appbiz.start()
@@ -6691,7 +6841,7 @@ class StandaloneBridge:
                 "rejected_events": self.browser.rejected_events,
             },
             "context_enrich": self.context.status(),
-            "catalog": self.catalog.status(),
+            "catalog": {**self.catalog.status(), "sync": self.catalog_sync.status()},
             "native_context": self.native_context.status(),
             "cdp": {
                 "enabled": bool(self.config.get("cdp_injection_enabled", False)),
