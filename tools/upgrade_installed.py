@@ -357,7 +357,7 @@ def upgrade(root: Path, progress):
         validate_runtime(root, source)
         seat = Seat(root)
         seat.ensure_idle()
-        backup = root / "upgrade-backups" / ("auto-1.6.25-"+time.strftime("%Y%m%d-%H%M%S"))
+        backup = root / "upgrade-backups" / ("auto-" + VERSION + "-" + time.strftime("%Y%m%d-%H%M%S"))
         return replace_program(root, source, backup, seat.stop, seat.start, progress)
 
 
@@ -365,7 +365,7 @@ def show_window():
     import tkinter as tk
     from tkinter import filedialog, ttk
     window = tk.Tk()
-    window.title("千牛助手 · 自动升级到 1.6.25")
+    window.title(f"千牛助手 · 自动升级到 {VERSION}")
     window.geometry("620x340")
     window.resizable(False, False)
     window.configure(bg="#f4f7fb")
@@ -441,7 +441,7 @@ def show_window():
                     busy = False
                     bar.stop()
                     if kind == "done":
-                        title.configure(text="升级完成 · 1.6.25")
+                        title.configure(text=f"升级完成 · {VERSION}")
                         info.set("助手已自动启动，原配置和聊天数据已保留。\n可以关闭此窗口，正常使用助手。")
                         start_button.configure(text="完成",command=window.destroy,state="normal")
                     else:
