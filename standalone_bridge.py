@@ -6956,6 +6956,43 @@ class StandaloneBridge:
             })
         return pages[:40]
 
+    def auto_open_recent_conversation(self) -> dict[str, Any]:
+        """没有可用聊天页时，自动用官方 openChat 打开"最近一个会话"。
+
+        目的：让千牛自己加载真正的聊天页（web_chat-packer/recent.html），
+        从而出现 window.imsdk。等价于人工点开一个买家会话，
+        不发消息、不模拟键鼠、不重启千牛。
+        """
+        if not self.config.get("imsdk_auto_open_chat_enabled", True):
+            return {"ok": False, "reason": "disabled"}
+        if not getattr(self.browser, "connected", 0):
+            return {"ok": False, "reason": "browser_not_connected"}
+        sessions = []
+        try:
+            sessions = self.db.workbench_sessions()
+        except Exception:  # noqa: BLE001
+            sessions = []
+        target = None
+        for row in sessions or []:
+            buyer = str(row.get("buyer_id") or "").strip()
+            account = str(row.get("account") or "").strip()
+            nick = str(row.get("buyer_nick") or "").strip()
+            if buyer and account and nick:
+                target = (account, buyer, nick)
+                break
+        if target is None:
+            return {"ok": False, "reason": "no_recent_conversation"}
+        account, buyer, nick = target
+        try:
+            security_uid = ContextEnricher.buyer_encrypt_id({"buyer_id": buyer})
+            result = self.browser.open_conversation(nick, expected_ccode=buyer, security_uid=security_uid)
+        except Exception as error:  # noqa: BLE001
+            return {"ok": False, "reason": f"open_failed: {mask_text(str(error), 120)}"}
+        ok = bool(result.get("ok")) if isinstance(result, dict) else False
+        LOG.info("auto open conversation ok=%s via=%s", ok, str((result or {}).get("via") or "")[:24])
+        return {"ok": ok, "reason": "" if ok else "open_rejected",
+                "via": str((result or {}).get("via") or "")[:24]}
+
     def warm_send_route(self, account: str, ccode: str) -> bool:
         """给发送补路由：用官方 openChat 让千牛自己轮询该会话（安全、可逆）。
 

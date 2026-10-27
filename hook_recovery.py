@@ -136,6 +136,7 @@ class HookRecovery:
         self.snooze_until = 0.0
         self.last_retry_at = 0.0
         self.stage2_attempted = False
+        self.last_open_chat_at = 0.0
         self.frames_seen: list[dict[str, Any]] = []
         # 每个 frame 的明细（url/imsdk_typeof/injected），供 process_pages 汇总
         self.frames_detail: list[dict[str, Any]] = []
@@ -293,15 +294,42 @@ class HookRecovery:
     # 阶段 2：尝试打开聊天页（只用现有安全能力）
     # ------------------------------------------------------------------
     def open_chat_page(self) -> dict[str, Any]:
-        """仓库没有"安全打开接待台"的现成接口，因此如实记录不支持。
+        """阶段 2：自动打开最近会话，让千牛自己加载聊天页（官方 openChat）。
 
-        任务书要求：没有安全的现成方式时不要自己发明（不模拟键鼠、不截屏点击）。
+        安全：不模拟键鼠、不截屏、不重启千牛；等价于人工点开一个买家会话。
+        每次尝试间隔由 imsdk_auto_open_chat_interval_seconds 控制（默认 300s）。
         """
+        opener = getattr(self.app, "auto_open_recent_conversation", None)
+        if not callable(opener):
+            self.stage2_attempted = True
+            self.last_action = "open_chat_page"
+            self.last_action_at = self.now()
+            self.last_action_result = "no_safe_open_method"
+            return {"ok": False, "error": "no_safe_open_method"}
+        try:
+            interval = max(60.0, float(
+                self.app.config.get("imsdk_auto_open_chat_interval_seconds", 300.0)
+            ))
+        except (TypeError, ValueError):
+            interval = 300.0
+        now = self.now()
+        if self.last_open_chat_at and now - self.last_open_chat_at < interval:
+            return {"ok": False, "error": "auto_open rate-limited"}
+        self.last_open_chat_at = now
         self.stage2_attempted = True
         self.last_action = "open_chat_page"
-        self.last_action_at = self.now()
-        self.last_action_result = "no_safe_open_method"
-        return {"ok": False, "error": "no_safe_open_method"}
+        self.last_action_at = now
+        try:
+            result = opener()
+        except Exception as error:  # noqa: BLE001
+            result = {"ok": False, "reason": f"open_failed: {mask_text(str(error), 120)}"}
+        ok = bool((result or {}).get("ok"))
+        self.last_action_result = (
+            f"auto_open_chat_ok via={(result or {}).get('via') or ''}"
+            if ok else f"auto_open_chat_failed: {(result or {}).get('reason') or 'unknown'}"
+        )
+        self._log(f"imsdk auto open chat ok={ok} {self.last_action_result}")
+        return {"ok": ok, **(result or {})}
 
     # ------------------------------------------------------------------
     # 阶段 3：提醒

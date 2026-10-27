@@ -26,7 +26,7 @@ from config_defaults import apply_operational_defaults
 from device_identity import stable_device_id
 
 
-VERSION = "1.6.37"
+VERSION = "1.6.38"
 PROTECTED = {"config.json", "state", "runtime", "upgrade-backups"}
 PAYLOAD_FILES = {
     "QianniuAgent.exe", "_internal", "build", "browser_bridge.js", "appbiz_agent.js",
@@ -392,12 +392,44 @@ def show_window():
         picker["values"] = [row["path"]+"  （"+row["version"]+"）" for row in rows]
         if rows:
             picker.current(0)
-            info.set("已找到旧版助手。请在接待空档点击开始升级，助手会短暂退出后自动启动。")
+            info.set("已找到旧版助手，正在准备自动升级（约 3 秒后开始）…")
             start_button.configure(state="normal")
+            schedule_auto_begin()
         else:
             selection.set("未找到旧版助手")
             info.set("请先打开原来的千牛助手，再点重新检测；也可选择原安装文件夹。")
             start_button.configure(state="disabled")
+
+    auto_state = {"timer": None, "countdown": 0}
+
+    def cancel_auto_begin():
+        if auto_state["timer"] is not None:
+            try:
+                window.after_cancel(auto_state["timer"])
+            except Exception:  # noqa: BLE001
+                pass
+        auto_state["timer"] = None
+        auto_state["countdown"] = 0
+
+    def schedule_auto_begin():
+        """小白模式：检测到旧版后自动开始，不需要点按钮（可取消）。"""
+        if busy or not rows or auto_state["timer"] is not None:
+            return
+        auto_state["countdown"] = 3
+
+        def tick():
+            if busy or not rows:
+                auto_state["timer"] = None
+                return
+            if auto_state["countdown"] <= 0:
+                auto_state["timer"] = None
+                begin()
+                return
+            info.set(f"已找到旧版助手，{auto_state['countdown']} 秒后自动开始升级（无需操作，可点取消）")
+            auto_state["countdown"] -= 1
+            auto_state["timer"] = window.after(1000, tick)
+
+        auto_state["timer"] = window.after(1000, tick)
 
     def choose():
         path = filedialog.askdirectory(title="选择原来安装助手的文件夹")
@@ -406,6 +438,7 @@ def show_window():
 
     def begin():
         nonlocal busy
+        cancel_auto_begin()
         index = picker.current()
         if busy or index < 0:
             return
@@ -423,8 +456,10 @@ def show_window():
                 events.put(("error",str(error)))
         threading.Thread(target=worker,name="upgrade-installer",daemon=False).start()
 
-    start_button = ttk.Button(controls,text="开始升级",command=begin,state="disabled")
+    start_button = ttk.Button(controls,text="立即升级",command=begin,state="disabled")
     start_button.pack(side="right")
+    cancel_button = ttk.Button(controls,text="取消自动升级",command=cancel_auto_begin)
+    cancel_button.pack(side="right",padx=8)
     detect_button = ttk.Button(controls,text="重新检测",command=refresh)
     detect_button.pack(side="left")
     browse_button = ttk.Button(controls,text="选择文件夹",command=choose)

@@ -281,3 +281,50 @@ class StatusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoOpenChatTests(unittest.TestCase):
+    """阶段 2：自动打开最近会话（小白机器也能自愈）。"""
+
+    class Config:
+        def __init__(self):
+            self.values = {"imsdk_auto_open_chat_enabled": True,
+                           "imsdk_auto_open_chat_interval_seconds": 300}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+    def make(self, ok=True, reason=""):
+        import hook_recovery as hr
+        calls = {"n": 0}
+
+        class App:
+            config = self.Config()
+            browser = type("B", (), {"connected": 1, "diagnostics_by_connection": lambda s: []})()
+            db = type("DB", (), {"has_recent_buyer_activity": lambda s, m: True})()
+            stop_event = None
+
+            def auto_open_recent_conversation(self):
+                calls["n"] += 1
+                return {"ok": ok, "reason": reason, "via": "qianniu_wwcmd"}
+        return hr.HookRecovery(App(), now_fn=lambda: 1000.0, prompt_fn=None,
+                               notify_fn=lambda *a: None, logger=None), calls
+
+    def test_success_records_result(self):
+        recovery, calls = self.make(ok=True)
+        result = recovery.open_chat_page()
+        self.assertTrue(result["ok"])
+        self.assertIn("auto_open_chat_ok", recovery.last_action_result)
+        self.assertEqual(calls["n"], 1)
+
+    def test_failure_records_specific_reason(self):
+        recovery, _ = self.make(ok=False, reason="no_recent_conversation")
+        result = recovery.open_chat_page()
+        self.assertFalse(result["ok"])
+        self.assertIn("no_recent_conversation", recovery.last_action_result)
+
+    def test_rate_limited(self):
+        recovery, calls = self.make(ok=False, reason="open_rejected")
+        recovery.open_chat_page()
+        recovery.open_chat_page()
+        self.assertEqual(calls["n"], 1, "5 分钟内不重复打扰")
