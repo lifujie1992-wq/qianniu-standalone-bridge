@@ -2417,6 +2417,8 @@
   }
 
   window.__qn_standalone_reconnect = setup;
+  // 任务 B（1.6.29）：供桥接触发一次现有挂钩（幂等，不改变挂钩实现）
+  window.__qn_standalone_rehook = hookImSdk;
   window.__qn_standalone_self_heal = selfHeal;
   window.__qn_standalone_add_conversation = function (ccode) { return registerConversation(ccode, "debug", true); };
 })();

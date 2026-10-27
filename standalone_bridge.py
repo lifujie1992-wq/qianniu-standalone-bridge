@@ -46,6 +46,7 @@ from config_defaults import apply_operational_defaults
 from native_context import NativeContext
 from native_image_lookup import enrich_native_image_event
 from nickname_support import event_nickname, nickname_event_id, valid_nickname
+from hook_recovery import HookRecovery
 from hook_diagnostics import (
     HookMonitor,
     chat_page_hooked,
@@ -2095,6 +2096,38 @@ class StateDB:
                 "updated_at": float(row["updated_at"]),
             })
         return output
+
+    def has_recent_buyer_activity(self, minutes: float) -> bool:
+        """最近 N 分钟是否有买家侧消息（用于夜间静默判断，不读消息内容）。"""
+        try:
+            window = max(0.0, float(minutes))
+        except (TypeError, ValueError):
+            window = 30.0
+        if window <= 0:
+            return True
+        since = time.time() - window * 60.0
+        with self.lock, closing(self.connect()) as connection:
+            try:
+                row = connection.execute(
+                    "SELECT 1 FROM events WHERE created_at >= ? "
+                    "AND coalesce(json_extract(payload,'$.role'),'user') IN ('user','buyer','customer') "
+                    "LIMIT 1",
+                    (since,),
+                ).fetchone()
+                return bool(row)
+            except sqlite3.OperationalError:
+                rows = connection.execute(
+                    "SELECT payload FROM events WHERE created_at >= ? LIMIT 200", (since,)
+                ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (ValueError, TypeError):
+                continue
+            role = str(payload.get("role") or "user").lower()
+            if role in {"user", "buyer", "customer"}:
+                return True
+        return False
 
     # ---- 商品目录（学习福客 /getQNList1 的长期沉淀） ----
     def catalog_upsert_goods(self, rows: list[dict[str, Any]]) -> int:
@@ -6408,6 +6441,8 @@ class StandaloneBridge:
         self.context = ContextEnricher(self)
         # 任务 A：imsdk 挂钩诊断日志（60s 一行 + 状态跃变补一行）
         self.hook_monitor = HookMonitor(self, logger=LOG)
+        # 任务 B（1.6.29）：强制挂钩 + 挂不上时提醒人工
+        self.hook_recovery = HookRecovery(self, logger=LOG)
         # 福客同款 mtop 取数通道：商品目录 / 订单 / 店铺（页面 imsdk → invokeMTopChannelService）
         self.catalog = QnCatalog(self)
         # 商品目录定时沉凌（供工作台与 AI 检索）
@@ -6821,6 +6856,7 @@ class StandaloneBridge:
         self.browser.start()
         self.context.start()
         self.hook_monitor.thread.start()
+        self.hook_recovery.thread.start()
         self.catalog_sync.start()
         self.cdp.start()
         self.updater.start()
@@ -6852,6 +6888,8 @@ class StandaloneBridge:
         browser_connections = self.browser.diagnostics_by_connection()
         payload = {
             "ok": not bool(self.api_error or self.workbench_error or self.browser.error),
+            # 任务 B：需要人处理时，顶层给一句人话提示（与弹窗正文一致）
+            "hint": self.hook_recovery.hint(),
             "version": VERSION,
             "build_hash": BUILD_HASH,
             "nicknames": self.nicknames.status(),
@@ -6868,6 +6906,7 @@ class StandaloneBridge:
                 "rejected_events": self.browser.rejected_events,
             },
             "context_enrich": self.context.status(),
+            "hook_recovery": self.hook_recovery.status(),
             "catalog": {**self.catalog.status(), "sync": self.catalog_sync.status()},
             "native_context": self.native_context.status(),
             "cdp": {
