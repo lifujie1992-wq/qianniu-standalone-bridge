@@ -2291,6 +2291,26 @@ class DeliveryWorker:
     def start(self) -> None:
         self.thread.start()
 
+    def chunk_rows(self, rows: list[dict[str, Any]], max_bytes: int) -> list[list[dict[str, Any]]]:
+        """按序列化字节数分片：网关(本机 HTTP)对请求体有 128KB 上限，
+        一次 claim 100 条很容易超限，超了就会 400 并永久积压。"""
+        chunks: list[list[dict[str, Any]]] = []
+        current: list[dict[str, Any]] = []
+        size = 0
+        for row in rows:
+            try:
+                encoded = len(json.dumps(row["payload"], ensure_ascii=False).encode("utf-8"))
+            except (TypeError, ValueError):
+                encoded = 1024
+            if current and size + encoded > max_bytes:
+                chunks.append(current)
+                current, size = [], 0
+            current.append(row)
+            size += encoded
+        if current:
+            chunks.append(current)
+        return chunks
+
     def post(self, batch: list[dict[str, Any]]) -> set[str]:
         cfg = self.app.config
         url = str(cfg.get("gateway_url")).rstrip("/") + "/api/local-seat/v1/events"
@@ -2368,12 +2388,17 @@ class DeliveryWorker:
                 self.wakeup.clear()
                 continue
             try:
-                committed = self.post([row["payload"] for row in rows])
-                if not committed:
-                    raise RuntimeError("gateway acknowledged no events")
-                for row in rows:
-                    if row["event_id"] in committed:
-                        self.app.db.mark_delivered(row["event_id"], row["revision"])
+                try:
+                    max_bytes = int(self.app.config.get("delivery_max_body_bytes", 120 * 1024))
+                except (TypeError, ValueError):
+                    max_bytes = 120 * 1024
+                for chunk in self.chunk_rows(rows, max(16 * 1024, max_bytes)):
+                    committed = self.post([row["payload"] for row in chunk])
+                    if not committed:
+                        raise RuntimeError("gateway acknowledged no events")
+                    for row in chunk:
+                        if row["event_id"] in committed:
+                            self.app.db.mark_delivered(row["event_id"], row["revision"])
                 self.last_error = ""
                 self.last_success_at = time.time()
                 delay = 0.2

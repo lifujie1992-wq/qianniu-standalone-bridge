@@ -26,7 +26,7 @@ from config_defaults import apply_operational_defaults
 from device_identity import stable_device_id
 
 
-VERSION = "1.6.34"
+VERSION = "1.6.35"
 PROTECTED = {"config.json", "state", "runtime", "upgrade-backups"}
 PAYLOAD_FILES = {
     "QianniuAgent.exe", "_internal", "build", "browser_bridge.js", "appbiz_agent.js",

@@ -255,3 +255,21 @@ class ExecutePriorityTests(unittest.TestCase):
         server.send = lambda connection, payload: connection.send(payload)
         value = server.execute("1+1", timeout=2.0)
         self.assertEqual(value, "chat-page-value")
+
+
+class DeliveryChunkTests(unittest.TestCase):
+    def test_chunks_respect_byte_budget(self):
+        worker = object.__new__(sb.DeliveryWorker)
+        rows = [{"payload": {"content": "x" * 1000}} for _ in range(10)]
+        chunks = worker.chunk_rows(rows, 3000)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            size = sum(len(json.dumps(row["payload"], ensure_ascii=False).encode("utf-8")) for row in chunk)
+            self.assertLessEqual(size, 3000)
+        self.assertEqual(sum(len(chunk) for chunk in chunks), 10)
+
+    def test_single_huge_row_still_chunks(self):
+        worker = object.__new__(sb.DeliveryWorker)
+        rows = [{"payload": {"content": "y" * 5000}}, {"payload": {"content": "z"}}]
+        chunks = worker.chunk_rows(rows, 1000)
+        self.assertEqual(len(chunks), 2)
