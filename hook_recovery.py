@@ -360,10 +360,15 @@ class HookRecovery:
             f"auto_open_chat_ok via={(result or {}).get('via') or ''}"
             if ok else f"auto_open_chat_failed: {(result or {}).get('reason') or 'unknown'}"
         )
-        if not ok and self.app.config.get("imsdk_navigate_to_chat_enabled", False):
+        # 关键：openChat 可能返回 ok，但千牛并不会因此加载老接待台页
+        # （现场证据：dx-h5 空壳页面，imsdk/abilitycenter 全无）。
+        # 因此只要"现在仍然没有能取订单的页面"，就尝试把页面导航到老接待台。
+        if not orders_capable(self.connections()) and self.app.config.get("imsdk_navigate_to_chat_enabled", True):
             navigated = self.navigate_to_chat_page()
             if navigated.get("ok"):
-                self.last_action_result += " + navigate_to_chat_page"
+                self.last_action_result += " + navigate_to_chat_page ok"
+            else:
+                self.last_action_result += " + navigate_failed"
         self._log(f"imsdk auto open chat ok={ok} {self.last_action_result}")
         return {"ok": ok, **(result or {})}
 

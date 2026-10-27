@@ -289,7 +289,9 @@ class AutoOpenChatTests(unittest.TestCase):
     class Config:
         def __init__(self):
             self.values = {"imsdk_auto_open_chat_enabled": True,
-                           "imsdk_auto_open_chat_interval_seconds": 300}
+                           "imsdk_auto_open_chat_interval_seconds": 300,
+                           # 这组用例只验证"自动打开会话"，导航默认关掉
+                           "imsdk_navigate_to_chat_enabled": False}
 
         def get(self, key, default=None):
             return self.values.get(key, default)

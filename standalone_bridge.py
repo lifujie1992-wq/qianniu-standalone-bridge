@@ -6588,6 +6588,22 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             except (ValueError, RuntimeError) as error:
                 self.send_json(400, {"ok": False, "error": str(error)})
             return
+        if path == "/api/v1/hook/navigate-to-chat":
+            if not self.workbench_authorized():
+                self.send_json(401, {"ok": False, "error": "unauthorized"})
+                return
+            recovery = getattr(self.app, "hook_recovery", None)
+            if recovery is None:
+                self.send_json(501, {"ok": False, "error": "hook_recovery unavailable"})
+                return
+            result = recovery.navigate_to_chat_page()
+            self.send_json(200 if result.get("ok") else 502, {
+                "ok": bool(result.get("ok")),
+                **result,
+                "last_action_result": recovery.status().get("last_action_result"),
+                "pages": self.app.process_pages(),
+            })
+            return
         if path == "/api/v1/catalog/sync":
             if not self.workbench_authorized():
                 self.send_json(401, {"ok": False, "error": "unauthorized"})
