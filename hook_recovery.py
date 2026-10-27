@@ -277,6 +277,38 @@ class HookRecovery:
         self._log(f"imsdk frame hook injected={injected}")
         return {"ok": injected > 0, "injected": injected, "frames": frames or []}
 
+    def navigate_to_chat_page(self) -> dict[str, Any]:
+        """实验：把一个 dx-h5 页面导航到内置老接待台（同源、可逆）。
+
+        只在 imsdk_navigate_to_chat_enabled=true 时被调用。
+        目的：某些客户端默认加载 dx-h5 外壳（无 imsdk），但内置的老接待台仍在，
+        导航过去即可拿到 window.imsdk。
+        """
+        browser = getattr(self.app, "browser", None)
+        if browser is None or not getattr(browser, "connected", 0):
+            return {"ok": False, "error": "browser_not_connected"}
+        expression = (
+            "(() => { try { return (window.__qn_standalone_goto_chat_page"
+            " && window.__qn_standalone_goto_chat_page()) || {ok:false,error:'bridge_too_old'}; }"
+            " catch (e) { return {ok:false, error:String(e)}; } })()"
+        )
+        try:
+            value = browser.execute(expression, timeout=5.0)
+        except Exception as error:  # noqa: BLE001
+            self.last_action = "navigate_to_chat_page"
+            self.last_action_at = self.now()
+            self.last_action_result = f"navigate_failed: {mask_text(str(error), 120)}"
+            return {"ok": False, "error": self.last_action_result}
+        ok = bool(isinstance(value, dict) and value.get("ok"))
+        self.last_action = "navigate_to_chat_page"
+        self.last_action_at = self.now()
+        self.last_action_result = (
+            "navigate_to_chat_page ok" if ok
+            else f"navigate_failed: {str((value or {}).get('error') or 'unknown')[:120]}"
+        )
+        self._log(f"imsdk navigate to chat page ok={ok}")
+        return {"ok": ok, **(value if isinstance(value, dict) else {})}
+
     def rehook_pages(self) -> dict[str, Any]:
         browser = getattr(self.app, "browser", None)
         if browser is None:
@@ -328,6 +360,10 @@ class HookRecovery:
             f"auto_open_chat_ok via={(result or {}).get('via') or ''}"
             if ok else f"auto_open_chat_failed: {(result or {}).get('reason') or 'unknown'}"
         )
+        if not ok and self.app.config.get("imsdk_navigate_to_chat_enabled", False):
+            navigated = self.navigate_to_chat_page()
+            if navigated.get("ok"):
+                self.last_action_result += " + navigate_to_chat_page"
         self._log(f"imsdk auto open chat ok={ok} {self.last_action_result}")
         return {"ok": ok, **(result or {})}
 

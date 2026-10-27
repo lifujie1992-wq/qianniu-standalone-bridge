@@ -2434,6 +2434,19 @@
   window.__qn_standalone_rehook = hookImSdk;
 
   // 任务 A(2)：页面兜底读取"当前登录客服号"（只读，不含任何消息内容）
+  // 实验能力：把当前 webview 导航到内置的老接待台页面（同源、可逆）。
+  // 仅当服务端显式开启 imsdk_navigate_to_chat_enabled 时才会被调用。
+  window.__qn_standalone_goto_chat_page = function (url) {
+    try {
+      var target = String(url || "https://alires-webui/web_chat-packer/recent.html");
+      if (location.href.indexOf("web_chat-packer/recent") >= 0) return {ok: true, already: true};
+      location.href = target;
+      return {ok: true, navigating: target};
+    } catch (e) {
+      return {ok: false, error: String(e && e.message ? e.message : e).slice(0, 120)};
+    }
+  };
+
   window.__qn_standalone_read_identity = function () {
     try {
       var seller = lastSellerNick || "";

@@ -328,3 +328,48 @@ class AutoOpenChatTests(unittest.TestCase):
         recovery.open_chat_page()
         recovery.open_chat_page()
         self.assertEqual(calls["n"], 1, "5 分钟内不重复打扰")
+
+
+class NavigateToChatTests(unittest.TestCase):
+    class Config:
+        def __init__(self):
+            self.values = {"imsdk_auto_open_chat_enabled": True,
+                           "imsdk_auto_open_chat_interval_seconds": 300,
+                           "imsdk_navigate_to_chat_enabled": True}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+    def make(self, open_ok, navigate_value):
+        import hook_recovery as hr
+
+        class Browser:
+            connected = 1
+
+            def diagnostics_by_connection(self):
+                return []
+
+            def execute(self, expression, timeout=3.0, **kwargs):
+                return navigate_value
+
+        class App:
+            config = self.Config()
+            browser = Browser()
+            db = type("DB", (), {"has_recent_buyer_activity": lambda s, m: True})()
+            stop_event = None
+
+            def auto_open_recent_conversation(self):
+                return {"ok": open_ok, "reason": "" if open_ok else "open_rejected"}
+        return hr.HookRecovery(App(), now_fn=lambda: 1000.0, prompt_fn=None,
+                               notify_fn=lambda *a: None, logger=None)
+
+    def test_falls_back_to_navigation_when_open_fails(self):
+        recovery = self.make(False, {"ok": True, "navigating": "web_chat-packer/recent.html"})
+        recovery.open_chat_page()
+        self.assertIn("navigate_to_chat_page", recovery.last_action_result)
+
+    def test_no_navigation_when_disabled(self):
+        recovery = self.make(False, {"ok": True})
+        recovery.app.config.values["imsdk_navigate_to_chat_enabled"] = False
+        recovery.open_chat_page()
+        self.assertNotIn("navigate", recovery.last_action_result)
