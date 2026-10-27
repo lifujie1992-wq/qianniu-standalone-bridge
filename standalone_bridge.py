@@ -6596,7 +6596,8 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             if recovery is None:
                 self.send_json(501, {"ok": False, "error": "hook_recovery unavailable"})
                 return
-            result = recovery.navigate_to_chat_page()
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            result = recovery.navigate_to_chat_page(str(query.get("url", [""])[0]))
             self.send_json(200 if result.get("ok") else 502, {
                 "ok": bool(result.get("ok")),
                 **result,

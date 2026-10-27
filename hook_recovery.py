@@ -277,37 +277,52 @@ class HookRecovery:
         self._log(f"imsdk frame hook injected={injected}")
         return {"ok": injected > 0, "injected": injected, "frames": frames or []}
 
-    def navigate_to_chat_page(self) -> dict[str, Any]:
-        """实验：把一个 dx-h5 页面导航到内置老接待台（同源、可逆）。
+    CHAT_PAGE_URL = "https://alires-webui/web_chat-packer/recent.html"
 
-        只在 imsdk_navigate_to_chat_enabled=true 时被调用。
-        目的：某些客户端默认加载 dx-h5 外壳（无 imsdk），但内置的老接待台仍在，
-        导航过去即可拿到 window.imsdk。
+    def navigate_to_chat_page(self, url: str = "", wait_seconds: float = 12.0) -> dict[str, Any]:
+        """把一个已连接页面导航到内置老接待台，并等它重新挂上 imsdk。
+
+        关键：不依赖页面侧是否装了新桥接（页面可能还跑着旧脚本），
+        直接用普通 JS 改 location，任何版本都能执行。
+        同源、可逆；只是把那个 webview 换成老接待台界面。
         """
         browser = getattr(self.app, "browser", None)
         if browser is None or not getattr(browser, "connected", 0):
             return {"ok": False, "error": "browser_not_connected"}
+        target = str(url or self.CHAT_PAGE_URL).strip() or self.CHAT_PAGE_URL
+        if "web_chat-packer/recent" in target and self.recovered_now():
+            return {"ok": True, "already": True, "reason": "chat page already hooked"}
         expression = (
-            "(() => { try { return (window.__qn_standalone_goto_chat_page"
-            " && window.__qn_standalone_goto_chat_page()) || {ok:false,error:'bridge_too_old'}; }"
-            " catch (e) { return {ok:false, error:String(e)}; } })()"
-        )
-        try:
-            value = browser.execute(expression, timeout=5.0)
-        except Exception as error:  # noqa: BLE001
-            self.last_action = "navigate_to_chat_page"
-            self.last_action_at = self.now()
-            self.last_action_result = f"navigate_failed: {mask_text(str(error), 120)}"
-            return {"ok": False, "error": self.last_action_result}
-        ok = bool(isinstance(value, dict) and value.get("ok"))
+            "(() => { try { if (location.href.indexOf(%s) >= 0) return {ok: true, already: true};"
+            " location.href = %s; return {ok: true, navigating: true}; }"
+            " catch (e) { return {ok: false, err: String(e && e.message ? e.message : e)}; } })()"
+        ) % (json.dumps(target), json.dumps(target))
         self.last_action = "navigate_to_chat_page"
         self.last_action_at = self.now()
+        try:
+            value = browser.execute(expression, timeout=6.0)
+        except Exception as error:  # noqa: BLE001
+            self.last_action_result = f"navigate_failed: {mask_text(str(error), 120)}"
+            return {"ok": False, "error": self.last_action_result}
+        if not (isinstance(value, dict) and value.get("ok")):
+            reason = str((value or {}).get("err") or (value or {}).get("error") or "unknown")
+            self.last_action_result = f"navigate_failed: {mask_text(reason, 120)}"
+            return {"ok": False, "error": self.last_action_result}
+        # 导航后等页面重新连接并挂钩（真实时钟，避免注入时钟导致死循环）
+        deadline = time.monotonic() + max(1.0, float(wait_seconds))
+        hooked = False
+        while time.monotonic() < deadline:
+            time.sleep(1.0)
+            if self.recovered_now():
+                hooked = True
+                break
         self.last_action_result = (
-            "navigate_to_chat_page ok" if ok
-            else f"navigate_failed: {str((value or {}).get('error') or 'unknown')[:120]}"
+            f"navigate_to_chat_page ok (hooked={hooked})" if hooked
+            else "navigate_to_chat_page ok, but no page hooked yet"
         )
-        self._log(f"imsdk navigate to chat page ok={ok}")
-        return {"ok": ok, **(value if isinstance(value, dict) else {})}
+        self._log(f"imsdk navigate to chat page hooked={hooked} url={sanitize_page_url(target)}")
+        return {"ok": True, "navigated": target, "hooked_after": hooked,
+                "pages": hook_summary(self.connections())}
 
     def rehook_pages(self) -> dict[str, Any]:
         browser = getattr(self.app, "browser", None)
