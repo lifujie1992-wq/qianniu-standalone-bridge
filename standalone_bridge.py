@@ -43,9 +43,17 @@ from brain_ws import (
 )
 from client_support import ClientSupportWatcher, agent_profiles, launcher_version, size_of_image
 from config_defaults import apply_operational_defaults
-from nickname_support import event_nickname, nickname_event_id, valid_nickname
-from native_image_lookup import enrich_native_image_event
 from native_context import NativeContext
+from native_image_lookup import enrich_native_image_event
+from nickname_support import event_nickname, nickname_event_id, valid_nickname
+from hook_diagnostics import (
+    HookMonitor,
+    chat_page_hooked,
+    hook_summary,
+    mask_text,
+    normalize_connection,
+    unavailable_reason,
+)
 from nickname_resolver import ConversationSelectionWatch, NicknameResolver
 from qn_catalog import CatalogSyncer, QnCatalog, QnCatalogError, mtop_ret
 from reception_wait import message_direction, waiting_state
@@ -3831,6 +3839,10 @@ class BrowserServer:
             "history_probe_enabled", "history_probe_runs",
             "history_probe_last_ccode", "history_probe_last_at_ms",
             "history_probe_imsdk", "history_probe_results",
+            # 任务 A（1.6.28）：页面诊断，只增不改
+            "page_url", "page_title", "page_kind", "is_top_frame", "ready_state",
+            "imsdk_typeof", "imsdk_invoke_typeof", "hook_attempts",
+            "last_hook_attempt_at_ms", "last_hook_error", "first_hooked_at_ms",
         )
         snapshot = {key: diagnostics.get(key) for key in allowed if key in diagnostics}
         with self.connection_lock:
@@ -3839,7 +3851,8 @@ class BrowserServer:
 
     def diagnostics_by_connection(self) -> list[dict[str, Any]]:
         with self.connection_lock:
-            return [dict(value) for value in self.connection_diagnostics.values()]
+            rows = [dict(value) for value in self.connection_diagnostics.values()]
+        return [normalize_connection(row) for row in rows]
 
     def allowed(self, connection: Any) -> bool:
         path = str(getattr(getattr(connection, "request", None), "path", ""))
@@ -5034,6 +5047,11 @@ class ContextEnricher:
         with self.lock:
             skip_reasons = dict(self.skip_reasons)
             result_counts = dict(self.result_counts)
+        browser = getattr(self.app, "browser", None)
+        connections = browser.diagnostics_by_connection() if browser is not None else []
+        recovery = getattr(self.app, "hook_recovery", None)
+        needs_human = bool(getattr(recovery, "needs_human", False)) if recovery is not None else False
+        reason = unavailable_reason(connections, self.last_error, needs_human)
         return {
             "enabled": bool(self.app.config.get("context_enrich_enabled", True)),
             "pending": self.pending.qsize(),
@@ -5047,7 +5065,11 @@ class ContextEnricher:
             "last_success_at": self.last_success_at,
             "last_event_id": self.last_event_id,
             "last_buyer_encrypt_id": self.last_buyer_encrypt_id,
+            # 任务 A（1.6.28）：last_error 含义不变，新增完整原因与分类
             "last_error": self.last_error,
+            "last_error_detail": mask_text(self.last_error, 300),
+            "unavailable_reason": reason,
+            "chat_page_hooked": chat_page_hooked(connections),
         }
 
 
@@ -6384,6 +6406,8 @@ class StandaloneBridge:
         self.browser = BrowserServer(self)
         self.nicknames = NicknameResolver(self)
         self.context = ContextEnricher(self)
+        # 任务 A：imsdk 挂钩诊断日志（60s 一行 + 状态跃变补一行）
+        self.hook_monitor = HookMonitor(self, logger=LOG)
         # 福客同款 mtop 取数通道：商品目录 / 订单 / 店铺（页面 imsdk → invokeMTopChannelService）
         self.catalog = QnCatalog(self)
         # 商品目录定时沉凌（供工作台与 AI 检索）
@@ -6796,6 +6820,7 @@ class StandaloneBridge:
         self.brain.start()
         self.browser.start()
         self.context.start()
+        self.hook_monitor.thread.start()
         self.catalog_sync.start()
         self.cdp.start()
         self.updater.start()
@@ -6824,6 +6849,7 @@ class StandaloneBridge:
         self.expire_unconfirmed_sends()
         if workbench_session_count is None:
             workbench_session_count = len(self.db.workbench_sessions())
+        browser_connections = self.browser.diagnostics_by_connection()
         payload = {
             "ok": not bool(self.api_error or self.workbench_error or self.browser.error),
             "version": VERSION,
@@ -6835,7 +6861,8 @@ class StandaloneBridge:
                 "total_events": self.browser.total_events,
                 "last_seen_at": self.browser.last_seen_at,
                 "diagnostics": self.browser.last_diagnostics,
-                "connections": self.browser.diagnostics_by_connection(),
+                "connections": browser_connections,
+                "hook_summary": hook_summary(browser_connections),
                 "error": self.browser.error,
                 "event_error": self.browser.event_error,
                 "rejected_events": self.browser.rejected_events,

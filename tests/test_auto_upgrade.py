@@ -59,7 +59,7 @@ class AutoUpgradeTests(unittest.TestCase):
         stop = Mock()
         start = Mock(return_value={"ok":True})
         result = upgrade.replace_program(self.root,self.source,self.backup,stop,start)
-        self.assertEqual(result["version"],"1.6.25")
+        self.assertEqual(result["version"], upgrade.VERSION)
         self.assertEqual((self.root / "QianniuAgent.exe").read_bytes(),b"new-program")
         self.assertIn("private-test-token",(self.root / "config.json").read_text())
         self.assertEqual((self.root / "runtime/native.dll").read_bytes(),b"native-unchanged")
@@ -71,7 +71,7 @@ class AutoUpgradeTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT status,response FROM sends").fetchone(),("unknown","keep-dedup-ledger"))
         self.assertTrue((self.backup / "bridge.sqlite3").is_file())
         stop.assert_called_once()
-        start.assert_called_once_with("1.6.25")
+        start.assert_called_once_with(upgrade.VERSION)
 
     def test_failed_start_restores_old_program_dependencies_and_restarts_old(self):
         start = Mock(side_effect=[RuntimeError("failed startup"),{"ok":True}])
@@ -131,7 +131,7 @@ class AutoUpgradeTests(unittest.TestCase):
         return path,{"zip_sha256":hashlib.sha256(path.read_bytes()).hexdigest(),"exe_sha256":hashlib.sha256(b"new").hexdigest()}
 
     def test_verified_payload_extracts_to_isolated_folder(self):
-        path,expected = self.make_archive({"QianniuAIService/QianniuAgent.exe":b"new","QianniuAIService/build-info.json":b'{"version":"1.6.25"}'})
+        path,expected = self.make_archive({"QianniuAIService/QianniuAgent.exe":b"new","QianniuAIService/build-info.json":json.dumps({"version": upgrade.VERSION}).encode()})
         self.assertTrue((upgrade.extract_payload(path,self.base / "extract",expected)/"QianniuAgent.exe").is_file())
 
     def test_corrupted_zip_fails_hash_validation(self):
