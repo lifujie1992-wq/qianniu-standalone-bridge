@@ -6729,6 +6729,13 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/v1/catalog"):
+            self.send_json(400, {
+                "ok": False,
+                "error": "catalog 接口在 workbench 端口(默认 18776)，请用 X-Workbench-Token 调用："
+                         "GET http://127.0.0.1:18776/api/v1/catalog/mtop?method=...&param={}",
+            })
+            return
         if path in {"/health", "/api/v1/status"}:
             self.send_json(200, self.app.status())
         else:
