@@ -6436,6 +6436,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     payload = self.app.catalog.goods_page(
                         page_no=int(str(query.get("page_no", ["1"])[0]) or 1),
                         page_size=page_size,
+                        only_channel=str(query.get("channel", [""])[0]),
                     )
             except (QnCatalogError, ValueError) as error:
                 self.send_json(502, {"ok": False, "error": str(error)[:300]})
@@ -6493,6 +6494,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     payload = self.app.catalog.buyer_orders(
                         buyer,
                         str(query.get("biz_order_id", [""])[0]),
+                        only_channel=str(query.get("channel", [""])[0]),
                     )
             except (QnCatalogError, ValueError) as error:
                 self.send_json(502, {"ok": False, "error": str(error)[:300]})

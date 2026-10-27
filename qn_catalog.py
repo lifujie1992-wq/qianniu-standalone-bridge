@@ -56,17 +56,38 @@ MAX_PAGE_SIZE = 100
 _INVOKE_TEMPLATE = """
 (() => {
   const call = __PAYLOAD__;
+  const only = call.__only || '';
+  const want = name => !only || only === name;
   const channels = [];
   // 通道 1：老接待台的 window.imsdk.invoke（现状可用）
-  if (window.imsdk && typeof window.imsdk.invoke === 'function') {
+  if (want('imsdk') && window.imsdk && typeof window.imsdk.invoke === 'function') {
     channels.push(['imsdk', () => window.imsdk.invoke(
       'application.invokeMTopChannelService',
       Object.assign({httpMethod: 'post', version: '1.0'}, call)
     )]);
   }
-  // 通道 2：新版 dx-h5 的 QNAbilityCenter.ability.invoke
+  // 通道 2/3：千牛原生注入的 QN 桥（页面自己的代码就是用它，dx-h5 里也存在）
+  const qn = window.QN;
+  if (want('qn_app') && qn && qn.app && typeof qn.app.invoke === 'function') {
+    channels.push(['qn_app', () => qn.app.invoke({
+      api: 'invokeMTopChannelService',
+      query: {
+        method: call.method,
+        version: call.version || '1.0',
+        param: JSON.stringify(call.param || {}),
+        httpMethod: 'get'
+      }
+    })]);
+  }
+  if (want('qn_application') && qn && qn.application && typeof qn.application.invoke === 'function') {
+    channels.push(['qn_application', () => qn.application.invoke({
+      cmd: 'invokeMTopChannelService',
+      param: { method: call.method, version: call.version || '1.0', param: call.param || {} }
+    })]);
+  }
+  // 通道 4：新版 dx-h5 的 QNAbilityCenter.ability.invoke
   const center = window.QNAbilityCenter;
-  if (center && center.ability && typeof center.ability.invoke === 'function') {
+  if (want('QNAbilityCenter') && center && center.ability && typeof center.ability.invoke === 'function') {
     channels.push(['QNAbilityCenter', () => new Promise((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => {
@@ -89,9 +110,9 @@ _INVOKE_TEMPLATE = """
       }
     })]);
   }
-  // 通道 3：部分版本挂在 window.abilitycenter 上
+  // 通道 5：部分版本挂在 window.abilitycenter 上
   const alt = window.abilitycenter;
-  if (alt && alt.ability && typeof alt.ability.invoke === 'function') {
+  if (want('abilitycenter') && alt && alt.ability && typeof alt.ability.invoke === 'function') {
     channels.push(['abilitycenter', () => new Promise((resolve, reject) => {
       try {
         alt.ability.invoke({
@@ -421,7 +442,8 @@ class QnCatalog:
             return 8.0
 
     def raw(self, method: str, param: dict[str, Any] | None = None, timeout: float | None = None,
-            strict: bool = True, version: str = "1.0") -> Any:
+            strict: bool = True, version: str = "1.0",
+            only_channel: str = "") -> Any:
         """执行任意 mtop 方法（福客 `invoke_mtopchannel_service` 的等价物）。
 
         strict=False 时不因 `ret` 非 SUCCESS 报错，直接返回原始响应，
@@ -433,6 +455,8 @@ class QnCatalog:
             "param": _jsonable(param or {}),
             "version": str(version),
         }
+        if only_channel:
+            payload["__only"] = str(only_channel)
         expression = _INVOKE_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload, ensure_ascii=False))
         self.requests += 1
         try:
@@ -460,7 +484,7 @@ class QnCatalog:
 
     # -- 商品 -------------------------------------------------------------
     def goods_page(self, page_no: int = 1, page_size: int = DEFAULT_PAGE_SIZE,
-                   timeout: float | None = None) -> dict[str, Any]:
+                   timeout: float | None = None, only_channel: str = "") -> dict[str, Any]:
         """一页在售商品（福客 `getQNList1` 的分页口径）。"""
         page_no = max(1, int(page_no))
         page_size = max(1, min(MAX_PAGE_SIZE, int(page_size)))
@@ -468,6 +492,7 @@ class QnCatalog:
             ITEM_ONSALE_METHOD,
             {"pageNo": page_no, "pageSize": page_size},
             timeout=timeout,
+            only_channel=only_channel,
         )
         parsed = normalize_goods(value)
         parsed.update({
@@ -574,7 +599,7 @@ class QnCatalog:
 
     # -- 订单 -------------------------------------------------------------
     def buyer_orders(self, buyer_encrypt_id: str, biz_order_id: str = "",
-                     timeout: float | None = None) -> dict[str, Any]:
+                     timeout: float | None = None, only_channel: str = "") -> dict[str, Any]:
         """买家在本店的近期订单（福客订单上下文用的就是这个）。"""
         encrypt_id = str(buyer_encrypt_id or "").strip()
         if not encrypt_id:
@@ -583,6 +608,7 @@ class QnCatalog:
             TRADE_QUERY_METHOD,
             {"securityBuyerUid": encrypt_id, "bizOrderId": str(biz_order_id or "")},
             timeout=timeout,
+            only_channel=only_channel,
         )
         orders = normalize_orders(value)
         return {
