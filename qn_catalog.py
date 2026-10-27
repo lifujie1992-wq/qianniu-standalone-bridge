@@ -66,6 +66,13 @@ _INVOKE_TEMPLATE = """
       Object.assign({httpMethod: 'post', version: '1.0'}, call)
     )]);
   }
+  // 通道 1b：部分客户端注入的是 window.imsdk2
+  if (want('imsdk2') && window.imsdk2 && typeof window.imsdk2.invoke === 'function') {
+    channels.push(['imsdk2', () => window.imsdk2.invoke(
+      'application.invokeMTopChannelService',
+      Object.assign({httpMethod: 'post', version: '1.0'}, call)
+    )]);
+  }
   // 通道 2/3：千牛原生注入的 QN 桥（页面自己的代码就是用它，dx-h5 里也存在）
   const qn = window.QN;
   if (want('qn_app') && qn && qn.app && typeof qn.app.invoke === 'function') {

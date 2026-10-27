@@ -6401,7 +6401,15 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     workbench_typeof: typeof window.workbench,
     workbench_keys: keys(window.workbench),
     imsdk2_typeof: typeof window.imsdk2,
+    imsdk2_invoke_typeof: typeof (window.imsdk2 || {}).invoke,
     qn_im_sdk_typeof: typeof window._qn_im_sdk,
+    QN_typeof: typeof window.QN,
+    QN_keys: keys(window.QN),
+    QN_app_typeof: typeof (window.QN || {}).app,
+    QN_app_keys: keys(window.QN && window.QN.app),
+    QN_app_invoke_typeof: typeof ((window.QN || {}).app || {}).invoke,
+    QN_application_typeof: typeof (window.QN || {}).application,
+    QN_application_keys: keys(window.QN && window.QN.application),
     frames: (function () { try { return window.frames.length; } catch (e) { return -1; } })()
   };
 })()
