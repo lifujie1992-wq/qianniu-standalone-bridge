@@ -188,6 +188,18 @@ def chat_page_hooked(connections: list[dict[str, Any]]) -> bool:
     return False
 
 
+def orders_capable(connections: list[dict[str, Any]]) -> bool:
+    """是否已有页面挂上 imsdk —— 取订单只需要这个能力（不限于 chat_* 页面）。
+
+    现场证据：新版客户端把聊天页放在 dx-h5 的同源 iframe 里，URL 不像聊天页，
+    但只要有 imsdk 就能查订单。
+    """
+    for row in connections or []:
+        if isinstance(row, dict) and row.get("imsdk_hooked") is True:
+            return True
+    return False
+
+
 def unavailable_reason(
     connections: list[dict[str, Any]],
     last_error: str = "",
@@ -201,10 +213,12 @@ def unavailable_reason(
         return "no_page_hooked"
     summary = hook_summary(rows)
     chat_kinds = [row for row in rows if str(row.get("page_kind") or "") in CHAT_KINDS]
+    if orders_capable(rows):
+        text = str(last_error or "").lower()
+        return "hooked_but_invoke_failed" if last_error and ("imsdk" in text or "invoke" in text) else ""
     if not chat_kinds:
         return "chat_page_missing"
-    if not any(row.get("imsdk_hooked") is True for row in chat_kinds):
-        return "no_page_hooked"
+    return "no_page_hooked"
     text = str(last_error or "").lower()
     if "imsdk" in text or "invoke" in text or "channel" in text:
         return "hooked_but_invoke_failed"
@@ -302,6 +316,7 @@ __all__ = [
     "normalize_connection",
     "hook_summary",
     "chat_page_hooked",
+    "orders_capable",
     "unavailable_reason",
     "reasons_counter",
     "HookMonitor",

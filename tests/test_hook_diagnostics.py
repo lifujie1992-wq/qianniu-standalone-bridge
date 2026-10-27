@@ -136,8 +136,14 @@ class UnavailableReasonTests(unittest.TestCase):
         self.assertEqual(hd.unavailable_reason([]), "no_page_hooked")
 
     def test_chat_missing(self):
-        rows = [{"page_kind": "other", "imsdk_hooked": True}]
+        # 未挂钩且没有聊天页 → chat_page_missing
+        rows = [{"page_kind": "other", "imsdk_hooked": False}]
         self.assertEqual(hd.unavailable_reason(rows), "chat_page_missing")
+
+    def test_hooked_non_chat_page_counts_as_capable(self):
+        # 新版客户端聊天页在 dx-h5 的 iframe 里：只要挂上 imsdk 就能取订单
+        rows = [{"page_kind": "other", "imsdk_hooked": True}]
+        self.assertEqual(hd.unavailable_reason(rows), "")
 
     def test_chat_present_not_hooked(self):
         rows = [{"page_kind": "chat_recent", "imsdk_hooked": False}]

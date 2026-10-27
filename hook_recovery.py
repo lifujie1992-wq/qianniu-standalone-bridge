@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from hook_diagnostics import (
@@ -31,6 +32,7 @@ from hook_diagnostics import (
     chat_page_hooked,
     hook_summary,
     mask_text,
+    orders_capable,
     sanitize_page_url,
 )
 
@@ -188,7 +190,8 @@ class HookRecovery:
             return []
 
     def recovered_now(self) -> bool:
-        return chat_page_hooked(self.connections())
+        # 取订单只依赖 imsdk 是否存在：子 frame 挂上也应视为恢复。
+        return orders_capable(self.connections())
 
     def _buyer_active(self) -> bool:
         minutes = self._quiet_minutes()
@@ -237,6 +240,37 @@ class HookRecovery:
             f"frames={len(rows)} child_imsdk={child_with_imsdk}" if rows else "no frames"
         )
         return {"ok": True, "frames": rows, "child_frame_with_imsdk": child_with_imsdk}
+
+    def hook_frames(self) -> dict[str, Any]:
+        """在同源子 frame 里注入桥接脚本（新版客户端聊天页可能在 dx-h5 的 iframe 里）。
+
+        只注入同源 frame，且仅当该 frame 已有 imsdk 或 URL/标题像聊天页；
+        失败不影响主流程。默认开启，可用 imsdk_frame_hook_enabled=false 关闭。
+        """
+        if not self.app.config.get("imsdk_frame_hook_enabled", True):
+            return {"ok": False, "error": "frame hook disabled"}
+        browser = getattr(self.app, "browser", None)
+        if browser is None:
+            return {"ok": False, "error": "browser bridge unavailable"}
+        try:
+            source = (Path(__file__).resolve().parent / "browser_bridge.js").read_text(encoding="utf-8-sig")
+        except OSError as error:
+            return {"ok": False, "error": f"bridge source unreadable: {error}"}
+        expression = build_frame_hook_expression(source)
+        try:
+            value = browser.execute(expression, timeout=15.0)
+        except Exception as error:  # noqa: BLE001
+            self.last_action = "hook_frames"
+            self.last_action_at = self.now()
+            self.last_action_result = f"frame_hook failed: {mask_text(str(error), 120)}"
+            return {"ok": False, "error": self.last_action_result}
+        frames = value.get("frames") if isinstance(value, dict) else None
+        injected = int((value or {}).get("injected") or 0) if isinstance(value, dict) else 0
+        self.last_action = "hook_frames"
+        self.last_action_at = self.now()
+        self.last_action_result = f"frame_hook injected={injected} frames={len(frames or [])}"
+        self._log(f"imsdk frame hook injected={injected}")
+        return {"ok": injected > 0, "injected": injected, "frames": frames or []}
 
     def rehook_pages(self) -> dict[str, Any]:
         browser = getattr(self.app, "browser", None)
@@ -374,6 +408,17 @@ class HookRecovery:
         if cdp is None:
             self.last_action_result = "cdp_unavailable: injector missing"
             return {"ok": False, "error": "cdp_unavailable"}
+        # 现场教训（2026-10-27）：9.98.49N 的 CEF 不监听 --remote-debugging-port，
+        # 重启千牛还会退回登录页、丢掉这段时间的买家消息。默认禁止自动重启，
+        # 只有维护人员显式打开 cdp_restart_enabled 才允许。
+        if not self.app.config.get("cdp_restart_enabled", False):
+            self.last_action_result = (
+                "restart_disabled_by_policy: 本版千牛(9.98.49N)不暴露调试端口，"
+                "重启还会丢登录态与消息，已停用；请让人打开接待台聊天页后重试"
+            )
+            self.human_action = "open_reception_window"
+            self._log("imsdk authorize repair blocked by policy")
+            return {"ok": False, "error": "restart_disabled_by_policy"}
         # 任务 B1：真正带 --remote-debugging-port 重启千牛并按聊天页挂钩。
         # 失败原因必须具体（restart_failed / cdp_port_not_open / no_target_found）。
         try:
@@ -426,10 +471,14 @@ class HookRecovery:
             self.last_retry_at = 0.0
         if now - self.last_retry_at >= RETRY_INTERVAL:
             self.last_retry_at = now
-            self.probe_frames()
+            probe = self.probe_frames()
             self.rehook_pages()
             if self.recovered_now():
                 return
+            if isinstance(probe, dict) and probe.get("child_frame_with_imsdk"):
+                self.hook_frames()
+                if self.recovered_now():
+                    return
 
         # 阶段 2：没有聊天页且阶段 1 已持续 2 分钟
         summary = hook_summary(self.connections())
@@ -623,3 +672,61 @@ __all__ = [
     "show_prompt_window",
     "confirm_authorize",
 ]
+
+
+_FRAME_HOOK_TEMPLATE = """
+(() => {
+  const source = __SOURCE__;
+  const hints = ['web_chat-packer', '/chat', 'reception'];
+  const titles = ['\u804a\u5929', '\u63a5\u5f85'];
+  const rows = [];
+  let injected = 0;
+  const frames = [];
+  try {
+    for (let i = 0; i < Math.min(window.frames.length, 20); i += 1) frames.push(window.frames[i]);
+  } catch (e) {}
+  for (let index = 0; index < frames.length; index += 1) {
+    const frame = frames[index];
+    let url = '';
+    let typeofValue = 'inaccessible';
+    let title = '';
+    try {
+      url = String(frame.location.href || '');
+      typeofValue = typeof frame.imsdk;
+      title = String((frame.document && frame.document.title) || '');
+    } catch (e) {
+      rows.push({frame: index + 1, url: '', imsdk_typeof: 'cross_origin', injected: false});
+      continue;
+    }
+    const looksChat = hints.some(function (hint) { return url.indexOf(hint) >= 0; })
+      || titles.some(function (hint) { return title.indexOf(hint) >= 0; });
+    const hasImsdk = typeofValue === 'object' || typeofValue === 'function';
+    if (!hasImsdk && !looksChat) {
+      rows.push({frame: index + 1, url: url, imsdk_typeof: typeofValue, injected: false});
+      continue;
+    }
+    let ok = false;
+    try {
+      if (!frame.document.querySelector('script[data-qn-frame-bridge]')) {
+        const node = frame.document.createElement('script');
+        node.setAttribute('data-qn-frame-bridge', '1');
+        node.textContent =
+          'window.__qn_standalone_ws_url = window.__qn_standalone_ws_url || '
+          + JSON.stringify(window.__qn_standalone_ws_url || '') + ';' + String.fromCharCode(10) + source;
+        frame.document.head.appendChild(node);
+      }
+      ok = true;
+      injected += 1;
+    } catch (e) {
+      ok = false;
+    }
+    rows.push({frame: index + 1, url: url, imsdk_typeof: typeofValue, injected: ok});
+  }
+  return {frames: rows, injected: injected};
+})()
+"""
+
+
+def build_frame_hook_expression(source: str) -> str:
+    """构造"在符合条件同源 iframe 里注入桥接脚本"的表达式。"""
+    return _FRAME_HOOK_TEMPLATE.replace("__SOURCE__", json.dumps(source, ensure_ascii=False))

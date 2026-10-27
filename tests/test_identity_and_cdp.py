@@ -93,6 +93,8 @@ class AuthorizeRepairTests(unittest.TestCase):
                 "imsdk_hook_grace_seconds": 0,
                 "imsdk_hook_remind_interval_minutes": 15,
                 "imsdk_hook_quiet_when_no_buyer_minutes": 30,
+                # 默认策略禁止重启千牛；这组用例专门测"允许重启"的分支
+                "cdp_restart_enabled": True,
             }
 
         def get(self, key, default=None):
@@ -273,3 +275,78 @@ class DeliveryChunkTests(unittest.TestCase):
         rows = [{"payload": {"content": "y" * 5000}}, {"payload": {"content": "z"}}]
         chunks = worker.chunk_rows(rows, 1000)
         self.assertEqual(len(chunks), 2)
+
+
+class RestartPolicyTests(unittest.TestCase):
+    class Config:
+        def __init__(self, restart_enabled):
+            self.values = {"cdp_restart_enabled": restart_enabled}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+    def make(self, restart_enabled):
+        import hook_recovery as hr
+
+        class Cdp:
+            calls = 0
+
+            def restart_with_debug_port(self):
+                Cdp.calls += 1
+                return {"ok": True, "port": 9222, "pages": 1, "injected": 1}
+
+        app = type("App", (), {})()
+        app.config = self.Config(restart_enabled)
+        app.browser = type("B", (), {"connected": 0,
+                                     "diagnostics_by_connection": lambda self: []})()
+        app.db = type("DB", (), {"has_recent_buyer_activity": lambda self, m: True})()
+        app.stop_event = None
+        app.cdp = Cdp()
+        return hr.HookRecovery(app, now_fn=lambda: 1.0, prompt_fn=None,
+                               notify_fn=lambda *a: None, logger=None)
+
+    def test_default_policy_blocks_qianniu_restart(self):
+        recovery = self.make(False)
+        result = recovery.authorize_repair()
+        self.assertFalse(result["ok"])
+        self.assertIn("restart_disabled_by_policy", recovery.last_action_result)
+        self.assertEqual(recovery.human_action, "open_reception_window")
+
+    def test_explicit_opt_in_allows_restart(self):
+        recovery = self.make(True)
+        result = recovery.authorize_repair()
+        self.assertTrue(result["ok"])
+
+
+class OrdersCapableTests(unittest.TestCase):
+    def test_hooked_non_chat_page_still_orders_capable(self):
+        """dx-h5 里的同源 iframe 挂上 imsdk 也算能取订单。"""
+        rows = [{"page_kind": "other", "imsdk_hooked": True}]
+        self.assertTrue(hd.orders_capable(rows))
+        self.assertEqual(hd.unavailable_reason(rows), "")
+
+    def test_not_hooked_anywhere(self):
+        rows = [{"page_kind": "other", "imsdk_hooked": False}]
+        self.assertFalse(hd.orders_capable(rows))
+        self.assertEqual(hd.unavailable_reason(rows), "chat_page_missing")
+
+
+class FrameHookExpressionTests(unittest.TestCase):
+    def test_expression_is_valid_and_mentions_guards(self):
+        import subprocess
+        import hook_recovery as hr
+        expr = hr.build_frame_hook_expression("console.log('x');")
+        self.assertIn("console.log('x')", expr)
+        self.assertIn("cross_origin", expr)
+        self.assertIn("data-qn-frame-bridge", expr)
+        result = subprocess.run(["node", "--check", "-"], input=expr, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_hook_frames_respects_switch(self):
+        import hook_recovery as hr
+        app = type("App", (), {})()
+        app.config = type("C", (), {"get": lambda self, key, default=None: False})()
+        app.browser = type("B", (), {"connected": 1, "execute": staticmethod(lambda *a, **k: None)})()
+        recovery = hr.HookRecovery(app, now_fn=lambda: 1.0, prompt_fn=None,
+                                   notify_fn=lambda *a: None, logger=None)
+        self.assertFalse(recovery.hook_frames()["ok"])

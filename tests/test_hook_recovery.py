@@ -14,6 +14,7 @@ class FakeConfig:
             "imsdk_hook_grace_seconds": 60,
             "imsdk_hook_remind_interval_minutes": 15,
             "imsdk_hook_quiet_when_no_buyer_minutes": 30,
+            "cdp_restart_enabled": True,
         }
         if values:
             self.values.update(values)
@@ -103,8 +104,10 @@ class StageFlowTests(unittest.TestCase):
         recovery.tick()
         self.assertEqual(recovery.stage, hr.STAGE_RETRY)
         self.assertTrue(recovery.child_frame_with_imsdk)
-        self.assertEqual(len(app.browser.expressions), 2)
-        self.assertEqual(recovery.last_action, "rehook")
+        # probe_frames → rehook → （子 frame 有 imsdk 时）frame hook
+        self.assertEqual(len(app.browser.expressions), 3)
+        self.assertIn("data-qn-frame-bridge", app.browser.expressions[2])
+        self.assertEqual(recovery.last_action, "hook_frames")
         # URL 已脱敏
         self.assertEqual(recovery.frames_seen[0]["page_url"], "https://qn/web_chat-packer/recent.html")
 
