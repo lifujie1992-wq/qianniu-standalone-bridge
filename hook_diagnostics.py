@@ -77,13 +77,19 @@ def mask_title(value: Any, limit: int = 60) -> str:
 # --------------------------------------------------------------------------
 # 归类
 # --------------------------------------------------------------------------
-def page_kind(url: Any) -> str:
+# 已知的聊天/接待页面 URL 特征（千牛换过页面时把新路径加到这里）
+CHAT_URL_HINTS = ("web_chat-packer", "/chat", "reception")
+CHAT_TITLE_HINTS = ("聊天", "接待")
+
+
+def page_kind(url: Any, title: Any = "") -> str:
     """页面归类：chat_recent / chat_other / miniapp / select_order / other。"""
+    text = str(url or "")
     path = ""
     try:
-        path = urllib.parse.urlsplit(str(url or "")).path
+        path = urllib.parse.urlsplit(text).path
     except ValueError:
-        path = str(url or "")
+        path = text
     if "web_chat-packer/recent" in path:
         return "chat_recent"
     if "web_chat-packer" in path:
@@ -92,6 +98,11 @@ def page_kind(url: Any) -> str:
         return "miniapp"
     if "selectOrder" in path:
         return "select_order"
+    # 新版接待台可能换路径：URL 或标题命中即按聊天页对待（B2 要求）
+    if any(hint in path for hint in CHAT_URL_HINTS):
+        return "chat_other"
+    if any(hint in str(title or "") for hint in CHAT_TITLE_HINTS):
+        return "chat_other"
     return "other"
 
 
@@ -118,7 +129,7 @@ def normalize_connection(diagnostics: dict[str, Any]) -> dict[str, Any]:
     url = sanitize_page_url(raw.get("page_url"))
     kind = str(raw.get("page_kind") or "").strip()
     if kind not in PAGE_KINDS:
-        kind = page_kind(raw.get("page_url") or url)
+        kind = page_kind(raw.get("page_url") or url, raw.get("page_title"))
     imsdk_typeof = str(raw.get("imsdk_typeof") or "undefined").strip() or "undefined"
     invoke_typeof = str(raw.get("imsdk_invoke_typeof") or "").strip()
     if not invoke_typeof:

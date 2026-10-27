@@ -371,22 +371,26 @@ class HookRecovery:
         except Exception:  # noqa: BLE001
             pass
         cdp = getattr(self.app, "cdp", None)
-        fake = None
-        if cdp is not None:
-            try:
-                fake = cdp.inject_once()
-            except Exception as error:  # noqa: BLE001
-                self.last_action_result = f"cdp inject failed: {mask_text(str(error), 120)}"
-                return {"ok": False, "error": self.last_action_result}
-        if fake:
-            self.last_action_result = f"cdp injected contexts={fake}"
-            return {"ok": True, "injected": fake}
-        self.last_action_result = (
-            "cdp_unavailable: repo has no restart-with-debug-port; manual maintenance required"
-        )
+        if cdp is None:
+            self.last_action_result = "cdp_unavailable: injector missing"
+            return {"ok": False, "error": "cdp_unavailable"}
+        # 任务 B1：真正带 --remote-debugging-port 重启千牛并按聊天页挂钩。
+        # 失败原因必须具体（restart_failed / cdp_port_not_open / no_target_found）。
+        try:
+            result = cdp.restart_with_debug_port()
+        except Exception as error:  # noqa: BLE001
+            result = {"ok": False, "reason": f"restart_failed: {mask_text(str(error), 120)}"}
+        if result.get("ok"):
+            self.last_action_result = (
+                f"cdp_ready port={result.get('port')} pages={result.get('pages')} "
+                f"injected={result.get('injected')}"
+            )
+            self._log(f"imsdk authorize repair ok port={result.get('port')}")
+            return {"ok": True, **result}
+        self.last_action_result = str(result.get("reason") or "cdp_unavailable")[:200]
         self.human_action = "authorize_cdp"
-        self._log("imsdk hook authorize repair: cdp unavailable")
-        return {"ok": False, "error": "cdp_unavailable"}
+        self._log(f"imsdk authorize repair failed: {self.last_action_result}")
+        return {"ok": False, "error": self.last_action_result}
 
     # ------------------------------------------------------------------
     # 阶段机

@@ -1741,12 +1741,25 @@
     }
   }
 
+  var CHAT_URL_HINTS = ["web_chat-packer", "/chat", "reception"];
+  var CHAT_TITLE_HINTS = ["聊天", "接待"];
+
   function classifyPageKind(url) {
     var text = String(url || "");
     if (text.indexOf("web_chat-packer/recent") >= 0) return "chat_recent";
     if (text.indexOf("web_chat-packer") >= 0) return "chat_other";
     if (text.indexOf("miniappNav") >= 0 || /miniapp/i.test(text)) return "miniapp";
     if (text.indexOf("selectOrder") >= 0) return "select_order";
+    // 新版接待台换路径时按标题兜底（B2）
+    for (var i = 0; i < CHAT_URL_HINTS.length; i += 1) {
+      if (text.indexOf(CHAT_URL_HINTS[i]) >= 0) return "chat_other";
+    }
+    try {
+      var pageTitle = String(document.title || "");
+      for (var j = 0; j < CHAT_TITLE_HINTS.length; j += 1) {
+        if (pageTitle.indexOf(CHAT_TITLE_HINTS[j]) >= 0) return "chat_other";
+      }
+    } catch (e) {}
     return "other";
   }
 
@@ -2419,6 +2432,24 @@
   window.__qn_standalone_reconnect = setup;
   // 任务 B（1.6.29）：供桥接触发一次现有挂钩（幂等，不改变挂钩实现）
   window.__qn_standalone_rehook = hookImSdk;
+
+  // 任务 A(2)：页面兜底读取"当前登录客服号"（只读，不含任何消息内容）
+  window.__qn_standalone_read_identity = function () {
+    try {
+      var seller = lastSellerNick || "";
+      var ccode = currentCcode();
+      var fromCache = ccode ? cachedLoginAccount(ccode) : "";
+      var account = seller || fromCache || "";
+      return {
+        account: String(account || ""),
+        ccode: ccode,
+        source: seller ? "last_seller_nick" : (fromCache ? "login_cache" : ""),
+        page_kind: diagnostics.page_kind,
+      };
+    } catch (e) {
+      return {account: "", source: "error", error: String(e && e.message ? e.message : e).slice(0, 120)};
+    }
+  };
   window.__qn_standalone_self_heal = selfHeal;
   window.__qn_standalone_add_conversation = function (ccode) { return registerConversation(ccode, "debug", true); };
 })();

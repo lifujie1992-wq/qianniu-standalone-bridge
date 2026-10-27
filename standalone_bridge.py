@@ -52,7 +52,9 @@ from hook_diagnostics import (
     chat_page_hooked,
     hook_summary,
     mask_text,
+    mask_title,
     normalize_connection,
+    sanitize_page_url,
     unavailable_reason,
 )
 from nickname_resolver import ConversationSelectionWatch, NicknameResolver
@@ -2235,11 +2237,21 @@ class StateDB:
         ]
 
 
+def is_duplicate_rejection(message: str) -> bool:
+    """判断服务器拒绝原因是不是"重复事件回放"（HTTP 400 + duplicate/replay）。"""
+    text = str(message or "").lower()
+    if "400" not in text:
+        return False
+    return any(token in text for token in ("duplicate", "replay", "already", "重复", "已存在"))
+
+
 class DeliveryWorker:
     def __init__(self, app: "StandaloneBridge"):
         self.app = app
         self.wakeup = threading.Event()
         self.thread = threading.Thread(target=self.run, name="gateway-delivery", daemon=True)
+        # 被服务器判为重复回放而去重的事件数（诊断用）
+        self.duplicate_dropped = 0
         self.last_error = ""
         self.last_success_at = 0.0
 
@@ -2323,6 +2335,15 @@ class DeliveryWorker:
                 delay = 0.2
             except Exception as error:
                 self.last_error = str(error)[:500]
+                if is_duplicate_rejection(self.last_error):
+                    # 服务器已判定"重复事件回放"：本地直接记完成，避免永久积压。
+                    for row in rows:
+                        self.app.db.mark_delivered(row["event_id"], row["revision"])
+                    self.duplicate_dropped += len(rows)
+                    self.last_error = ""
+                    self.last_success_at = time.time()
+                    delay = 0.2
+                    continue
                 self.app.db.mark_failed(rows, self.last_error)
                 self.app.stop_event.wait(delay)
                 delay = min(5.0, delay * 2.0)
@@ -2672,12 +2693,15 @@ class BrainConnector:
         local = self.app.status(include_brain=False)
         sessions = self.app.db.workbench_sessions()
         now = time.time()
-        accounts = sorted({
+        accounts = {
             str(session.get("account") or "").strip()
             for session in sessions
             if str(session.get("account") or "").strip()
             and now - float(session.get("last_ts") or 0.0) < 3600.0
-        })
+        }
+        # 任务 A(1)：会话为空时也要让服务器看到"这台助手是谁"
+        accounts.update(getattr(self.app, "known_accounts", []) or [])
+        accounts = sorted(item for item in accounts if item)
         shops = [
             {
                 "shop_id": self.account_shop_id(account),
@@ -3843,6 +3867,8 @@ class BrowserServer:
         self.error = ""
         self.event_error = ""
         self.rejected_events = 0
+        # 账号缺失但已接收的事件数（任务 A 观测项）
+        self.account_missing_events = 0
         self.connection_lock = threading.Lock()
         self.connection_ready = threading.Event()
         self.connections: dict[Any, threading.Lock] = {}
@@ -4237,11 +4263,16 @@ class BrowserServer:
                         continue
                     wire_id = str(message.get("event_id") or message["payload"].get("event_id") or "")
                     nickname_update = message["payload"].get("type") == "nickname_update"
-                    required = ("account", "buyer_id", "nickname" if nickname_update else "content")
+                    # 任务 A(3)：账号允许为空 —— 页面识别不到登录昵称时也要收，
+                    # 由助手自己补（持久化/会话历史/页面兜底），再不行服务器按
+                    # agent→客服号绑定补全。buyer_id 与内容仍然必填。
+                    required = ("buyer_id", "nickname" if nickname_update else "content")
                     if any(not is_nonempty(message["payload"].get(key)) for key in required):
                         self.event_error = "browser event missing " + ", ".join(required)
                         self.rejected_events += 1
                         continue
+                    if not is_nonempty(message["payload"].get("account")):
+                        self.account_missing_events += 1
                     if nickname_update and not event_nickname(message["payload"]):
                         self.event_error = "browser nickname_update has no valid nickname"
                         self.rejected_events += 1
@@ -5236,6 +5267,144 @@ class CdpInjector:
         )
         self.launched_pid = process.pid
 
+    # ---- 任务 B1/B2：带调试端口重启千牛 + 按目标页面挂钩 ----
+    _CHAT_URL_HINTS = ("web_chat-packer", "/chat", "reception")
+    _CHAT_TITLE_HINTS = ("聊天", "接待")
+
+    def discover_targets(self) -> list[dict[str, Any]]:
+        """枚举千牛进程所有 CDP 页面目标（不注入）。B3 的 process_pages 也用它。"""
+        found: list[dict[str, Any]] = []
+        if self.cdp_port:
+            try:
+                found = [item for item in self.targets(int(self.cdp_port)) if isinstance(item, dict)]
+            except Exception:  # noqa: BLE001
+                found = []
+        if found:
+            return found
+        for port in self.candidate_ports():
+            try:
+                targets = self.targets(port)
+            except Exception:  # noqa: BLE001
+                continue
+            pages = [item for item in targets if isinstance(item, dict)]
+            if not pages:
+                continue
+            self.cdp_port = port
+            self.cdp_pid = self.port_owners.get(port, 0)
+            return pages
+        return []
+
+    def chat_targets(self, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """从目标里挑"像聊天页"的：URL 命中优先，其次标题命中。"""
+        preferred, fallback = [], []
+        for target in targets:
+            url = str(target.get("url") or "")
+            title = str(target.get("title") or "")
+            if "web_chat-packer/recent" in url:
+                preferred.append(target)
+            elif any(hint in url for hint in self._CHAT_URL_HINTS):
+                preferred.append(target)
+            elif any(hint in title for hint in self._CHAT_TITLE_HINTS):
+                fallback.append(target)
+        return preferred or fallback
+
+    def inject_targets(self, targets: list[dict[str, Any]]) -> int:
+        if not targets:
+            return 0
+        source = (ROOT / "browser_bridge.js").read_text(encoding="utf-8-sig")
+        injected = 0
+        errors: list[str] = []
+        for target in targets:
+            try:
+                injected += int(self.inject_target(target, source))
+            except Exception as error:  # noqa: BLE001
+                errors.append(mask_text(str(error), 120))
+        self.injected_contexts = injected
+        self.last_error = "" if injected else (errors[-1] if errors else "no_injectable_target")
+        if injected:
+            self.last_success_at = time.time()
+        return injected
+
+    @staticmethod
+    def _free_port() -> int:
+        import socket
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+
+    def restart_with_debug_port(self, wait_seconds: float = 90.0) -> dict[str, Any]:
+        """任务 B1：带 --remote-debugging-port 重启千牛，然后按聊天页挂钩。
+
+        只在用户点【授权修复】并二次确认后调用；失败返回具体原因，不反复重启。
+        """
+        executable = self.app.config.resolve("qianniu_exe")
+        if not executable.is_file():
+            return {"ok": False, "reason": f"restart_failed: qianniu_exe_missing"}
+        port = self._free_port()
+        # 1) 关闭千牛（仅本安装目录下的进程）
+        victims = []
+        expected = str(executable).lower()
+        for process in psutil.process_iter(["pid", "name", "exe"]):
+            try:
+                name = str(process.info.get("name") or "").lower()
+                if name not in {"aliworkbench.exe", "alirender.exe", "aliworkbenchhelper.exe",
+                                "aliworkbenchtask.exe", "aliworkbenchassist.exe"}:
+                    continue
+                exe = str(process.info.get("exe") or "").lower()
+                if exe and exe != expected and self.qianniu_root().as_posix().lower() not in exe:
+                    continue
+                victims.append(process)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        for process in victims:
+            try:
+                process.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        _, alive = psutil.wait_procs(victims, timeout=12)
+        for process in alive:
+            try:
+                process.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        psutil.wait_procs(alive, timeout=6)
+        # 2) 带调试端口启动
+        try:
+            subprocess.Popen(
+                [str(executable), f"--remote-debugging-port={port}"],
+                cwd=str(executable.parent),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as error:  # noqa: BLE001
+            return {"ok": False, "reason": f"restart_failed: {mask_text(str(error), 120)}"}
+        # 3) 等 CDP 端口起来
+        deadline = time.time() + max(10.0, float(wait_seconds))
+        targets: list[dict[str, Any]] = []
+        while time.time() < deadline:
+            try:
+                targets = self.targets(port)
+            except Exception:  # noqa: BLE001
+                targets = []
+            if targets:
+                break
+            self.app.stop_event.wait(1.0)
+        if not targets:
+            return {"ok": False, "reason": "cdp_port_not_open", "port": port}
+        self.cdp_port = port
+        if not self.app.config.get("cdp_injection_enabled", False):
+            try:
+                if hasattr(self.app.config, "set"):
+                    self.app.config.set("cdp_injection_enabled", True)
+            except Exception:  # noqa: BLE001
+                pass
+        # 4) 提前按聊天页挂钩（B2）
+        chat = self.chat_targets(targets)
+        injected = self.inject_targets(chat)
+        if not injected:
+            return {"ok": False, "reason": f"no_target_found: pages={len(targets)}", "port": port}
+        return {"ok": True, "port": port, "pages": len(targets), "injected": injected,
+                "chat_urls": [sanitize_page_url(item.get("url")) for item in chat][:5]}
+
     def candidate_ports(self) -> list[int]:
         process_ids = {process.pid for process in self.host_processes()}
         ports = set()
@@ -5299,7 +5468,7 @@ class CdpInjector:
             chat_targets = [
                 target for target in targets
                 if "web_chat-packer/recent.html" in str(target.get("url") or "")
-            ]
+            ] or self.chat_targets([item for item in targets if isinstance(item, dict)])
             if not chat_targets:
                 continue
             injected = 0
@@ -6537,6 +6706,8 @@ class StandaloneBridge:
         self.catalog = QnCatalog(self)
         # 商品目录定时沉凌（供工作台与 AI 检索）
         self.catalog_sync = CatalogSyncer(self)
+        # 任务 A(1)：重启后先恢复已识别的客服号，再由新信息校正
+        self.known_accounts = self.load_accounts()
         self.cdp = CdpInjector(self)
         self.updater = UpdaterGuard(self)
         self.appbiz = AppBizSendAdapter(self)
@@ -6560,6 +6731,137 @@ class StandaloneBridge:
         self._conversation_open_lock = threading.Lock()
         self._conversation_watch: ConversationSelectionWatch | None = None
         self._conversation_watch_pid = 0
+
+    # ---- 任务 A(1)(2)：账号持久化 + 页面兜底 + 进程页面诊断（B3） ----
+    def _accounts_file(self) -> Path:
+        return ROOT / "state" / "accounts.json"
+
+    def load_accounts(self) -> list[str]:
+        try:
+            payload = json.loads(self._accounts_file().read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return []
+        rows = payload.get("accounts") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            return []
+        return [str(item).strip() for item in rows if str(item).strip()][:8]
+
+    def remember_account(self, account: str, source: str = "") -> None:
+        """把识别到的客服号持久化，重启后先恢复再由新信息校正。"""
+        account = str(account or "").strip()
+        if not account:
+            return
+        known = getattr(self, "known_accounts", None)
+        if known is None:
+            known = []
+            self.known_accounts = known
+        changed = False
+        if account not in known:
+            known.append(account)
+            del known[:-8]
+            changed = True
+        if not changed and source:
+            return
+        try:
+            atomic_write_json(self._accounts_file(), {
+                "accounts": list(known),
+                "updated_at": time.time(),
+                "last_source": source or "event",
+            })
+        except OSError as error:
+            LOG.warning("persist accounts failed: %s", str(error)[:200])
+
+    def refresh_page_identity(self) -> str:
+        """聊天页已挂钩时，直接从页面读当前登录客服号，作为兜底来源。"""
+        browser = getattr(self, "browser", None)
+        if browser is None or not getattr(browser, "connected", 0):
+            return ""
+        expression = (
+            "(() => { try { return (window.__qn_standalone_read_identity"
+            " && window.__qn_standalone_read_identity()) || null; } catch (e) { return null; } })()"
+        )
+        try:
+            value = browser.execute(expression, timeout=3.0)
+        except Exception:  # noqa: BLE001
+            return ""
+        if not isinstance(value, dict):
+            return ""
+        account = str(value.get("account") or "").strip()
+        if account:
+            self.remember_account(account, "page_identity")
+            LOG.info("account recovered from chat page source=%s", str(value.get("source") or "")[:40])
+        return account
+
+    def run_identity_refresh(self) -> None:
+        """启动后先按页面兜底补一次；仍为空则每 60 秒重试。"""
+        while not self.stop_event.is_set():
+            try:
+                if getattr(self.browser, "connected", 0) or self.known_accounts:
+                    self.refresh_page_identity()
+            except Exception:  # noqa: BLE001
+                pass
+            if self.known_accounts:
+                # 已识别到账号：只在长时间没有新账号时低频校正
+                self.stop_event.wait(300.0)
+            else:
+                self.stop_event.wait(60.0)
+
+    def process_pages(self) -> list[dict[str, Any]]:
+        """B3：列出千牛相关进程里能枚举到的所有页面目标（最多 40 项）。
+
+        有 CDP 时读 /json/list；没有 CDP 时退化为"浏览器桥已连接的页面"。
+        只保留 kind/url(去参数)/title(≤60)/attached/has_imsdk。
+        """
+        pages: list[dict[str, Any]] = []
+        cdp = getattr(self, "cdp", None)
+        raw_targets: list[dict[str, Any]] = []
+        if cdp is not None:
+            try:
+                if getattr(cdp, "cdp_port", 0):
+                    raw_targets = cdp.targets(int(cdp.cdp_port)) or []
+            except Exception:  # noqa: BLE001
+                raw_targets = []
+        if not raw_targets and cdp is not None:
+            try:
+                raw_targets = cdp.discover_targets() or []
+            except Exception:  # noqa: BLE001
+                raw_targets = []
+        connections = []
+        try:
+            connections = self.browser.diagnostics_by_connection()
+        except Exception:  # noqa: BLE001
+            connections = []
+        connected_urls = {str(item.get("page_url") or "") for item in connections}
+        imsdk_by_url = {
+            str(item.get("page_url") or ""): str(item.get("imsdk_typeof") or "undefined")
+            in {"object", "function"}
+            for item in connections
+        }
+        for target in raw_targets:
+            if not isinstance(target, dict):
+                continue
+            url = sanitize_page_url(target.get("url"))
+            pages.append({
+                "kind": str(target.get("type") or "page")[:16],
+                "url": url,
+                "title": mask_title(target.get("title")),
+                "attached": url in connected_urls,
+                "has_imsdk": False,
+            })
+        if not pages:
+            for item in connections:
+                pages.append({
+                    "kind": "page",
+                    "url": str(item.get("page_url") or ""),
+                    "title": mask_title(item.get("page_title")),
+                    "attached": True,
+                    "has_imsdk": str(item.get("imsdk_typeof") or "undefined") in {"object", "function"},
+                })
+        for page in pages:
+            if page["url"] in connected_urls:
+                page["attached"] = True
+                page["has_imsdk"] = bool(imsdk_by_url.get(page["url"]))
+        return pages[:40]
 
     def warm_send_route(self, account: str, ccode: str) -> bool:
         """给发送补路由：用官方 openChat 让千牛自己轮询该会话（安全、可逆）。
@@ -6754,7 +7056,25 @@ class StandaloneBridge:
                 user32.AttachThreadInput(current_thread, foreground_thread, False)
 
     def ingest_event(self, event: dict[str, Any]) -> tuple[str, bool]:
+        # 任务 A(3)：账号为空时，先按同一买家历史反查，再退到"只有唯一已知客服号"，
+        # 让会话/昵称/取订单都能继续工作；仍然为空则原样投递（服务器补全）。
+        if isinstance(event, dict) and not str(event.get("account") or "").strip():
+            buyer = str(event.get("buyer_id") or "").strip()
+            recovered = ""
+            try:
+                recovered = self.db.account_for_buyer(buyer) if buyer else ""
+            except Exception:  # noqa: BLE001
+                recovered = ""
+            if not recovered:
+                known = list(getattr(self, "known_accounts", []))
+                recovered = known[0] if len(known) == 1 else ""
+            if recovered:
+                event = {**event, "account": recovered, "account_recovered_by": "bridge_local"}
         normalized = normalize_event(event)
+        # 任务 A(1)：识别到的客服号持久化（重启后先恢复）
+        remember = getattr(self, "remember_account", None)
+        if callable(remember):
+            remember(str(normalized.get("account") or "").strip())
         if not self.config.get("delivery_enabled", True):
             return canonical_event_id(normalized), False
         role = str(normalized.get("role") or "user").strip().lower()
@@ -6979,6 +7299,7 @@ class StandaloneBridge:
         self.context.start()
         self.hook_monitor.thread.start()
         self.hook_recovery.thread.start()
+        threading.Thread(target=self.run_identity_refresh, name="identity-refresh", daemon=True).start()
         self.catalog_sync.start()
         self.cdp.start()
         self.updater.start()
@@ -7026,6 +7347,8 @@ class StandaloneBridge:
                 "error": self.browser.error,
                 "event_error": self.browser.event_error,
                 "rejected_events": self.browser.rejected_events,
+                "account_missing_events": self.browser.account_missing_events,
+                "process_pages": self.process_pages(),
             },
             "context_enrich": self.context.status(),
             "hook_recovery": self.hook_recovery.status(),
@@ -7086,6 +7409,12 @@ class StandaloneBridge:
                 "enabled": bool(self.config.get("delivery_enabled", True)),
                 "last_success_at": self.delivery.last_success_at,
                 "last_error": self.delivery.last_error,
+                # 任务 A(5)：被服务器判为重复回放而去重的事件数
+                "duplicate_dropped": int(self.delivery.duplicate_dropped),
+            },
+            "accounts": {
+                "known": list(self.known_accounts),
+                "source_file": str(ROOT / "state" / "accounts.json"),
             },
             "send_enabled": bool(self.config.get("send_enabled", False)),
             "send_receipts": self.db.send_counts(),

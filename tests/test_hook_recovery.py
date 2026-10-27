@@ -228,16 +228,21 @@ class PromptTests(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def inject_once(self):
+            def restart_with_debug_port(self):
                 self.calls += 1
-                return 0
+                return {"ok": False, "reason": "no_target_found"}
 
         cdp = Cdp()
         app = FakeApp([chat_row(False)], cdp=cdp)
         recovery = make(app, clock)
         result = recovery.authorize_repair()
         self.assertFalse(result["ok"])
-        self.assertIn("cdp_unavailable", recovery.last_action_result)
+        # B1 起改为真正尝试重启：失败原因必须是具体文字，而不是"已授权"
+        self.assertTrue(
+            recovery.last_action_result.startswith("restart_failed:")
+            or recovery.last_action_result in {"cdp_port_not_open", "no_target_found"},
+            recovery.last_action_result,
+        )
         self.assertEqual(cdp.calls, 1)
         # 第二次不再自动重试
         again = recovery.authorize_repair()
