@@ -384,12 +384,14 @@ class QnCatalog:
         expression = _INVOKE_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload, ensure_ascii=False))
         self.requests += 1
         try:
-            result = self.app.browser.execute(expression, timeout=self._timeout(timeout))
-        except Exception as error:  # 页面未连接 / 超时
-            self.last_error = str(error)
+            result = self.app.browser.execute(
+                expression, timeout=self._timeout(timeout), raise_on_no_match=True
+            )
+        except Exception as error:  # 页面未连接 / 超时 / 页面报错（如 imsdk 未加载）
+            self.last_error = str(error) or "Qianniu browser command failed"
             raise QnCatalogError(self.last_error) from error
         if not isinstance(result, dict):
-            self.last_error = "Qianniu mtop response is not an object"
+            self.last_error = f"Qianniu mtop response is not an object: {type(result).__name__}"
             raise QnCatalogError(self.last_error)
         if result.get("ok") is not True:
             self.last_error = str(result.get("error") or "Qianniu mtop invoke failed")

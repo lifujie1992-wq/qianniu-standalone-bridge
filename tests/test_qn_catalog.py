@@ -26,7 +26,7 @@ class FakeBrowser:
         self.responses = responses
         self.expressions: list[str] = []
 
-    def execute(self, expression: str, timeout: float = 3.0):
+    def execute(self, expression: str, timeout: float = 3.0, **kwargs):
         self.expressions.append(expression)
         method = ""
         for candidate in self.METHODS:

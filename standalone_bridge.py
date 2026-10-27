@@ -4046,6 +4046,10 @@ class BrowserServer:
                 last_error = RuntimeError("Qianniu browser response did not match the requested capability")
             if raise_on_no_match:
                 raise last_error or RuntimeError("Qianniu browser returned no matching response")
+            if result_filter is None and last_error is not None:
+                # 所有页面都失败：把真实原因（如 "Qianniu imsdk is unavailable"）抛出去，
+                # 不要让上层以为"返回了空对象"。
+                raise last_error
             return None
         finally:
             with self.connection_lock:
@@ -6732,6 +6736,14 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/v1/catalog"):
+            # 目录/订单接口挂在 workbench 端口（默认 18776），用 X-Workbench-Token 调用。
+            self.send_json(400, {
+                "ok": False,
+                "error": "catalog 接口在 workbench 端口(默认 18776)，请用 X-Workbench-Token 调用："
+                         "GET http://127.0.0.1:18776/api/v1/catalog/mtop?method=...&param={}",
+            })
+            return
         if path == "/api/v1/shutdown":
             if not self.authorized():
                 self.send_json(401, {"ok": False, "error": "unauthorized"})
