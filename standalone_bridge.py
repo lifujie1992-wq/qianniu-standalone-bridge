@@ -5682,10 +5682,100 @@ class AppBizSendAdapter:
             return {'ok':False, 'error':'native_client_unavailable', 'rows':[]}
         return script.exports_sync.readmessages(account, buyer_id, before_ms, after_ms, message_id, count)
 
+    def route_state(self, ccode: str, central: bool) -> bool:
+        """按 ccode 询问 AppBiz 是否已有可用路由（不触发 GetNewMsg）。"""
+        script = self.script
+        if script is None:
+            return False
+        exports = getattr(script, "exports_sync", None)
+        prepare = getattr(exports, "preparesend", None) if exports is not None else None
+        if not callable(prepare):
+            return False
+        try:
+            result = prepare(ccode, bool(central))
+        except Exception:  # noqa: BLE001 - 路由探测失败按"没有路由"处理
+            return False
+        return bool(result.get("ok")) if isinstance(result, dict) else bool(result)
+
+    def warmup_supported(self) -> bool:
+        """是否具备"安全补路由"的能力（真实桥接 + agent 暴露 preparesend）。"""
+        if self.script is None or not callable(getattr(self.app, "warm_send_route", None)):
+            return False
+        if not self.app.config.get("appbiz_route_warmup_enabled", True):
+            return False
+        exports = getattr(self.script, "exports_sync", None)
+        return callable(getattr(exports, "preparesend", None))
+
+    def warm_send_route(self, account: str, ccode: str, central: bool) -> bool:
+        """冷路由预热：用千牛官方 openChat 让客户端自己 GetNewMsg（我们不直接调用）。
+
+        返回 True 表示路由已就绪。绝不主动调用 GetNewMsg，避免推进千牛 UI 游标。
+        openChat 会切换千牛当前会话（等价人工点开），因此做同会话限频。
+        """
+        if not self.app.config.get("appbiz_route_warmup_enabled", True):
+            return False
+        if self.route_state(ccode, central):
+            return True
+        try:
+            interval = max(30.0, float(self.app.config.get("appbiz_route_warmup_min_interval_seconds", 300.0)))
+        except (TypeError, ValueError):
+            interval = 300.0
+        now = time.monotonic()
+        history = getattr(self, "warmup_history", None)
+        if history is None:
+            history = {}
+            self.warmup_history = history
+        last = history.get(ccode)
+        if last is not None and now - last < interval:
+            self.last_error = "route warmup rate-limited"
+            return False
+        history[ccode] = now
+        if len(history) > 512:
+            stale = sorted(history, key=lambda key: history[key])[: len(history) - 512]
+            for key in stale:
+                history.pop(key, None)
+        self.warmup_count = int(getattr(self, "warmup_count", 0)) + 1
+        try:
+            if not self.app.warm_send_route(account, ccode):
+                return False
+        except Exception as error:  # noqa: BLE001
+            self.last_error = f"route warmup failed: {str(error)[:200]}"
+            return False
+        try:
+            wait_seconds = max(0.0, float(self.app.config.get("appbiz_route_warmup_seconds", 6.0)))
+        except (TypeError, ValueError):
+            wait_seconds = 6.0
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            if self.route_state(ccode, central):
+                return True
+            self.app.stop_event.wait(0.4)
+        return self.route_state(ccode, central)
+
     def send_text(self, ccode: str, content: str, pcsource: str, *, tmall_account: str = "") -> dict[str, Any]:
         if not self.app.config.get("appbiz_send_abi_validated", False):
             raise ConfirmedSendRejection("AppBiz send ABI has not passed a tagged acceptance test", retryable=False)
-        if tmall_guard_scope(tmall_account) and self.script is not None and not self.route_ready:
+        central = tmall_guard_scope(tmall_account)
+        # 冷路由（助手/千牛刚重启）会让 sendtext 直接抛
+        # "no recent GetNewMsg context"，这里先用官方 openChat 热身一次。
+        # 仅在"真实环境"（有 warm_send_route 且 agent 暴露 preparesend）下启用，
+        # 其它情况保持原有行为，不改变既有语义。
+        if self.warmup_supported() and not self.route_state(ccode, central):
+            account = str(tmall_account or "").strip()
+            db = getattr(self.app, "db", None)
+            if not account and db is not None:
+                try:
+                    account = db.account_for_buyer(ccode)
+                except Exception:  # noqa: BLE001
+                    account = ""
+            if self.warm_send_route(account, ccode, central):
+                self.refresh_status()
+            else:
+                raise ConfirmedSendRejection(
+                    "route_cold: 千牛还没轮询过该会话，请在千牛里点开这个买家会话后重试",
+                    retryable=True,
+                )
+        if central and self.script is not None and not self.route_ready:
             exports = getattr(self.script, "exports_sync", None)
             if callable(getattr(exports, "status", None)):
                 self.refresh_status()
@@ -6470,6 +6560,38 @@ class StandaloneBridge:
         self._conversation_open_lock = threading.Lock()
         self._conversation_watch: ConversationSelectionWatch | None = None
         self._conversation_watch_pid = 0
+
+    def warm_send_route(self, account: str, ccode: str) -> bool:
+        """给发送补路由：用官方 openChat 让千牛自己轮询该会话（安全、可逆）。
+
+        仓库约定：绝不主动调用 GetNewMsg/PeekNewMsg（会推进千牛 UI 游标）。
+        openChat 等价于人手工点开会话，不会消费消息。
+        """
+        ccode = str(ccode or "").strip()
+        if not ccode:
+            return False
+        account = str(account or "").strip()
+        nick = ""
+        try:
+            nick = self.db.cached_nickname(account, ccode) if account else ""
+            if not nick:
+                nick = self.db.conversation_route_nickname(account, ccode) if account else ""
+        except Exception:  # noqa: BLE001
+            nick = ""
+        if not nick:
+            return False
+        try:
+            security_uid = ContextEnricher.buyer_encrypt_id({"buyer_id": ccode})
+            result = self.browser.open_conversation(
+                nick, expected_ccode=ccode, security_uid=security_uid
+            )
+            ok = bool(result.get("ok")) if isinstance(result, dict) else False
+            LOG.info("send route warmup openChat ok=%s account=%s nick_len=%s",
+                     ok, bool(account), len(nick))
+            return ok
+        except Exception as error:  # noqa: BLE001
+            LOG.warning("send route warmup failed: %s", str(error)[:200])
+            return False
 
     def open_conversation_protocol(
         self, account: str, buyer_nick: str, expected_ccode: str = ""

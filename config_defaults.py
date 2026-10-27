@@ -26,6 +26,7 @@ OPERATIONAL_DEFAULTS: dict[str, bool] = {
     "context_enrich_enabled": True,
     "catalog_sync_enabled": True,
     "imsdk_force_hook_enabled": True,
+    "appbiz_route_warmup_enabled": True,
     "delivery_enabled": True,
     "send_enabled": True,
     "appbiz_send_adapter_enabled": True,
