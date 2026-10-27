@@ -2310,16 +2310,27 @@ class DeliveryWorker:
                 ),
             },
         )
-        with urllib.request.urlopen(
-            # This is a *local* durability self-check (default target is the
-            # bundled workbench on 127.0.0.1). A 1.5s budget is below what a
-            # busy seat can honour while 7 injected pages write SQLite, so the
-            # batch timed out, was marked failed and retried with backoff - the
-            # retry backoff, not the message itself, was the 10-30s delay seen
-            # on the brain side. Keep a generous local budget; the loop is
-            # woken by new events and drains immediately.
-            request, timeout=float(cfg.get("delivery_timeout_seconds", 8.0))
-        ) as response:
+        try:
+            response_context = urllib.request.urlopen(
+                # This is a *local* durability self-check (default target is the
+                # bundled workbench on 127.0.0.1). A 1.5s budget is below what a
+                # busy seat can honour while 7 injected pages write SQLite, so the
+                # batch timed out, was marked failed and retried with backoff - the
+                # retry backoff, not the message itself, was the 10-30s delay seen
+                # on the brain side. Keep a generous local budget; the loop is
+                # woken by new events and drains immediately.
+                request, timeout=float(cfg.get("delivery_timeout_seconds", 8.0))
+            )
+        except urllib.error.HTTPError as error:
+            # 带上服务器正文：A(5) 需要按"是否重复回放"决定是否出队，
+            # 只有状态码会丢失这个信息。
+            detail = ""
+            try:
+                detail = error.read().decode("utf-8", "replace")[:300]
+            except Exception:  # noqa: BLE001
+                detail = ""
+            raise RuntimeError(f"HTTP {error.code}: {detail or error.reason}") from error
+        with response_context as response:
             payload = json.loads(response.read().decode("utf-8", "replace") or "{}")
         if not isinstance(payload, dict) or payload.get("ok") is not True:
             raise RuntimeError(str((payload or {}).get("error") or "gateway rejected event batch"))
