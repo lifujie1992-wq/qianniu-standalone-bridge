@@ -137,6 +137,8 @@ class HookRecovery:
         self.last_retry_at = 0.0
         self.stage2_attempted = False
         self.frames_seen: list[dict[str, Any]] = []
+        # 每个 frame 的明细（url/imsdk_typeof/injected），供 process_pages 汇总
+        self.frames_detail: list[dict[str, Any]] = []
         self.child_frame_with_imsdk = False
         self.recovery_attempted = False
         self.recovered_count = 0
@@ -266,6 +268,8 @@ class HookRecovery:
             return {"ok": False, "error": self.last_action_result}
         frames = value.get("frames") if isinstance(value, dict) else None
         injected = int((value or {}).get("injected") or 0) if isinstance(value, dict) else 0
+        if isinstance(frames, list):
+            self.frames_detail = [row for row in frames if isinstance(row, dict)][:20]
         self.last_action = "hook_frames"
         self.last_action_at = self.now()
         self.last_action_result = f"frame_hook injected={injected} frames={len(frames or [])}"
@@ -538,6 +542,7 @@ class HookRecovery:
                 "cdp_authorized_by_user_at_ms": int(self.cdp_authorized_at * 1000),
                 # 诊断补充（非任务书字段，便于服务器判断）
                 "frames_seen": list(self.frames_seen),
+                "frames_detail": list(self.frames_detail),
                 "child_frame_with_imsdk": bool(self.child_frame_with_imsdk),
                 "snooze_until_ms": int(self.snooze_until * 1000),
             }

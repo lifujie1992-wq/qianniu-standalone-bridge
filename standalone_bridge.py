@@ -6942,6 +6942,18 @@ class StandaloneBridge:
             if page["url"] in connected_urls:
                 page["attached"] = True
                 page["has_imsdk"] = bool(imsdk_by_url.get(page["url"]))
+        # 任务 B3：把 frame 探测结果也列出来（聊天页可能藏在 dx-h5 的同源 iframe 里）
+        recovery = getattr(self, "hook_recovery", None)
+        for frame in (getattr(recovery, "frames_detail", []) or [])[:20]:
+            if not isinstance(frame, dict):
+                continue
+            pages.append({
+                "kind": "iframe",
+                "url": sanitize_page_url(frame.get("url")),
+                "title": "",
+                "attached": bool(frame.get("injected")),
+                "has_imsdk": str(frame.get("imsdk_typeof") or "undefined") in {"object", "function"},
+            })
         return pages[:40]
 
     def warm_send_route(self, account: str, ccode: str) -> bool:
