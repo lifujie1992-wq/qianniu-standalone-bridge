@@ -2256,6 +2256,20 @@ class StateDB:
         ]
 
 
+def _connection_priority(diagnostics: dict[str, Any]) -> tuple[int, int]:
+    """页面执行优先级：聊天页且已挂钩 > 聊天页 > 有 imsdk > 其它。"""
+    kind = str(diagnostics.get("page_kind") or "other")
+    hooked = diagnostics.get("imsdk_hooked") is True
+    is_chat = kind in {"chat_recent", "chat_other"}
+    if is_chat and hooked:
+        return (0, 0)
+    if is_chat:
+        return (1, 0)
+    if hooked:
+        return (2, 0)
+    return (3, 0)
+
+
 def is_duplicate_rejection(message: str) -> bool:
     """判断服务器拒绝原因是不是"重复事件回放"（HTTP 400 + duplicate/replay）。"""
     text = str(message or "").lower()
@@ -3952,8 +3966,12 @@ class BrowserServer:
         request_id = uuid.uuid4().hex
         with self.connection_lock:
             connections = list(self.connections)
+            diagnostics = dict(self.connection_diagnostics)
             response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(1, len(connections)))
             self.pending[request_id] = response_queue
+        # 多页面客户端（例如 6-10 个 dx-h5 页面）里，只有聊天页有 imsdk：
+        # 先问"聊天页且已挂钩"，再问有 imsdk 的，最后才是其它页面。
+        connections.sort(key=lambda item: _connection_priority(diagnostics.get(item) or {}))
         if not connections:
             with self.connection_lock:
                 self.pending.pop(request_id, None)
@@ -3983,9 +4001,9 @@ class BrowserServer:
                     raise RuntimeError("Qianniu browser command timed out") from error
                 if not response.get("ok"):
                     last_error = RuntimeError(str(response.get("error") or "Qianniu browser command failed"))
-                    if result_filter is not None:
-                        continue
-                    raise last_error
+                    # 其它页面（无 imsdk）先答"失败"时，继续等有能力的那一页；
+                    # 所有页面都失败才抛错，行为与旧版一致。
+                    continue
                 value = response.get("value")
                 if result_filter is None or result_filter(value):
                     return value

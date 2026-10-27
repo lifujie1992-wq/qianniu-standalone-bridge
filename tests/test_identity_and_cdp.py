@@ -221,3 +221,37 @@ class HistoryBackfillTests(unittest.TestCase):
             except OSError:
                 pass
         self.assertEqual(accounts, ["店铺B:客服2", "店铺A:客服1"])
+
+
+class ExecutePriorityTests(unittest.TestCase):
+    def test_chat_page_first_and_failed_page_does_not_abort(self):
+        """多页面时：没 imsdk 的页面先答"失败"，仍要用聊天页的结果。"""
+        import queue as _queue
+        from types import SimpleNamespace
+
+        server = object.__new__(sb.BrowserServer)
+        server.connection_lock = __import__("threading").RLock()
+        server.pending = {}
+        server.connections = {}
+        server.connection_diagnostics = {}
+
+        class Conn:
+            def __init__(self, name):
+                self.name = name
+
+            def send(self, payload):
+                queue_obj = server.pending[payload["request_id"]]
+                if self.name == "other":
+                    queue_obj.put({"ok": False, "error": "Qianniu imsdk is unavailable"})
+                else:
+                    queue_obj.put({"ok": True, "value": "chat-page-value"})
+
+        other, chat = Conn("other"), Conn("chat")
+        server.connections = {other: __import__("threading").Lock(), chat: __import__("threading").Lock()}
+        server.connection_diagnostics = {
+            other: {"page_kind": "other", "imsdk_hooked": False},
+            chat: {"page_kind": "chat_recent", "imsdk_hooked": True},
+        }
+        server.send = lambda connection, payload: connection.send(payload)
+        value = server.execute("1+1", timeout=2.0)
+        self.assertEqual(value, "chat-page-value")
