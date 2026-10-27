@@ -55,24 +55,73 @@ MAX_PAGE_SIZE = 100
 # 同时返回 err / error：桥接转发层取的是 err 字段。
 _INVOKE_TEMPLATE = """
 (() => {
-  if (!window.imsdk || typeof window.imsdk.invoke !== 'function') {
-    const miss = 'Qianniu imsdk is unavailable';
-    return {ok: false, error: miss, err: miss};
-  }
   const call = __PAYLOAD__;
-  return Promise.resolve(window.imsdk.invoke(
-    'application.invokeMTopChannelService',
-    Object.assign({httpMethod: 'post', version: '1.0'}, call)
-  )).then(
-    value => ({ok: true, value: value}),
-    error => {
-      const text = String(error && error.message ? error.message : error);
-      return {ok: false, error: text, err: text};
+  const channels = [];
+  // 通道 1：老接待台的 window.imsdk.invoke（现状可用）
+  if (window.imsdk && typeof window.imsdk.invoke === 'function') {
+    channels.push(['imsdk', () => window.imsdk.invoke(
+      'application.invokeMTopChannelService',
+      Object.assign({httpMethod: 'post', version: '1.0'}, call)
+    )]);
+  }
+  // 通道 2：新版 dx-h5 的 QNAbilityCenter.ability.invoke
+  const center = window.QNAbilityCenter;
+  if (center && center.ability && typeof center.ability.invoke === 'function') {
+    channels.push(['QNAbilityCenter', () => new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) { settled = true; reject(new Error('ability invoke timed out')); }
+      }, 6000);
+      try {
+        center.ability.invoke({
+          cmd: call.method,
+          param: call.param,
+          success(info) { if (!settled) { settled = true; clearTimeout(timer); resolve(info === undefined ? null : info); } },
+          error(err) {
+            if (settled) return;
+            settled = true; clearTimeout(timer);
+            let detail = ''; try { detail = typeof err === 'string' ? err : JSON.stringify(err); } catch (e) { detail = String(err); }
+            reject(new Error(detail || 'ability rejected'));
+          }
+        });
+      } catch (e) {
+        if (!settled) { settled = true; clearTimeout(timer); reject(e); }
+      }
+    })]);
+  }
+  // 通道 3：部分版本挂在 window.abilitycenter 上
+  const alt = window.abilitycenter;
+  if (alt && alt.ability && typeof alt.ability.invoke === 'function') {
+    channels.push(['abilitycenter', () => new Promise((resolve, reject) => {
+      try {
+        alt.ability.invoke({
+          cmd: call.method, param: call.param,
+          success(info) { resolve(info === undefined ? null : info); },
+          error(err) { reject(new Error(String(err))); }
+        });
+      } catch (e) { reject(e); }
+    })]);
+  }
+  if (!channels.length) {
+    return {ok: false, error: 'Qianniu imsdk is unavailable (no mtop channel on this page)'};
+  }
+  const errors = [];
+  const next = index => {
+    if (index >= channels.length) {
+      return {ok: false, error: 'all mtop channels failed: ' + errors.join(' | '), channels: channels.map(c => c[0])};
     }
-  );
+    const [name, fn] = channels[index];
+    return Promise.resolve()
+      .then(fn)
+      .then(value => ({ok: true, channel: name, value: value}),
+            error => {
+              errors.push(name + ': ' + String(error && error.message ? error.message : error).slice(0, 120));
+              return next(index + 1);
+            });
+  };
+  return next(0);
 })()
 """
-
 
 class QnCatalogError(RuntimeError):
     """mtop 调用失败（页面不可用 / 接口返回非 SUCCESS）。"""
@@ -356,6 +405,7 @@ class QnCatalog:
     def __init__(self, app: Any) -> None:
         self.app = app
         self.requests = 0
+        self.last_channel = ""
         self.last_error = ""
         self.last_success_at = 0.0
 
@@ -396,6 +446,8 @@ class QnCatalog:
         if result.get("ok") is not True:
             self.last_error = str(result.get("error") or "Qianniu mtop invoke failed")
             raise QnCatalogError(self.last_error)
+        channel = str(result.get("channel") or "imsdk")
+        self.last_channel = channel
         value = result.get("value")
         if strict and not mtop_ok(value):
             self.last_error = ";".join(mtop_ret(value)) or "mtop returned non-success"
@@ -646,6 +698,7 @@ class QnCatalog:
                 "buyer_orders": TRADE_QUERY_METHOD,
                 "buyer_history": TRADE_HISTORY_METHOD,
                 "order_memo": ORDER_MEMO_METHOD,
+                "last_channel": self.last_channel,
                 "shop_info": SHOP_INFO_METHOD,
             },
         }

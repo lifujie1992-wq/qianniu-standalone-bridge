@@ -6381,6 +6381,38 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 "stored": self.app.db.catalog_meta(),
             })
             return
+        if path == "/api/v1/catalog/channels":
+            expression = r"""
+(() => {
+  const keys = value => { try { return value ? Object.getOwnPropertyNames(value).slice(0, 40) : []; }
+                          catch (e) { return []; } };
+  const ability = window.QNAbilityCenter && window.QNAbilityCenter.ability;
+  return {
+    page_url: location.href.split('?')[0],
+    page_title: String(document.title || '').slice(0, 60),
+    imsdk_typeof: typeof window.imsdk,
+    imsdk_invoke_typeof: typeof (window.imsdk || {}).invoke,
+    ability_center_typeof: typeof window.QNAbilityCenter,
+    ability_center_keys: keys(window.QNAbilityCenter),
+    ability_typeof: typeof ability,
+    ability_keys: keys(ability),
+    abilitycenter_typeof: typeof window.abilitycenter,
+    abilitycenter_keys: keys(window.abilitycenter),
+    workbench_typeof: typeof window.workbench,
+    workbench_keys: keys(window.workbench),
+    imsdk2_typeof: typeof window.imsdk2,
+    qn_im_sdk_typeof: typeof window._qn_im_sdk,
+    frames: (function () { try { return window.frames.length; } catch (e) { return -1; } })()
+  };
+})()
+"""
+            try:
+                value = self.app.browser.execute(expression, timeout=8.0)
+            except Exception as error:  # noqa: BLE001
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **(value if isinstance(value, dict) else {"value": value})})
+            return
         if path == "/api/v1/catalog/search":
             query = urllib.parse.parse_qs(parsed.query)
             try:
