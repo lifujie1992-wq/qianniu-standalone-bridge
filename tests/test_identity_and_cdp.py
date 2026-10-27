@@ -350,3 +350,15 @@ class FrameHookExpressionTests(unittest.TestCase):
         recovery = hr.HookRecovery(app, now_fn=lambda: 1.0, prompt_fn=None,
                                    notify_fn=lambda *a: None, logger=None)
         self.assertFalse(recovery.hook_frames()["ok"])
+
+
+class ClearFilterTests(unittest.TestCase):
+    def test_workbench_clear_has_ttl_and_restore(self):
+        from pathlib import Path as _Path
+        import standalone_bridge as _sb
+        html = (_Path(_sb.__file__).parent / "workbench.html").read_text(encoding="utf-8")
+        # 清空必须带 TTL（否则离线机器的旧消息会被永久隐藏）
+        self.assertIn("TTL_SECONDS", html)
+        self.assertIn("qn_dock_cleared_at", html)
+        self.assertIn("恢复显示全部会话", html)
+        self.assertIn("列表已被「清空」过滤", html)

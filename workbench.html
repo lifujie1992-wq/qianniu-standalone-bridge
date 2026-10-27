@@ -427,7 +427,21 @@
       lastMessageRevision: '', settingsOpen: false, tokenConfigured: false, controlBusy: false,
       controlKey: '', pendingOpen: null, openingPromise: null, openSequence: 0, messageLoadSequence: 0,
       sessionFilter: 'all', sessionRevision: null,
-      clearedAt: (function () { try { return Number(localStorage.getItem('qn_dock_cleared_at') || 0) || 0; } catch (e) { return 0; } })(),
+      clearedAt: (function () {
+        // "清空"只应该临时降噪：超过 TTL（默认 24h）自动失效。
+        // 否则离线/换机后事件时间戳比清空时刻早，会把所有会话永久隐藏（历史 bug：全部 0、列表已清空）。
+        var TTL_SECONDS = 24 * 3600;
+        try {
+          var value = Number(localStorage.getItem('qn_dock_cleared_at') || 0) || 0;
+          if (!value) return 0;
+          var nowSeconds = Date.now() / 1000;
+          if (value > nowSeconds + 300 || nowSeconds - value > TTL_SECONDS) {
+            localStorage.removeItem('qn_dock_cleared_at');
+            return 0;
+          }
+          return value;
+        } catch (e) { return 0; }
+      })(),
       handoffKeysSeen: new Set(), lastHandoffTitle: '',
     };
     const conversationSearch = el('conversationSearchInput');
@@ -591,7 +605,20 @@
       if (!rows.length) {
         const empty = document.createElement('div'); empty.className = 'empty';
         empty.textContent = state.sessionFilter === 'handoff' ? '暂无待人工会话'
-          : (state.clearedAt > 0 ? '列表已清空，新消息会自动出现' : '暂无接待消息');
+          : (state.clearedAt > 0 ? '列表已被「清空」过滤，更早的会话暂时隐藏' : '暂无接待消息');
+        if (state.clearedAt > 0 && state.sessionFilter !== 'handoff') {
+          const restore = document.createElement('button');
+          restore.type = 'button';
+          restore.className = 'pane-clear';
+          restore.style.marginLeft = '8px';
+          restore.textContent = '恢复显示全部会话';
+          restore.addEventListener('click', () => {
+            state.clearedAt = 0;
+            try { localStorage.removeItem('qn_dock_cleared_at'); } catch (e) {}
+            renderSessions();
+          });
+          empty.append(document.createElement('br'), restore);
+        }
         list.append(empty); return;
       }
       for (const session of rows) {
@@ -1032,6 +1059,14 @@
     });
     el('sessionsButton').addEventListener('click', () => document.body.classList.toggle('show-sessions'));
     el('allSessionsTab').addEventListener('click', () => { state.sessionFilter = 'all'; renderSessions(); });
+    // 清空按钮：明确写 24h 后自动失效，避免永久隐藏
+    if (el('clearSessionsButton')) {
+      el('clearSessionsButton').addEventListener('click', () => {
+        state.clearedAt = Date.now() / 1000;
+        try { localStorage.setItem('qn_dock_cleared_at', String(state.clearedAt)); } catch (e) {}
+        renderSessions();
+      }, true);
+    }
     el('handoffSessionsTab').addEventListener('click', () => { state.sessionFilter = 'handoff'; renderSessions(); });
     conversationSearch.addEventListener('input', () => { if (!rejectUnexpectedSearchAutofill()) renderSessions(); });
     for (const delay of [0, 250, 1000, 2500]) setTimeout(rejectUnexpectedSearchAutofill, delay);
