@@ -2131,6 +2131,25 @@ class StateDB:
                 return True
         return False
 
+    def recent_accounts(self, limit: int = 5) -> list[str]:
+        """历史事件里出现过的客服号（按最近时间倒序，去重）。
+
+        用于升级后首次启动时回填"我是谁"——不依赖页面刷新，也不读消息内容。
+        """
+        limit = max(1, min(int(limit or 5), 20))
+        with self.lock, closing(self.connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT json_extract(payload,'$.account') AS account, max(updated_at) AS last_at
+                FROM events
+                WHERE json_extract(payload,'$.account') IS NOT NULL
+                  AND json_extract(payload,'$.account') != ''
+                GROUP BY account ORDER BY last_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [str(row["account"]).strip() for row in rows if str(row["account"] or "").strip()]
+
     # ---- 商品目录（学习福客 /getQNList1 的长期沉淀） ----
     def catalog_upsert_goods(self, rows: list[dict[str, Any]]) -> int:
         """按 item_id upsert；返回写入行数。"""
@@ -6708,6 +6727,14 @@ class StandaloneBridge:
         self.catalog_sync = CatalogSyncer(self)
         # 任务 A(1)：重启后先恢复已识别的客服号，再由新信息校正
         self.known_accounts = self.load_accounts()
+        if not self.known_accounts:
+            # 升级后首次启动：从本地历史事件回填（页面可能还没刷新）
+            try:
+                self.known_accounts = self.db.recent_accounts(5)
+            except Exception:  # noqa: BLE001
+                self.known_accounts = []
+            for item in self.known_accounts:
+                self.remember_account(item, "history_backfill")
         self.cdp = CdpInjector(self)
         self.updater = UpdaterGuard(self)
         self.appbiz = AppBizSendAdapter(self)

@@ -194,3 +194,30 @@ class EmptyAccountEventTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HistoryBackfillTests(unittest.TestCase):
+    def test_recent_accounts_reads_history_without_content(self):
+        # 注意：Windows 下 sqlite 文件句柄会让 TemporaryDirectory 清理失败（本机已知问题），
+        # 这里用 mkdtemp 并在测试末尾跳过清理。
+        import shutil, sqlite3, tempfile
+        directory = Path(tempfile.mkdtemp(prefix="qn-accounts-"))
+        try:
+            path = directory / "state.sqlite3"
+            db = sb.StateDB(path)
+            with sqlite3.connect(path) as raw, raw:
+                for idx, account in enumerate(["店铺A:客服1", "店铺A:客服1", "店铺B:客服2", ""]):
+                    payload = json.dumps({"account": account, "buyer_id": f"b{idx}",
+                                          "content": "x", "role": "user"}, ensure_ascii=False)
+                    raw.execute(
+                        "INSERT INTO events(event_id,payload,revision,status,created_at,updated_at)"
+                        " VALUES(?,?,0,'delivered',?,?)",
+                        (f"e{idx}", payload, 1000 + idx, 1000 + idx),
+                    )
+            accounts = db.recent_accounts(5)
+        finally:
+            try:
+                shutil.rmtree(directory, ignore_errors=True)
+            except OSError:
+                pass
+        self.assertEqual(accounts, ["店铺B:客服2", "店铺A:客服1"])
