@@ -6588,6 +6588,27 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             except (ValueError, RuntimeError) as error:
                 self.send_json(400, {"ok": False, "error": str(error)})
             return
+        if path == "/api/v1/debug/eval":
+            # 仅在 config.debug_eval_enabled=true 时开放；只接受本地 workbench token。
+            # 用于逆向阶段探测页面环境（cookie 名、localStorage 键等），默认关闭。
+            if not self.app.config.get("debug_eval_enabled", False):
+                self.send_json(404, {"ok": False, "error": "debug eval disabled"})
+                return
+            if not self.workbench_authorized():
+                self.send_json(401, {"ok": False, "error": "unauthorized"})
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            expression = str(query.get("expr", [""])[0])
+            if not expression:
+                self.send_json(400, {"ok": False, "error": "expr is required"})
+                return
+            try:
+                value = self.app.browser.execute(expression, timeout=15.0)
+            except Exception as error:  # noqa: BLE001
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, "value": value})
+            return
         if path == "/api/v1/hook/navigate-to-chat":
             if not self.workbench_authorized():
                 self.send_json(401, {"ok": False, "error": "unauthorized"})

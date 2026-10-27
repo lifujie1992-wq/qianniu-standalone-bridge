@@ -103,12 +103,14 @@ _INVOKE_TEMPLATE = """
     })]);
   }
   if (!channels.length) {
-    return {ok: false, error: 'Qianniu imsdk is unavailable (no mtop channel on this page)'};
+    const missing = 'Qianniu imsdk is unavailable (no mtop channel on this page)';
+    return {ok: false, error: missing, err: missing};
   }
   const errors = [];
   const next = index => {
     if (index >= channels.length) {
-      return {ok: false, error: 'all mtop channels failed: ' + errors.join(' | '), channels: channels.map(c => c[0])};
+      const detail = 'all mtop channels failed: ' + errors.join(' | ');
+      return {ok: false, error: detail, err: detail, channels: channels.map(c => c[0])};
     }
     const [name, fn] = channels[index];
     return Promise.resolve()
