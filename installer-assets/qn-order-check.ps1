@@ -91,6 +91,16 @@ if (-not $dir) {
     }
     $out["channels"] = $ch
 
+    # 原生订单日志（1.6.55+）：页面没有 mtop 桥时靠它取订单
+    $no = $bridge.native_orders
+    if ($no) {
+        $lines.Add("原生日志: 路径=$($no.path)")
+        $lines.Add("          买家=$($no.buyers) 订单=$($no.orders) 行=$($no.lines_read) 回读=$($no.backfilled) 错误=$($no.last_error)")
+        $out["native_orders"] = $no
+    } else {
+        $lines.Add("原生日志: 该版本没有此功能（低于 1.6.55）")
+    }
+
     # 3) 商品（不需要买家，先验证 mtop 本身通不通）
     $goods = Get-Json "/api/v1/catalog/goods?page_no=1&page_size=3" 45
     if ($goods.ok) {

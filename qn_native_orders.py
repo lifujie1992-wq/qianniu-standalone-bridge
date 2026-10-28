@@ -43,7 +43,8 @@ RECEPTION_API = "mtop.taobao.qianniu.airisland.reception.detail.get"
 
 # `data=` / `#=` 之后是完整 JSON 对象；行尾还有 `]` 之类的包装，故用 raw_decode。
 _JSON_START = re.compile(r'(?:data=|#=)(\{"api":"[^"]+")')
-MAX_BUYERS = 2000
+MAX_BUYERS = 5000
+BACKFILL_BYTES = 8 * 1024 * 1024
 MAX_ORDERS_PER_BUYER = 50
 
 
@@ -135,7 +136,8 @@ def candidate_log_paths(config: Any = None) -> list[Path]:
 class NativeOrderLog:
     """tail 千牛 app.log，维护 buyerId -> 订单 缓存。"""
 
-    def __init__(self, app: Any, poll_seconds: float = 1.0) -> None:
+    def __init__(self, app: Any, poll_seconds: float = 1.0,
+                 backfill_bytes: int = BACKFILL_BYTES) -> None:
         self.app = app
         self.poll_seconds = float(poll_seconds)
         self.lock = threading.Lock()
@@ -150,6 +152,9 @@ class NativeOrderLog:
         self.last_update_at = 0.0
         self.orders: dict[str, list[dict[str, Any]]] = {}
         self.nicks: dict[str, str] = {}
+        self.backfill_bytes = max(0, int(backfill_bytes))
+        self.backfilled = 0
+        self._first_chunk_done = False
 
     # ---- 生命周期 ----
     def start(self) -> None:
@@ -175,13 +180,15 @@ class NativeOrderLog:
                 if self.path is None:
                     self.path = self.locate()
                     if self.path is not None:
-                        # 不重放历史：从当前末尾开始，避免每次启动都扫几百 MB
                         try:
-                            self.offset = self.path.stat().st_size
+                            size = self.path.stat().st_size
                         except OSError:
-                            self.offset = 0
-                        LOG.info("native order log attached path=%s offset=%s",
-                                 self.path, self.offset)
+                            size = 0
+                        # 回读尾部：现场装上就要能查到，不能等新日志。
+                        self.offset = max(0, size - self.backfill_bytes)
+                        self.backfilled = int(self.offset > 0)
+                        LOG.info("native order log attached path=%s offset=%s size=%s",
+                                 self.path, self.offset, size)
                 if self.path is not None:
                     self._consume()
             except Exception as error:  # noqa: BLE001
@@ -211,6 +218,15 @@ class NativeOrderLog:
             return
         # 只处理完整行，半行留到下一次
         text = chunk.decode("utf-8", "replace")
+        if self.backfilled and not self._first_chunk_done:
+            # 从文件中段开始读，第一行大概率是半行，丢掉
+            first_break = text.find("\n")
+            if first_break >= 0:
+                dropped = text[: first_break + 1]
+                self.offset += len(dropped.encode("utf-8", "replace"))
+                text = text[first_break + 1:]
+        self._first_chunk_done = True
+        self.backfilled = 0
         complete, _, _tail = text.rpartition("\n")
         if not complete:
             return
@@ -280,5 +296,7 @@ class NativeOrderLog:
             "updates": self.updates,
             "last_update_at": self.last_update_at,
             "parse_errors": self.parse_errors,
+            "backfill_bytes": self.backfill_bytes,
+            "backfilled": self.backfilled,
             "last_error": self.last_error,
         }

@@ -170,3 +170,31 @@ class EndpointPayloadTests(unittest.TestCase):
     def test_payload_none_when_buyer_unknown(self):
         host = self._host()
         self.assertIsNone(host._native_orders_payload({"buyer_encrypt_id": ["123"]}))
+
+
+class BackfillTests(unittest.TestCase):
+    """装了就要能查到：启动时回读日志尾部，且丢弃半行。"""
+
+    def test_backfill_reads_existing_lines_and_skips_partial_first_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "app.log"
+            # 前半行（模拟从中段开始读到的残行）+ 完整行
+            log_path.write_text("MTOP junk half line " + LIVE_LINE + "\n" + LIVE_LINE + "\n",
+                                encoding="utf-8")
+
+            class App:
+                class config(dict):
+                    pass
+
+                config = config()
+
+            store = n.NativeOrderLog(App(), poll_seconds=0.05, backfill_bytes=8 * 1024 * 1024)
+            store.path = log_path
+            store.offset = max(0, log_path.stat().st_size - store.backfill_bytes)
+            store.backfilled = int(store.offset > 0)
+            store._consume()
+
+            orders = store.orders_for("2252311170")
+            self.assertEqual(len(orders), 1)
+            self.assertEqual(orders[0]["order_id"], "5127834996048025044")
+            self.assertGreater(store.status()["lines_read"], 0)
