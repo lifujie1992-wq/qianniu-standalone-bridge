@@ -198,3 +198,34 @@ class BackfillTests(unittest.TestCase):
             self.assertEqual(len(orders), 1)
             self.assertEqual(orders[0]["order_id"], "5127834996048025044")
             self.assertGreater(store.status()["lines_read"], 0)
+
+
+class NoFullRescanTests(unittest.TestCase):
+    """append 造成 offset 略大于 size 时，不能误判截断并重扫全文。"""
+
+    def test_offset_ahead_of_size_does_not_trigger_full_rescan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "app.log"
+            log_path.write_text(LIVE_LINE + "\n", encoding="utf-8")
+            size = log_path.stat().st_size
+
+            class App:
+                class config(dict):
+                    pass
+
+                config = config()
+
+            store = n.NativeOrderLog(App(), poll_seconds=0.05)
+            store.path = log_path
+            store.last_size = size
+            store.offset = size + 500  # 模拟 stat/read 时间差
+            store._consume()
+            self.assertEqual(store.lines_read, 0)
+            self.assertEqual(store.orders_for("2252311170"), [])
+
+            # 真正截断（size 变小）才重扫
+            log_path.write_text(LIVE_LINE + "\n", encoding="utf-8")
+            store.last_size = size + 10_000
+            store.offset = size + 10_000
+            store._consume()
+            self.assertEqual(len(store.orders_for("2252311170")), 1)

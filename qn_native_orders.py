@@ -155,6 +155,7 @@ class NativeOrderLog:
         self.backfill_bytes = max(0, int(backfill_bytes))
         self.backfilled = 0
         self._first_chunk_done = False
+        self.last_size = 0
 
     # ---- 生命周期 ----
     def start(self) -> None:
@@ -206,10 +207,14 @@ class NativeOrderLog:
             self.last_error = str(error)[:200]
             self.path = None
             return
-        if size < self.offset:
-            # 日志被轮转/截断：重新从头读
+        # 只认"文件真的变小"（轮转/截断）；日志正常追加时 offset 可能
+        # 因为 stat/read 的时间差略大于 size，绝不能因此从头重扫 30MB。
+        if self.last_size and size < self.last_size:
             self.offset = 0
-        if size == self.offset:
+            self._first_chunk_done = False
+            self.backfilled = 0
+        self.last_size = size
+        if size <= self.offset:
             return
         with path.open("rb") as handle:
             handle.seek(self.offset)
