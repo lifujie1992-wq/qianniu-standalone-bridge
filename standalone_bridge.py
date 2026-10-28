@@ -5221,12 +5221,18 @@ class CdpInjector:
         self.cdp_port = 0
         self.cdp_pid = 0
         self.port_owners: dict[int, int] = {}
+        self._targets_cache: list[dict[str, Any]] = []
+        self._targets_cache_at = 0.0
         self.injected_contexts = 0
         self.last_success_at = 0.0
         self.last_error = ""
         self.launched_pid = 0
         self.host_pid = 0
         self.last_reap_at = 0.0
+        # process_pages() 供 /api/v1/status 调用：必须永不阻塞（前端 10s 就判超时）
+        self.pages_cache: list[dict[str, Any]] = []
+        self.pages_cache_at = 0.0
+        self.pages_refreshing = False
 
     def start(self) -> None:
         self.thread.start()
@@ -5349,7 +5355,15 @@ class CdpInjector:
     _CHAT_TITLE_HINTS = ("聊天", "接待")
 
     def discover_targets(self) -> list[dict[str, Any]]:
-        """枚举千牛进程所有 CDP 页面目标（不注入）。B3 的 process_pages 也用它。"""
+        """枚举千牛进程所有 CDP 页面目标（不注入）。B3 的 process_pages 也用它。
+
+        `candidate_ports()` 要跑 psutil.net_connections 全表扫描，千牛刚重启时
+        缓存端口失效会退化成每次全扫（10~20 秒），直接把 /api/v1/status 拖超时。
+        这里加 TTL 缓存：15 秒内复用最近一次结果。
+        """
+        now = time.monotonic()
+        if self._targets_cache and now - self._targets_cache_at < 15.0:
+            return list(self._targets_cache)
         found: list[dict[str, Any]] = []
         if self.cdp_port:
             try:
@@ -5357,6 +5371,7 @@ class CdpInjector:
             except Exception:  # noqa: BLE001
                 found = []
         if found:
+            self._targets_cache, self._targets_cache_at = found, now
             return found
         for port in self.candidate_ports():
             try:
@@ -5368,7 +5383,9 @@ class CdpInjector:
                 continue
             self.cdp_port = port
             self.cdp_pid = self.port_owners.get(port, 0)
+            self._targets_cache, self._targets_cache_at = pages, now
             return pages
+        self._targets_cache, self._targets_cache_at = [], now
         return []
 
     def chat_targets(self, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -6972,6 +6989,15 @@ class StandaloneBridge:
             LOG.info("account recovered from chat page source=%s", str(value.get("source") or "")[:40])
         return account
 
+    def run_pages_refresh(self) -> None:
+        """后台预热 B3 页面清单，让 /api/v1/status 永远走缓存（不阻塞前端）。"""
+        while not self.stop_event.is_set():
+            try:
+                self._refresh_process_pages()
+            except Exception:  # noqa: BLE001
+                pass
+            self.stop_event.wait(20.0)
+
     def run_identity_refresh(self) -> None:
         """启动后先按页面兜底补一次；仍为空则每 60 秒重试。"""
         while not self.stop_event.is_set():
@@ -6989,19 +7015,31 @@ class StandaloneBridge:
     def process_pages(self) -> list[dict[str, Any]]:
         """B3：列出千牛相关进程里能枚举到的所有页面目标（最多 40 项）。
 
-        有 CDP 时读 /json/list；没有 CDP 时退化为"浏览器桥已连接的页面"。
-        只保留 kind/url(去参数)/title(≤60)/attached/has_imsdk。
+        绝对不阻塞：/api/v1/status 每次都调它，而枚举要先扫
+        psutil.net_connections（千牛刚重启时 10~20 秒），前端 10 秒就判超时。
+        所以这里只读缓存，过期就丢给后台线程刷新。
         """
+        cdp = getattr(self, "cdp", None)
+        if cdp is not None:
+            fresh = time.monotonic() - float(getattr(cdp, "pages_cache_at", 0.0)) < 20.0
+            if not fresh and not getattr(cdp, "pages_refreshing", False):
+                cdp.pages_refreshing = True
+
+                def _refresh() -> None:
+                    try:
+                        self._refresh_process_pages()
+                    finally:
+                        cdp.pages_refreshing = False
+
+                threading.Thread(target=_refresh, name="process-pages", daemon=True).start()
+        return list(getattr(getattr(self, "cdp", None), "pages_cache", []) or [])[:40]
+
+    def _refresh_process_pages(self) -> list[dict[str, Any]]:
+        """真正去枚举（只被后台线程调用），结果写进 cdp.pages_cache。"""
         pages: list[dict[str, Any]] = []
         cdp = getattr(self, "cdp", None)
         raw_targets: list[dict[str, Any]] = []
-        if cdp is not None:
-            try:
-                if getattr(cdp, "cdp_port", 0):
-                    raw_targets = cdp.targets(int(cdp.cdp_port)) or []
-            except Exception:  # noqa: BLE001
-                raw_targets = []
-        if not raw_targets and cdp is not None:
+        if cdp is not None and (getattr(cdp, "cdp_port", 0) or self.config.get("cdp_injection_enabled", False)):
             try:
                 raw_targets = cdp.discover_targets() or []
             except Exception:  # noqa: BLE001
@@ -7053,7 +7091,11 @@ class StandaloneBridge:
                 "attached": bool(frame.get("injected")),
                 "has_imsdk": str(frame.get("imsdk_typeof") or "undefined") in {"object", "function"},
             })
-        return pages[:40]
+        pages = pages[:40]
+        if cdp is not None:
+            cdp.pages_cache = pages
+            cdp.pages_cache_at = time.monotonic()
+        return pages
 
     def auto_open_recent_conversation(self) -> dict[str, Any]:
         """没有可用聊天页时，自动用官方 openChat 打开"最近一个会话"。
@@ -7529,6 +7571,7 @@ class StandaloneBridge:
         self.hook_monitor.thread.start()
         self.hook_recovery.thread.start()
         threading.Thread(target=self.run_identity_refresh, name="identity-refresh", daemon=True).start()
+        threading.Thread(target=self.run_pages_refresh, name="pages-refresh", daemon=True).start()
         self.catalog_sync.start()
         self.cdp.start()
         self.updater.start()

@@ -211,3 +211,41 @@ class MonitorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ProcessPagesNonBlockingTest(unittest.TestCase):
+    """status 里的 process_pages 绝不能被端口扫描拖住（前端 10s 判超时）。"""
+
+    def test_process_pages_returns_cache_and_refreshes_in_background(self):
+        import time
+        from unittest import mock
+        import standalone_bridge as sb
+
+        class Cdp:
+            cdp_port = 0
+            pages_cache = [{"kind": "page", "url": "cached"}]
+            pages_cache_at = 0.0          # 过期 -> 应触发后台刷新
+            pages_refreshing = False
+
+        app = mock.Mock()
+        app.config = {"cdp_injection_enabled": False}
+        app.cdp = Cdp()
+        app.hook_recovery = None
+        app.browser = mock.Mock()
+        app.browser.diagnostics_by_connection.return_value = []
+
+        started = []
+        real_refresh = sb.StandaloneBridge._refresh_process_pages
+
+        def slow_refresh(self):
+            started.append(1)
+            time.sleep(0.3)
+            return []
+
+        with mock.patch.object(sb.StandaloneBridge, "_refresh_process_pages", slow_refresh):
+            t0 = time.monotonic()
+            pages = sb.StandaloneBridge.process_pages(app)
+            elapsed = time.monotonic() - t0
+
+        self.assertLess(elapsed, 0.1)          # 立即返回，不等扫描
+        self.assertEqual(pages[0]["url"], "cached")
+        self.assertIsNotNone(real_refresh)
