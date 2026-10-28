@@ -508,7 +508,18 @@ def stop_managed_qianniu(root: Path | None = None) -> list[int]:
     return failed
 
 
-def request_tray_exit(root: Path | None = None) -> bool:
+def write_tray_exit_marker(root: Path | None = None, include_qianniu: bool = True) -> Path:
+    """给托盘留退出指令；include_qianniu=False 时要求它保留千牛。"""
+    root = root or app_root()
+    state_dir = root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "tray.exit"
+    payload = "exit" if include_qianniu else "exit-keep-qianniu"
+    path.write_text(payload + chr(10), encoding="ascii")
+    return path
+
+
+def request_tray_exit(root: Path | None = None, include_qianniu: bool = True) -> bool:
     root = root or app_root()
     state_dir = root / "state"
     pid_file = state_dir / "tray.pid"
@@ -536,7 +547,10 @@ def request_tray_exit(root: Path | None = None) -> bool:
         pid_file.unlink(missing_ok=True)
         return True
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "tray.exit").write_text("exit\\n", encoding="ascii")
+    # 托盘自己退出时默认会连带关闭千牛；安装/升级要保留千牛，用标记传下去
+    (state_dir / "tray.exit").write_text(
+        "exit\n" if include_qianniu else "exit-keep-qianniu\n", encoding="ascii"
+    )
     if wait_for_exit(pid, timeout=5.0):
         pid_file.unlink(missing_ok=True)
         return True
@@ -577,7 +591,7 @@ def stop_all(*, include_tray: bool = True, include_qianniu: bool = True) -> None
             pid_file.unlink(missing_ok=True)
     if include_qianniu:
         failed.extend(stop_managed_qianniu(root))
-    if include_tray and not request_tray_exit(root):
+    if include_tray and not request_tray_exit(root, include_qianniu=include_qianniu):
         try:
             failed.append(int((root / "state" / "tray.pid").read_text(encoding="ascii").strip()))
         except (OSError, ValueError):

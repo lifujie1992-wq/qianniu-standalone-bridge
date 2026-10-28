@@ -287,8 +287,8 @@ def run() -> int:
     def open_settings() -> None:
         launcher.configure()
 
-    def completely_exit() -> None:
-        launcher.stop_all(include_tray=False, include_qianniu=True)
+    def completely_exit(keep_qianniu: bool = False) -> None:
+        launcher.stop_all(include_tray=False, include_qianniu=not keep_qianniu)
 
     try:
         config = launcher.load_config_silent(root / "config.json")
