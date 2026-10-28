@@ -147,11 +147,22 @@ _INVOKE_TEMPLATE = """
     const [name, fn] = channels[index];
     return Promise.resolve()
       .then(fn)
-      .then(value => ({ok: true, channel: name, value: value}),
-            error => {
-              errors.push(name + ': ' + String(error && error.message ? error.message : error).slice(0, 120));
-              return next(index + 1);
-            });
+      .then(value => {
+        // 某些页面的 imsdk2 会 resolve(null)，这不是 mtop 响应。
+        // 必须在同一个页面继续走 qn_app，而不是把空值交给外层
+        // result_filter；否则广播只会等其它页面，最后误报超时/空结果。
+        const empty = value === null || value === undefined ||
+          (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) ||
+          (typeof value === 'string' && !value.trim());
+        if (empty) {
+          errors.push(name + ': empty response');
+          return next(index + 1);
+        }
+        return {ok: true, channel: name, value: value};
+      }, error => {
+        errors.push(name + ': ' + String(error && error.message ? error.message : error).slice(0, 120));
+        return next(index + 1);
+      });
   };
   return next(0);
 })()

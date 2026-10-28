@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import unittest
 
 import qn_catalog as qc
@@ -108,6 +110,32 @@ class NormalizeTests(unittest.TestCase):
         payload = {"data": {"result": json.dumps({"orderList": [{"tid": "1"}]})}}
         buckets = qc.collect_lists(payload, {"orderList"})
         self.assertEqual(buckets, [[{"tid": "1"}]])
+
+
+class ChannelFallbackTests(unittest.TestCase):
+    def test_imsdk2_null_continues_to_qn_app(self):
+        """现场回归：imsdk2=null 不能抢答，必须继续到 QN.app。"""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed")
+        payload = {
+            "method": qc.TRADE_QUERY_METHOD,
+            "param": {"securityBuyerUid": "3264342491"},
+            "version": "1.0",
+        }
+        expression = qc._INVOKE_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload))
+        script = f"""
+const window = {{
+  imsdk2: {{ invoke: () => Promise.resolve(null) }},
+  QN: {{ app: {{ invoke: () => Promise.resolve({{ api: 'mtop', data: {{ orders: [{{ bizOrderId: 'ok' }}] }} }}) }} }}
+}};
+(async () => {{
+  const result = await ({expression});
+  if (result.channel !== 'qn_app' || !result.value || !result.value.data.orders.length) process.exit(2);
+}})().catch(() => process.exit(3));
+"""
+        completed = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=5)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
 
 class CatalogTests(unittest.TestCase):
