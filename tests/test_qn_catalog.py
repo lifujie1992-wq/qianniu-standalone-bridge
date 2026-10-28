@@ -288,3 +288,39 @@ class CatalogStoreTests(unittest.TestCase):
         summary = syncer.sync_once()
         self.assertFalse(summary["ok"])
         self.assertIn("not connected", summary["error"])
+
+class MtopPageRaceTest(unittest.TestCase):
+    """多页面竞速：空壳页先答不能让能取单的页面被挡掉。"""
+
+    def test_shell_page_answer_does_not_win(self):
+        from qn_catalog import QnCatalog
+
+        class Browser:
+            def __init__(self):
+                self.seen = []
+
+            def execute(self, expression, timeout=3.0, **kwargs):
+                self.seen.append(kwargs)
+                filt = kwargs.get("result_filter")
+                # 空壳页：没有 mtop 通道
+                shell = {"ok": False, "error": "no mtop channel"}
+                # 聊天页：真能取数
+                good = {"ok": True, "channel": "imsdk",
+                        "value": {"ret": ["SUCCESS::ok"], "data": {"orders": [{"bizOrderId": "1"}]}}}
+                if filt is not None:
+                    for candidate in (shell, good):
+                        if filt(candidate):
+                            return candidate
+                    raise RuntimeError("no match")
+                return shell
+
+        class App:
+            def __init__(self, browser):
+                self.browser = browser
+
+        browser = Browser()
+        catalog = QnCatalog(App(browser))
+        payload = catalog.raw("mtop.taobao.qianniu.cs.trade.query", {"securityBuyerUid": "1"})
+        self.assertTrue(payload["data"]["orders"])
+        self.assertEqual(catalog.last_channel, "imsdk")
+        self.assertIsNotNone(browser.seen[0].get("result_filter"))

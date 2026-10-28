@@ -466,9 +466,21 @@ class QnCatalog:
             payload["__only"] = str(only_channel)
         expression = _INVOKE_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload, ensure_ascii=False))
         self.requests += 1
+        def usable(value: Any) -> bool:
+            """只有"真能取数"的页面才算命中。
+
+            多页面客户端里 `execute` 是广播、先答者胜：空壳页（无 mtop 通道）
+            会秒答 {ok:false}，把真正能取单的页面挡掉 —— 这正是
+            "同一个账号 1.6.27 能用、升级后取不到" 的根因。
+            """
+            if not isinstance(value, dict) or value.get("ok") is not True:
+                return False
+            return not strict or mtop_ok(value.get("value"))
+
         try:
             result = self.app.browser.execute(
-                expression, timeout=self._timeout(timeout), raise_on_no_match=True
+                expression, timeout=self._timeout(timeout),
+                result_filter=usable, raise_on_no_match=True,
             )
         except Exception as error:  # 页面未连接 / 超时 / 页面报错（如 imsdk 未加载）
             self.last_error = str(error) or "Qianniu browser command failed"
