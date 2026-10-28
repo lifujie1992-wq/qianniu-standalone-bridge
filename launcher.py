@@ -851,11 +851,17 @@ def check_for_updates() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Qianniu bridge one-click launcher")
     parser.add_argument("--stop", action="store_true", help="stop bridge and dock")
+    parser.add_argument("--stop-agent", action="store_true",
+                        help="只停助手（bridge/dock/tray），不关千牛 —— 安装/升级用")
     parser.add_argument("--status", action="store_true", help="show running status")
     parser.add_argument("--start-dock", action="store_true", help="start the dock only")
     parser.add_argument("--configure", action="store_true", help="open configuration dialog")
     parser.add_argument("--update", action="store_true", help="check for online updates")
     args = parser.parse_args()
+    if args.stop_agent:
+        # 安装包用这个：绝不能关千牛（关掉会丢登录态和正在回复的买家消息）
+        stop_all(include_qianniu=False)
+        return 0
     if args.stop:
         stop_all()
         return 0
