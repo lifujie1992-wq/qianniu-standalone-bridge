@@ -43,10 +43,22 @@ from brain_ws import (
 )
 from client_support import ClientSupportWatcher, agent_profiles, launcher_version, size_of_image
 from config_defaults import apply_operational_defaults
-from nickname_support import event_nickname, nickname_event_id, valid_nickname
-from native_image_lookup import enrich_native_image_event
 from native_context import NativeContext
+from native_image_lookup import enrich_native_image_event
+from nickname_support import event_nickname, nickname_event_id, valid_nickname
+from hook_recovery import HookRecovery
+from hook_diagnostics import (
+    HookMonitor,
+    chat_page_hooked,
+    hook_summary,
+    mask_text,
+    mask_title,
+    normalize_connection,
+    sanitize_page_url,
+    unavailable_reason,
+)
 from nickname_resolver import ConversationSelectionWatch, NicknameResolver
+from qn_catalog import CatalogSyncer, QnCatalog, QnCatalogError, mtop_ret
 from reception_wait import message_direction, waiting_state
 from device_identity import (
     DeviceIdentityError,
@@ -695,6 +707,23 @@ class StateDB:
                     nickname TEXT NOT NULL,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY(account,buyer_id)
+                );
+                CREATE TABLE IF NOT EXISTS catalog_goods (
+                    item_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    price TEXT NOT NULL DEFAULT '',
+                    stock INTEGER,
+                    sold_count INTEGER,
+                    url TEXT NOT NULL DEFAULT '',
+                    thumb TEXT NOT NULL DEFAULT '',
+                    category_id TEXT NOT NULL DEFAULT '',
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    updated_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS catalog_goods_title ON catalog_goods(title);
+                CREATE TABLE IF NOT EXISTS catalog_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );
                 UPDATE events SET status='pending' WHERE status='sending';
                 UPDATE brain_events SET status='pending' WHERE status='sending';
@@ -2070,17 +2099,217 @@ class StateDB:
             })
         return output
 
+    def has_recent_buyer_activity(self, minutes: float) -> bool:
+        """最近 N 分钟是否有买家侧消息（用于夜间静默判断，不读消息内容）。"""
+        try:
+            window = max(0.0, float(minutes))
+        except (TypeError, ValueError):
+            window = 30.0
+        if window <= 0:
+            return True
+        since = time.time() - window * 60.0
+        with self.lock, closing(self.connect()) as connection:
+            try:
+                row = connection.execute(
+                    "SELECT 1 FROM events WHERE created_at >= ? "
+                    "AND coalesce(json_extract(payload,'$.role'),'user') IN ('user','buyer','customer') "
+                    "LIMIT 1",
+                    (since,),
+                ).fetchone()
+                return bool(row)
+            except sqlite3.OperationalError:
+                rows = connection.execute(
+                    "SELECT payload FROM events WHERE created_at >= ? LIMIT 200", (since,)
+                ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (ValueError, TypeError):
+                continue
+            role = str(payload.get("role") or "user").lower()
+            if role in {"user", "buyer", "customer"}:
+                return True
+        return False
+
+    def recent_accounts(self, limit: int = 5) -> list[str]:
+        """历史事件里出现过的客服号（按最近时间倒序，去重）。
+
+        用于升级后首次启动时回填"我是谁"——不依赖页面刷新，也不读消息内容。
+        """
+        limit = max(1, min(int(limit or 5), 20))
+        with self.lock, closing(self.connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT json_extract(payload,'$.account') AS account, max(updated_at) AS last_at
+                FROM events
+                WHERE json_extract(payload,'$.account') IS NOT NULL
+                  AND json_extract(payload,'$.account') != ''
+                GROUP BY account ORDER BY last_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [str(row["account"]).strip() for row in rows if str(row["account"] or "").strip()]
+
+    # ---- 商品目录（学习福客 /getQNList1 的长期沉淀） ----
+    def catalog_upsert_goods(self, rows: list[dict[str, Any]]) -> int:
+        """按 item_id upsert；返回写入行数。"""
+        if not rows:
+            return 0
+        now = time.time()
+        payload = []
+        for row in rows:
+            item_id = str(row.get("goods_id") or "").strip()
+            if not item_id:
+                continue
+            def as_int(value: Any) -> int | None:
+                try:
+                    return int(str(value).strip())
+                except (TypeError, ValueError):
+                    return None
+            payload.append((
+                item_id,
+                str(row.get("goods_name") or ""),
+                str(row.get("goods_price") or ""),
+                as_int(row.get("stock")),
+                as_int(row.get("sold_count")),
+                str(row.get("goods_url") or ""),
+                str(row.get("goods_thumb_url") or ""),
+                str(row.get("category_id") or ""),
+                json.dumps({k: v for k, v in row.items() if k != "raw"}, ensure_ascii=False),
+                now,
+            ))
+        if not payload:
+            return 0
+        with self.lock, closing(self.connect()) as connection, connection:
+            connection.executemany(
+                """
+                INSERT INTO catalog_goods(
+                    item_id,title,price,stock,sold_count,url,thumb,category_id,payload,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(item_id) DO UPDATE SET
+                    title=excluded.title, price=excluded.price, stock=excluded.stock,
+                    sold_count=excluded.sold_count, url=excluded.url, thumb=excluded.thumb,
+                    category_id=excluded.category_id, payload=excluded.payload,
+                    updated_at=excluded.updated_at
+                """,
+                payload,
+            )
+        return len(payload)
+
+    def catalog_set_meta(self, key: str, value: Any) -> None:
+        with self.lock, closing(self.connect()) as connection, connection:
+            connection.execute(
+                "INSERT INTO catalog_meta(key,value) VALUES(?,?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(key), json.dumps(value, ensure_ascii=False)),
+            )
+
+    def catalog_meta(self) -> dict[str, Any]:
+        with self.lock, closing(self.connect()) as connection, connection:
+            rows = connection.execute("SELECT key,value FROM catalog_meta").fetchall()
+            total = connection.execute("SELECT count(*) FROM catalog_goods").fetchone()[0]
+        output: dict[str, Any] = {"stored_goods": int(total or 0)}
+        for row in rows:
+            try:
+                output[str(row["key"])] = json.loads(row["value"])
+            except ValueError:
+                output[str(row["key"])] = row["value"]
+        return output
+
+    def catalog_search(self, text: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        """商品搜索：空串返回最近更新的商品；命中标题/ID/价格。"""
+        limit = max(1, min(int(limit or 20), 100))
+        keyword = str(text or "").strip()
+        with self.lock, closing(self.connect()) as connection, connection:
+            if keyword:
+                like = f"%{keyword}%"
+                rows = connection.execute(
+                    """
+                    SELECT item_id,title,price,stock,sold_count,url,thumb,category_id,updated_at
+                    FROM catalog_goods
+                    WHERE title LIKE ? OR item_id LIKE ? OR price LIKE ?
+                    ORDER BY sold_count DESC NULLS LAST, updated_at DESC LIMIT ?
+                    """,
+                    (like, like, like, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT item_id,title,price,stock,sold_count,url,thumb,category_id,updated_at
+                    FROM catalog_goods ORDER BY updated_at DESC, item_id LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        return [
+            {
+                "goods_id": str(row["item_id"]),
+                "goods_name": str(row["title"]),
+                "goods_price": str(row["price"]),
+                "stock": row["stock"],
+                "sold_count": row["sold_count"],
+                "goods_url": str(row["url"]),
+                "goods_thumb_url": str(row["thumb"]),
+                "category_id": str(row["category_id"]),
+                "updated_at": float(row["updated_at"]),
+            }
+            for row in rows
+        ]
+
+
+def _connection_priority(diagnostics: dict[str, Any]) -> tuple[int, int]:
+    """页面执行优先级：聊天页且已挂钩 > 聊天页 > 有 imsdk > 其它。"""
+    kind = str(diagnostics.get("page_kind") or "other")
+    hooked = diagnostics.get("imsdk_hooked") is True
+    is_chat = kind in {"chat_recent", "chat_other"}
+    if is_chat and hooked:
+        return (0, 0)
+    if is_chat:
+        return (1, 0)
+    if hooked:
+        return (2, 0)
+    return (3, 0)
+
+
+def is_duplicate_rejection(message: str) -> bool:
+    """判断服务器拒绝原因是不是"重复事件回放"（HTTP 400 + duplicate/replay）。"""
+    text = str(message or "").lower()
+    if "400" not in text:
+        return False
+    return any(token in text for token in ("duplicate", "replay", "already", "重复", "已存在"))
+
 
 class DeliveryWorker:
     def __init__(self, app: "StandaloneBridge"):
         self.app = app
         self.wakeup = threading.Event()
         self.thread = threading.Thread(target=self.run, name="gateway-delivery", daemon=True)
+        # 被服务器判为重复回放而去重的事件数（诊断用）
+        self.duplicate_dropped = 0
         self.last_error = ""
         self.last_success_at = 0.0
 
     def start(self) -> None:
         self.thread.start()
+
+    def chunk_rows(self, rows: list[dict[str, Any]], max_bytes: int) -> list[list[dict[str, Any]]]:
+        """按序列化字节数分片：网关(本机 HTTP)对请求体有 128KB 上限，
+        一次 claim 100 条很容易超限，超了就会 400 并永久积压。"""
+        chunks: list[list[dict[str, Any]]] = []
+        current: list[dict[str, Any]] = []
+        size = 0
+        for row in rows:
+            try:
+                encoded = len(json.dumps(row["payload"], ensure_ascii=False).encode("utf-8"))
+            except (TypeError, ValueError):
+                encoded = 1024
+            if current and size + encoded > max_bytes:
+                chunks.append(current)
+                current, size = [], 0
+            current.append(row)
+            size += encoded
+        if current:
+            chunks.append(current)
+        return chunks
 
     def post(self, batch: list[dict[str, Any]]) -> set[str]:
         cfg = self.app.config
@@ -2101,16 +2330,27 @@ class DeliveryWorker:
                 ),
             },
         )
-        with urllib.request.urlopen(
-            # This is a *local* durability self-check (default target is the
-            # bundled workbench on 127.0.0.1). A 1.5s budget is below what a
-            # busy seat can honour while 7 injected pages write SQLite, so the
-            # batch timed out, was marked failed and retried with backoff - the
-            # retry backoff, not the message itself, was the 10-30s delay seen
-            # on the brain side. Keep a generous local budget; the loop is
-            # woken by new events and drains immediately.
-            request, timeout=float(cfg.get("delivery_timeout_seconds", 8.0))
-        ) as response:
+        try:
+            response_context = urllib.request.urlopen(
+                # This is a *local* durability self-check (default target is the
+                # bundled workbench on 127.0.0.1). A 1.5s budget is below what a
+                # busy seat can honour while 7 injected pages write SQLite, so the
+                # batch timed out, was marked failed and retried with backoff - the
+                # retry backoff, not the message itself, was the 10-30s delay seen
+                # on the brain side. Keep a generous local budget; the loop is
+                # woken by new events and drains immediately.
+                request, timeout=float(cfg.get("delivery_timeout_seconds", 8.0))
+            )
+        except urllib.error.HTTPError as error:
+            # 带上服务器正文：A(5) 需要按"是否重复回放"决定是否出队，
+            # 只有状态码会丢失这个信息。
+            detail = ""
+            try:
+                detail = error.read().decode("utf-8", "replace")[:300]
+            except Exception:  # noqa: BLE001
+                detail = ""
+            raise RuntimeError(f"HTTP {error.code}: {detail or error.reason}") from error
+        with response_context as response:
             payload = json.loads(response.read().decode("utf-8", "replace") or "{}")
         if not isinstance(payload, dict) or payload.get("ok") is not True:
             raise RuntimeError(str((payload or {}).get("error") or "gateway rejected event batch"))
@@ -2148,17 +2388,31 @@ class DeliveryWorker:
                 self.wakeup.clear()
                 continue
             try:
-                committed = self.post([row["payload"] for row in rows])
-                if not committed:
-                    raise RuntimeError("gateway acknowledged no events")
-                for row in rows:
-                    if row["event_id"] in committed:
-                        self.app.db.mark_delivered(row["event_id"], row["revision"])
+                try:
+                    max_bytes = int(self.app.config.get("delivery_max_body_bytes", 120 * 1024))
+                except (TypeError, ValueError):
+                    max_bytes = 120 * 1024
+                for chunk in self.chunk_rows(rows, max(16 * 1024, max_bytes)):
+                    committed = self.post([row["payload"] for row in chunk])
+                    if not committed:
+                        raise RuntimeError("gateway acknowledged no events")
+                    for row in chunk:
+                        if row["event_id"] in committed:
+                            self.app.db.mark_delivered(row["event_id"], row["revision"])
                 self.last_error = ""
                 self.last_success_at = time.time()
                 delay = 0.2
             except Exception as error:
                 self.last_error = str(error)[:500]
+                if is_duplicate_rejection(self.last_error):
+                    # 服务器已判定"重复事件回放"：本地直接记完成，避免永久积压。
+                    for row in rows:
+                        self.app.db.mark_delivered(row["event_id"], row["revision"])
+                    self.duplicate_dropped += len(rows)
+                    self.last_error = ""
+                    self.last_success_at = time.time()
+                    delay = 0.2
+                    continue
                 self.app.db.mark_failed(rows, self.last_error)
                 self.app.stop_event.wait(delay)
                 delay = min(5.0, delay * 2.0)
@@ -2508,12 +2762,15 @@ class BrainConnector:
         local = self.app.status(include_brain=False)
         sessions = self.app.db.workbench_sessions()
         now = time.time()
-        accounts = sorted({
+        accounts = {
             str(session.get("account") or "").strip()
             for session in sessions
             if str(session.get("account") or "").strip()
             and now - float(session.get("last_ts") or 0.0) < 3600.0
-        })
+        }
+        # 任务 A(1)：会话为空时也要让服务器看到"这台助手是谁"
+        accounts.update(getattr(self.app, "known_accounts", []) or [])
+        accounts = sorted(item for item in accounts if item)
         shops = [
             {
                 "shop_id": self.account_shop_id(account),
@@ -3677,6 +3934,10 @@ class BrowserServer:
         self.last_diagnostics: dict[str, Any] = {}
         self.connection_diagnostics: dict[Any, dict[str, Any]] = {}
         self.error = ""
+        self.event_error = ""
+        self.rejected_events = 0
+        # 账号缺失但已接收的事件数（任务 A 观测项）
+        self.account_missing_events = 0
         self.connection_lock = threading.Lock()
         self.connection_ready = threading.Event()
         self.connections: dict[Any, threading.Lock] = {}
@@ -3706,6 +3967,10 @@ class BrowserServer:
             "history_probe_enabled", "history_probe_runs",
             "history_probe_last_ccode", "history_probe_last_at_ms",
             "history_probe_imsdk", "history_probe_results",
+            # 任务 A（1.6.28）：页面诊断，只增不改
+            "page_url", "page_title", "page_kind", "is_top_frame", "ready_state",
+            "imsdk_typeof", "imsdk_invoke_typeof", "hook_attempts",
+            "last_hook_attempt_at_ms", "last_hook_error", "first_hooked_at_ms",
         )
         snapshot = {key: diagnostics.get(key) for key in allowed if key in diagnostics}
         with self.connection_lock:
@@ -3714,7 +3979,8 @@ class BrowserServer:
 
     def diagnostics_by_connection(self) -> list[dict[str, Any]]:
         with self.connection_lock:
-            return [dict(value) for value in self.connection_diagnostics.values()]
+            rows = [dict(value) for value in self.connection_diagnostics.values()]
+        return [normalize_connection(row) for row in rows]
 
     def allowed(self, connection: Any) -> bool:
         path = str(getattr(getattr(connection, "request", None), "path", ""))
@@ -3729,12 +3995,19 @@ class BrowserServer:
         with send_lock:
             connection.send(json.dumps(payload, ensure_ascii=False))
 
-    def execute(self, expression: str, timeout: float = 3.0, *, result_filter: Any = None) -> Any:
+    def execute(
+        self, expression: str, timeout: float = 3.0, *, result_filter: Any = None,
+        raise_on_no_match: bool = False,
+    ) -> Any:
         request_id = uuid.uuid4().hex
         with self.connection_lock:
             connections = list(self.connections)
+            diagnostics = dict(self.connection_diagnostics)
             response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(1, len(connections)))
             self.pending[request_id] = response_queue
+        # 多页面客户端（例如 6-10 个 dx-h5 页面）里，只有聊天页有 imsdk：
+        # 先问"聊天页且已挂钩"，再问有 imsdk 的，最后才是其它页面。
+        connections.sort(key=lambda item: _connection_priority(diagnostics.get(item) or {}))
         if not connections:
             with self.connection_lock:
                 self.pending.pop(request_id, None)
@@ -3754,20 +4027,29 @@ class BrowserServer:
             if not sent:
                 raise RuntimeError("Qianniu browser command could not be sent")
             deadline = time.monotonic() + timeout
+            last_error: RuntimeError | None = None
             for _ in range(sent):
                 try:
                     response = response_queue.get(timeout=max(0.0, deadline - time.monotonic()))
                 except queue.Empty as error:
-                    if result_filter is not None:
+                    if result_filter is not None and not raise_on_no_match:
                         return None
                     raise RuntimeError("Qianniu browser command timed out") from error
                 if not response.get("ok"):
-                    if result_filter is not None:
-                        continue
-                    raise RuntimeError(str(response.get("error") or "Qianniu browser command failed"))
+                    last_error = RuntimeError(str(response.get("error") or "Qianniu browser command failed"))
+                    # 其它页面（无 imsdk）先答"失败"时，继续等有能力的那一页；
+                    # 所有页面都失败才抛错，行为与旧版一致。
+                    continue
                 value = response.get("value")
                 if result_filter is None or result_filter(value):
                     return value
+                last_error = RuntimeError("Qianniu browser response did not match the requested capability")
+            if raise_on_no_match:
+                raise last_error or RuntimeError("Qianniu browser returned no matching response")
+            if result_filter is None and last_error is not None:
+                # 所有页面都失败：把真实原因（如 "Qianniu imsdk is unavailable"）抛出去，
+                # 不要让上层以为"返回了空对象"。
+                raise last_error
             return None
         finally:
             with self.connection_lock:
@@ -4058,12 +4340,19 @@ class BrowserServer:
                         continue
                     wire_id = str(message.get("event_id") or message["payload"].get("event_id") or "")
                     nickname_update = message["payload"].get("type") == "nickname_update"
-                    required = ("account", "buyer_id", "nickname" if nickname_update else "content")
+                    # 任务 A(3)：账号允许为空 —— 页面识别不到登录昵称时也要收，
+                    # 由助手自己补（持久化/会话历史/页面兜底），再不行服务器按
+                    # agent→客服号绑定补全。buyer_id 与内容仍然必填。
+                    required = ("buyer_id", "nickname" if nickname_update else "content")
                     if any(not is_nonempty(message["payload"].get(key)) for key in required):
-                        self.error = "browser event missing " + ", ".join(required)
+                        self.event_error = "browser event missing " + ", ".join(required)
+                        self.rejected_events += 1
                         continue
+                    if not is_nonempty(message["payload"].get("account")):
+                        self.account_missing_events += 1
                     if nickname_update and not event_nickname(message["payload"]):
-                        self.error = "browser nickname_update has no valid nickname"
+                        self.event_error = "browser nickname_update has no valid nickname"
+                        self.rejected_events += 1
                         continue
                     event_id, _changed = self.app.ingest_event(message["payload"])
                     self.total_events += 1
@@ -4101,6 +4390,10 @@ class BrowserServer:
             LOG.exception("browser WebSocket server stopped")
 
 
+class ContextChannelUnavailable(RuntimeError):
+    """No connected page can currently invoke the order channel."""
+
+
 class ContextEnricher:
     ITEM_METHOD = "mtop.taobao.qianniu.cs.item.record.query"
     ORDER_METHOD = "mtop.taobao.qianniu.cs.trade.query"
@@ -4126,6 +4419,10 @@ class ContextEnricher:
         self.requests = 0
         self.successes = 0
         self.skipped = 0
+        self.enqueue_calls = 0
+        self.enqueued = 0
+        self.skip_reasons: dict[str, int] = {}
+        self.result_counts: dict[str, int] = {}
         self.last_success_at = 0.0
         self.last_error = ""
         self.last_event_id = ""
@@ -4164,17 +4461,34 @@ class ContextEnricher:
         return ""
 
     def enqueue(self, event_id: str, event: dict[str, Any]) -> None:
+        with self.lock:
+            self.enqueue_calls += 1
         if not self.app.config.get("context_enrich_enabled", True):
+            self._record_skip("disabled")
             return
         role = str(event.get("role") or "user").strip().lower()
         if role not in {"user", "buyer", "customer"} and not tmall_guard_scope(event.get("account")):
+            self._record_skip("role_filtered")
             return
         encrypt_id = self.buyer_encrypt_id(event)
         if not encrypt_id:
-            self.skipped += 1
+            with self.lock:
+                self.skipped += 1
+            self._record_skip("missing_buyer_encrypt_id")
+            # Persist the reason before ingestion queues the event for upload.
+            # Absence of a lookup must never look like evidence of no orders.
+            db = getattr(self.app, "db", None)
+            if db is not None:
+                db.enrich_event(event_id, {"context_enrich": {
+                    "ok": False, "status": "error_unknown",
+                    "error": "missing_buyer_encrypt_id", "retry_count": 0,
+                    "provider": "qianniu_standalone_mtop", "build_hash": BUILD_HASH,
+                    "mtop_api": self.ORDER_METHOD, "trace_id": uuid.uuid4().hex,
+                }})
             return
         with self.lock:
             if event_id in self.queued:
+                self._record_skip("already_queued")
                 return
             self.queued.add(event_id)
         # Bound memory without dropping enrichment: a full queue applies
@@ -4182,13 +4496,20 @@ class ContextEnricher:
         while True:
             try:
                 self.pending.put(event_id, timeout=0.5)
+                with self.lock:
+                    self.enqueued += 1
                 return
             except queue.Full:
                 stop_event = getattr(self.app, "stop_event", None)
                 if stop_event is not None and stop_event.is_set():
                     with self.lock:
                         self.queued.discard(event_id)
+                    self._record_skip("stopped")
                     return
+
+    def _record_skip(self, reason: str) -> None:
+        with self.lock:
+            self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
 
     @staticmethod
     def decode(value: Any) -> Any:
@@ -4413,6 +4734,8 @@ class ContextEnricher:
         history_orders: list[dict[str, Any]] = []
         for attempt in range(1 + self.EMPTY_ORDER_RETRIES):
             # 店铺/历史订单与订单重试无关，只在第一次尝试里并行取。
+            lookup_failed = False
+            channel_unavailable = False
             try:
                 snapshot = self._fetch_once(
                     encrypt_id, biz_order_id,
@@ -4420,8 +4743,8 @@ class ContextEnricher:
                     include_history and attempt == 0,
                 )
             except Exception as error:
-                if not tmall_guard_scope(account):
-                    raise
+                lookup_failed = True
+                channel_unavailable = isinstance(error, ContextChannelUnavailable)
                 # Publish lookup failure to the brain too; a local diagnostic
                 # alone would leave it unable to distinguish absence from error.
                 snapshot = {
@@ -4430,7 +4753,7 @@ class ContextEnricher:
                     "orders_ok": False, "errors": [str(error)[:500]],
                     "raw_context": {}, "ret_code": "", "raw_order_count": 0,
                 }
-            if tmall_guard_scope(account):
+            if tmall_guard_scope(account) and not lookup_failed:
                 # Invocation success does not prove MTop business success or
                 # an understood empty-order response. Preserve evidence below.
                 raw_orders = snapshot.get("raw_context", {}).get("orders")
@@ -4445,6 +4768,10 @@ class ContextEnricher:
                 history_orders = list(snapshot.get("history_orders") or [])
             if snapshot["orders_ok"] and snapshot["orders"]:
                 found = snapshot
+                break
+            if channel_unavailable:
+                # Repeating the same script cannot create an SDK or reconnect
+                # a page. A later event can try again after the short cache TTL.
                 break
             if attempt < self.EMPTY_ORDER_RETRIES:
                 time.sleep(min(0.6, 0.15 * (attempt + 1)))
@@ -4649,10 +4976,26 @@ class ContextEnricher:
             if include_history
             else "Promise.resolve({ok: false, error: 'history orders disabled'})",
         )
-        result = self.app.browser.execute(
-            expression,
-            timeout=float(self.app.config.get("context_enrich_timeout_seconds", 6.0)),
-        )
+        try:
+            result = self.app.browser.execute(
+                expression,
+                timeout=float(self.app.config.get("context_enrich_timeout_seconds", 6.0)),
+                # A dx-h5/control page may answer before recent.html. Accept
+                # an MTop envelope (including business errors), not that page's
+                # missing-SDK error or null response. Keep one shared deadline.
+                result_filter=lambda value: (
+                    isinstance(value, dict) and isinstance(value.get("orders"), dict)
+                ),
+                raise_on_no_match=True,
+            )
+        except RuntimeError as error:
+            if str(error) in {
+                "Qianniu imsdk is unavailable",
+                "Qianniu browser bridge is not connected",
+                "Qianniu browser command could not be sent",
+            }:
+                raise ContextChannelUnavailable(str(error)) from error
+            raise
         if not isinstance(result, dict):
             raise RuntimeError("Qianniu context response is not an object")
         items_result = result.get("items") if isinstance(result.get("items"), dict) else {}
@@ -4808,6 +5151,8 @@ class ContextEnricher:
                 enrichment = self.fetch(encrypt_id, biz_order_id, account)
                 self.app.db.enrich_event(event_id, enrichment)
                 status = str(enrichment.get("context_enrich", {}).get("status") or "")
+                with self.lock:
+                    self.result_counts[status] = self.result_counts.get(status, 0) + 1
                 if status != "error_unknown":
                     self.successes += 1
                     self.last_success_at = time.time()
@@ -4840,16 +5185,32 @@ class ContextEnricher:
                 self.pending.task_done()
 
     def status(self) -> dict[str, Any]:
+        with self.lock:
+            skip_reasons = dict(self.skip_reasons)
+            result_counts = dict(self.result_counts)
+        browser = getattr(self.app, "browser", None)
+        connections = browser.diagnostics_by_connection() if browser is not None else []
+        recovery = getattr(self.app, "hook_recovery", None)
+        needs_human = bool(getattr(recovery, "needs_human", False)) if recovery is not None else False
+        reason = unavailable_reason(connections, self.last_error, needs_human)
         return {
             "enabled": bool(self.app.config.get("context_enrich_enabled", True)),
             "pending": self.pending.qsize(),
             "requests": self.requests,
             "successes": self.successes,
             "skipped": self.skipped,
+            "enqueue_calls": self.enqueue_calls,
+            "enqueued": self.enqueued,
+            "skip_reasons": skip_reasons,
+            "result_counts": result_counts,
             "last_success_at": self.last_success_at,
             "last_event_id": self.last_event_id,
             "last_buyer_encrypt_id": self.last_buyer_encrypt_id,
+            # 任务 A（1.6.28）：last_error 含义不变，新增完整原因与分类
             "last_error": self.last_error,
+            "last_error_detail": mask_text(self.last_error, 300),
+            "unavailable_reason": reason,
+            "chat_page_hooked": chat_page_hooked(connections),
         }
 
 
@@ -4860,12 +5221,18 @@ class CdpInjector:
         self.cdp_port = 0
         self.cdp_pid = 0
         self.port_owners: dict[int, int] = {}
+        self._targets_cache: list[dict[str, Any]] = []
+        self._targets_cache_at = 0.0
         self.injected_contexts = 0
         self.last_success_at = 0.0
         self.last_error = ""
         self.launched_pid = 0
         self.host_pid = 0
         self.last_reap_at = 0.0
+        # process_pages() 供 /api/v1/status 调用：必须永不阻塞（前端 10s 就判超时）
+        self.pages_cache: list[dict[str, Any]] = []
+        self.pages_cache_at = 0.0
+        self.pages_refreshing = False
 
     def start(self) -> None:
         self.thread.start()
@@ -4983,6 +5350,155 @@ class CdpInjector:
         )
         self.launched_pid = process.pid
 
+    # ---- 任务 B1/B2：带调试端口重启千牛 + 按目标页面挂钩 ----
+    _CHAT_URL_HINTS = ("web_chat-packer", "/chat", "reception")
+    _CHAT_TITLE_HINTS = ("聊天", "接待")
+
+    def discover_targets(self) -> list[dict[str, Any]]:
+        """枚举千牛进程所有 CDP 页面目标（不注入）。B3 的 process_pages 也用它。
+
+        `candidate_ports()` 要跑 psutil.net_connections 全表扫描，千牛刚重启时
+        缓存端口失效会退化成每次全扫（10~20 秒），直接把 /api/v1/status 拖超时。
+        这里加 TTL 缓存：15 秒内复用最近一次结果。
+        """
+        now = time.monotonic()
+        if self._targets_cache and now - self._targets_cache_at < 15.0:
+            return list(self._targets_cache)
+        found: list[dict[str, Any]] = []
+        if self.cdp_port:
+            try:
+                found = [item for item in self.targets(int(self.cdp_port)) if isinstance(item, dict)]
+            except Exception:  # noqa: BLE001
+                found = []
+        if found:
+            self._targets_cache, self._targets_cache_at = found, now
+            return found
+        for port in self.candidate_ports():
+            try:
+                targets = self.targets(port)
+            except Exception:  # noqa: BLE001
+                continue
+            pages = [item for item in targets if isinstance(item, dict)]
+            if not pages:
+                continue
+            self.cdp_port = port
+            self.cdp_pid = self.port_owners.get(port, 0)
+            self._targets_cache, self._targets_cache_at = pages, now
+            return pages
+        self._targets_cache, self._targets_cache_at = [], now
+        return []
+
+    def chat_targets(self, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """从目标里挑"像聊天页"的：URL 命中优先，其次标题命中。"""
+        preferred, fallback = [], []
+        for target in targets:
+            url = str(target.get("url") or "")
+            title = str(target.get("title") or "")
+            if "web_chat-packer/recent" in url:
+                preferred.append(target)
+            elif any(hint in url for hint in self._CHAT_URL_HINTS):
+                preferred.append(target)
+            elif any(hint in title for hint in self._CHAT_TITLE_HINTS):
+                fallback.append(target)
+        return preferred or fallback
+
+    def inject_targets(self, targets: list[dict[str, Any]]) -> int:
+        if not targets:
+            return 0
+        source = (ROOT / "browser_bridge.js").read_text(encoding="utf-8-sig")
+        injected = 0
+        errors: list[str] = []
+        for target in targets:
+            try:
+                injected += int(self.inject_target(target, source))
+            except Exception as error:  # noqa: BLE001
+                errors.append(mask_text(str(error), 120))
+        self.injected_contexts = injected
+        self.last_error = "" if injected else (errors[-1] if errors else "no_injectable_target")
+        if injected:
+            self.last_success_at = time.time()
+        return injected
+
+    @staticmethod
+    def _free_port() -> int:
+        import socket
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+
+    def restart_with_debug_port(self, wait_seconds: float = 90.0) -> dict[str, Any]:
+        """任务 B1：带 --remote-debugging-port 重启千牛，然后按聊天页挂钩。
+
+        只在用户点【授权修复】并二次确认后调用；失败返回具体原因，不反复重启。
+        """
+        executable = self.app.config.resolve("qianniu_exe")
+        if not executable.is_file():
+            return {"ok": False, "reason": f"restart_failed: qianniu_exe_missing"}
+        port = self._free_port()
+        # 1) 关闭千牛（仅本安装目录下的进程）
+        victims = []
+        expected = str(executable).lower()
+        for process in psutil.process_iter(["pid", "name", "exe"]):
+            try:
+                name = str(process.info.get("name") or "").lower()
+                if name not in {"aliworkbench.exe", "alirender.exe", "aliworkbenchhelper.exe",
+                                "aliworkbenchtask.exe", "aliworkbenchassist.exe"}:
+                    continue
+                exe = str(process.info.get("exe") or "").lower()
+                if exe and exe != expected and self.qianniu_root().as_posix().lower() not in exe:
+                    continue
+                victims.append(process)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        for process in victims:
+            try:
+                process.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        _, alive = psutil.wait_procs(victims, timeout=12)
+        for process in alive:
+            try:
+                process.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        psutil.wait_procs(alive, timeout=6)
+        # 2) 带调试端口启动
+        try:
+            subprocess.Popen(
+                [str(executable), f"--remote-debugging-port={port}"],
+                cwd=str(executable.parent),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as error:  # noqa: BLE001
+            return {"ok": False, "reason": f"restart_failed: {mask_text(str(error), 120)}"}
+        # 3) 等 CDP 端口起来
+        deadline = time.time() + max(10.0, float(wait_seconds))
+        targets: list[dict[str, Any]] = []
+        while time.time() < deadline:
+            try:
+                targets = self.targets(port)
+            except Exception:  # noqa: BLE001
+                targets = []
+            if targets:
+                break
+            self.app.stop_event.wait(1.0)
+        if not targets:
+            return {"ok": False, "reason": "cdp_port_not_open", "port": port}
+        self.cdp_port = port
+        if not self.app.config.get("cdp_injection_enabled", False):
+            try:
+                if hasattr(self.app.config, "set"):
+                    self.app.config.set("cdp_injection_enabled", True)
+            except Exception:  # noqa: BLE001
+                pass
+        # 4) 提前按聊天页挂钩（B2）
+        chat = self.chat_targets(targets)
+        injected = self.inject_targets(chat)
+        if not injected:
+            return {"ok": False, "reason": f"no_target_found: pages={len(targets)}", "port": port}
+        return {"ok": True, "port": port, "pages": len(targets), "injected": injected,
+                "chat_urls": [sanitize_page_url(item.get("url")) for item in chat][:5]}
+
     def candidate_ports(self) -> list[int]:
         process_ids = {process.pid for process in self.host_processes()}
         ports = set()
@@ -5046,7 +5562,7 @@ class CdpInjector:
             chat_targets = [
                 target for target in targets
                 if "web_chat-packer/recent.html" in str(target.get("url") or "")
-            ]
+            ] or self.chat_targets([item for item in targets if isinstance(item, dict)])
             if not chat_targets:
                 continue
             injected = 0
@@ -5429,10 +5945,100 @@ class AppBizSendAdapter:
             return {'ok':False, 'error':'native_client_unavailable', 'rows':[]}
         return script.exports_sync.readmessages(account, buyer_id, before_ms, after_ms, message_id, count)
 
+    def route_state(self, ccode: str, central: bool) -> bool:
+        """按 ccode 询问 AppBiz 是否已有可用路由（不触发 GetNewMsg）。"""
+        script = self.script
+        if script is None:
+            return False
+        exports = getattr(script, "exports_sync", None)
+        prepare = getattr(exports, "preparesend", None) if exports is not None else None
+        if not callable(prepare):
+            return False
+        try:
+            result = prepare(ccode, bool(central))
+        except Exception:  # noqa: BLE001 - 路由探测失败按"没有路由"处理
+            return False
+        return bool(result.get("ok")) if isinstance(result, dict) else bool(result)
+
+    def warmup_supported(self) -> bool:
+        """是否具备"安全补路由"的能力（真实桥接 + agent 暴露 preparesend）。"""
+        if self.script is None or not callable(getattr(self.app, "warm_send_route", None)):
+            return False
+        if not self.app.config.get("appbiz_route_warmup_enabled", True):
+            return False
+        exports = getattr(self.script, "exports_sync", None)
+        return callable(getattr(exports, "preparesend", None))
+
+    def warm_send_route(self, account: str, ccode: str, central: bool) -> bool:
+        """冷路由预热：用千牛官方 openChat 让客户端自己 GetNewMsg（我们不直接调用）。
+
+        返回 True 表示路由已就绪。绝不主动调用 GetNewMsg，避免推进千牛 UI 游标。
+        openChat 会切换千牛当前会话（等价人工点开），因此做同会话限频。
+        """
+        if not self.app.config.get("appbiz_route_warmup_enabled", True):
+            return False
+        if self.route_state(ccode, central):
+            return True
+        try:
+            interval = max(30.0, float(self.app.config.get("appbiz_route_warmup_min_interval_seconds", 300.0)))
+        except (TypeError, ValueError):
+            interval = 300.0
+        now = time.monotonic()
+        history = getattr(self, "warmup_history", None)
+        if history is None:
+            history = {}
+            self.warmup_history = history
+        last = history.get(ccode)
+        if last is not None and now - last < interval:
+            self.last_error = "route warmup rate-limited"
+            return False
+        history[ccode] = now
+        if len(history) > 512:
+            stale = sorted(history, key=lambda key: history[key])[: len(history) - 512]
+            for key in stale:
+                history.pop(key, None)
+        self.warmup_count = int(getattr(self, "warmup_count", 0)) + 1
+        try:
+            if not self.app.warm_send_route(account, ccode):
+                return False
+        except Exception as error:  # noqa: BLE001
+            self.last_error = f"route warmup failed: {str(error)[:200]}"
+            return False
+        try:
+            wait_seconds = max(0.0, float(self.app.config.get("appbiz_route_warmup_seconds", 6.0)))
+        except (TypeError, ValueError):
+            wait_seconds = 6.0
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            if self.route_state(ccode, central):
+                return True
+            self.app.stop_event.wait(0.4)
+        return self.route_state(ccode, central)
+
     def send_text(self, ccode: str, content: str, pcsource: str, *, tmall_account: str = "") -> dict[str, Any]:
         if not self.app.config.get("appbiz_send_abi_validated", False):
             raise ConfirmedSendRejection("AppBiz send ABI has not passed a tagged acceptance test", retryable=False)
-        if tmall_guard_scope(tmall_account) and self.script is not None and not self.route_ready:
+        central = tmall_guard_scope(tmall_account)
+        # 冷路由（助手/千牛刚重启）会让 sendtext 直接抛
+        # "no recent GetNewMsg context"，这里先用官方 openChat 热身一次。
+        # 仅在"真实环境"（有 warm_send_route 且 agent 暴露 preparesend）下启用，
+        # 其它情况保持原有行为，不改变既有语义。
+        if self.warmup_supported() and not self.route_state(ccode, central):
+            account = str(tmall_account or "").strip()
+            db = getattr(self.app, "db", None)
+            if not account and db is not None:
+                try:
+                    account = db.account_for_buyer(ccode)
+                except Exception:  # noqa: BLE001
+                    account = ""
+            if self.warm_send_route(account, ccode, central):
+                self.refresh_status()
+            else:
+                raise ConfirmedSendRejection(
+                    "route_cold: 千牛还没轮询过该会话，请在千牛里点开这个买家会话后重试",
+                    retryable=True,
+                )
+        if central and self.script is not None and not self.route_ready:
             exports = getattr(self.script, "exports_sync", None)
             if callable(getattr(exports, "status", None)):
                 self.refresh_status()
@@ -5784,6 +6390,184 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 "config": self.app.config.public_brain_settings(),
             })
             return
+        if path == "/api/v1/catalog":
+            self.send_json(200, {
+                "ok": True,
+                **self.app.catalog.status(),
+                "sync": self.app.catalog_sync.status(),
+                "stored": self.app.db.catalog_meta(),
+            })
+            return
+        if path == "/api/v1/catalog/channels":
+            expression = r"""
+(() => {
+  const keys = value => { try { return value ? Object.getOwnPropertyNames(value).slice(0, 40) : []; }
+                          catch (e) { return []; } };
+  const ability = window.QNAbilityCenter && window.QNAbilityCenter.ability;
+  return {
+    page_url: location.href.split('?')[0],
+    page_title: String(document.title || '').slice(0, 60),
+    imsdk_typeof: typeof window.imsdk,
+    imsdk_invoke_typeof: typeof (window.imsdk || {}).invoke,
+    ability_center_typeof: typeof window.QNAbilityCenter,
+    ability_center_keys: keys(window.QNAbilityCenter),
+    ability_typeof: typeof ability,
+    ability_keys: keys(ability),
+    abilitycenter_typeof: typeof window.abilitycenter,
+    abilitycenter_keys: keys(window.abilitycenter),
+    workbench_typeof: typeof window.workbench,
+    workbench_keys: keys(window.workbench),
+    imsdk2_typeof: typeof window.imsdk2,
+    imsdk2_invoke_typeof: typeof (window.imsdk2 || {}).invoke,
+    qn_im_sdk_typeof: typeof window._qn_im_sdk,
+    QN_typeof: typeof window.QN,
+    QN_keys: keys(window.QN),
+    QN_app_typeof: typeof (window.QN || {}).app,
+    QN_app_keys: keys(window.QN && window.QN.app),
+    QN_app_invoke_typeof: typeof ((window.QN || {}).app || {}).invoke,
+    QN_application_typeof: typeof (window.QN || {}).application,
+    QN_application_keys: keys(window.QN && window.QN.application),
+    frames: (function () { try { return window.frames.length; } catch (e) { return -1; } })()
+  };
+})()
+"""
+            try:
+                value = self.app.browser.execute(expression, timeout=8.0)
+            except Exception as error:  # noqa: BLE001
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **(value if isinstance(value, dict) else {"value": value})})
+            return
+        if path == "/api/v1/catalog/search":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = int(str(query.get("limit", ["20"])[0]) or 20)
+            except ValueError:
+                limit = 20
+            rows = self.app.db.catalog_search(str(query.get("q", [""])[0]), limit)
+            self.send_json(200, {"ok": True, "goods": rows, "count": len(rows)})
+            return
+        if path == "/api/v1/catalog/goods":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                all_flag = str(query.get("all", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                page_size = int(str(query.get("page_size", ["20"])[0]) or 20)
+                if all_flag:
+                    payload = self.app.catalog.goods_all(
+                        max_pages=int(str(query.get("max_pages", ["20"])[0]) or 20),
+                        page_size=page_size,
+                    )
+                else:
+                    payload = self.app.catalog.goods_page(
+                        page_no=int(str(query.get("page_no", ["1"])[0]) or 1),
+                        page_size=page_size,
+                        only_channel=str(query.get("channel", [""])[0]),
+                    )
+            except (QnCatalogError, ValueError) as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **payload})
+            return
+        if path == "/api/v1/catalog/shop":
+            try:
+                payload = self.app.catalog.shop_info()
+            except QnCatalogError as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **payload})
+            return
+        if path == "/api/v1/catalog/goods-detail":
+            query = urllib.parse.parse_qs(parsed.query)
+            item_id = str(query.get("item_id", [""])[0]).strip()
+            if not item_id:
+                self.send_json(400, {"ok": False, "error": "item_id is required"})
+                return
+            payload = self.app.catalog.goods_detail(
+                item_id,
+                str(query.get("buyer_encrypt_id", [""])[0]),
+            )
+            self.send_json(200 if payload.get("detail") else 502, {"ok": bool(payload.get("detail")), **payload})
+            return
+        if path == "/api/v1/catalog/goods-desc":
+            query = urllib.parse.parse_qs(parsed.query)
+            item_id = str(query.get("item_id", [""])[0]).strip()
+            if not item_id:
+                self.send_json(400, {"ok": False, "error": "item_id is required"})
+                return
+            try:
+                payload = self.app.catalog.goods_desc(item_id)
+            except QnCatalogError as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **payload})
+            return
+        if path == "/api/v1/catalog/orders":
+            query = urllib.parse.parse_qs(parsed.query)
+            buyer = str(query.get("buyer_encrypt_id", [""])[0]).strip()
+            if not buyer:
+                self.send_json(400, {"ok": False, "error": "buyer_encrypt_id is required"})
+                return
+            history = str(query.get("history", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+            try:
+                if history:
+                    payload = self.app.catalog.buyer_order_history(
+                        buyer,
+                        page_num=int(str(query.get("page_num", ["1"])[0]) or 1),
+                        page_size=int(str(query.get("page_size", ["20"])[0]) or 20),
+                    )
+                else:
+                    payload = self.app.catalog.buyer_orders(
+                        buyer,
+                        str(query.get("biz_order_id", [""])[0]),
+                        only_channel=str(query.get("channel", [""])[0]),
+                    )
+            except (QnCatalogError, ValueError) as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **payload})
+            return
+        if path == "/api/v1/catalog/order-memo":
+            query = urllib.parse.parse_qs(parsed.query)
+            order_id = str(query.get("order_id", [""])[0]).strip()
+            if not order_id:
+                self.send_json(400, {"ok": False, "error": "order_id is required"})
+                return
+            try:
+                payload = self.app.catalog.order_memo(order_id)
+            except QnCatalogError as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, **payload})
+            return
+        if path == "/api/v1/catalog/mtop":
+            # 逆向调试通道：直接指定 mtop 方法与参数（对齐福客 invoke_mtopchannel_service）
+            query = urllib.parse.parse_qs(parsed.query)
+            method = str(query.get("method", [""])[0]).strip()
+            if not method:
+                self.send_json(400, {"ok": False, "error": "method is required"})
+                return
+            raw_param = str(query.get("param", ["{}"])[0] or "{}")
+            strict = str(query.get("strict", ["1"])[0]).strip().lower() not in {"0", "false", "no"}
+            version = str(query.get("version", ["1.0"])[0] or "1.0")
+            try:
+                param = json.loads(raw_param)
+                if not isinstance(param, dict):
+                    raise ValueError("param must be a JSON object")
+            except ValueError as error:
+                self.send_json(400, {"ok": False, "error": str(error)[:300]})
+                return
+            try:
+                value = self.app.catalog.raw(method, param, strict=strict, version=version)
+            except QnCatalogError as error:
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {
+                "ok": True,
+                "method": method,
+                "ret": mtop_ret(value),
+                "value": value,
+            })
+            return
         if path == "/api/v1/diagnostics":
             self.send_json(200, {
                 "ok": True,
@@ -5830,6 +6614,55 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 self.send_json(200, local_seat_ack_payload(self.app.db, events))
             except (ValueError, RuntimeError) as error:
                 self.send_json(400, {"ok": False, "error": str(error)})
+            return
+        if path == "/api/v1/debug/eval":
+            # 仅在 config.debug_eval_enabled=true 时开放；只接受本地 workbench token。
+            # 用于逆向阶段探测页面环境（cookie 名、localStorage 键等），默认关闭。
+            if not self.app.config.get("debug_eval_enabled", False):
+                self.send_json(404, {"ok": False, "error": "debug eval disabled"})
+                return
+            if not self.workbench_authorized():
+                self.send_json(401, {"ok": False, "error": "unauthorized"})
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            expression = str(query.get("expr", [""])[0])
+            if not expression:
+                self.send_json(400, {"ok": False, "error": "expr is required"})
+                return
+            try:
+                value = self.app.browser.execute(expression, timeout=15.0)
+            except Exception as error:  # noqa: BLE001
+                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                return
+            self.send_json(200, {"ok": True, "value": value})
+            return
+        if path == "/api/v1/hook/navigate-to-chat":
+            if not self.workbench_authorized():
+                self.send_json(401, {"ok": False, "error": "unauthorized"})
+                return
+            recovery = getattr(self.app, "hook_recovery", None)
+            if recovery is None:
+                self.send_json(501, {"ok": False, "error": "hook_recovery unavailable"})
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            result = recovery.navigate_to_chat_page(str(query.get("url", [""])[0]))
+            self.send_json(200 if result.get("ok") else 502, {
+                "ok": bool(result.get("ok")),
+                **result,
+                "last_action_result": recovery.status().get("last_action_result"),
+                "pages": self.app.process_pages(),
+            })
+            return
+        if path == "/api/v1/catalog/sync":
+            if not self.workbench_authorized():
+                self.send_json(401, {"ok": False, "error": "unauthorized"})
+                return
+            self.app.catalog_sync.request_sync()
+            self.send_json(202, {
+                "ok": True,
+                "triggered": True,
+                "sync": self.app.catalog_sync.status(),
+            })
             return
         if path == "/api/v1/brain/config":
             if not self.workbench_authorized():
@@ -5993,6 +6826,13 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/v1/catalog"):
+            self.send_json(400, {
+                "ok": False,
+                "error": "catalog 接口在 workbench 端口(默认 18776)，请用 X-Workbench-Token 调用："
+                         "GET http://127.0.0.1:18776/api/v1/catalog/mtop?method=...&param={}",
+            })
+            return
         if path in {"/health", "/api/v1/status"}:
             self.send_json(200, self.app.status())
         else:
@@ -6000,6 +6840,14 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/v1/catalog"):
+            # 目录/订单接口挂在 workbench 端口（默认 18776），用 X-Workbench-Token 调用。
+            self.send_json(400, {
+                "ok": False,
+                "error": "catalog 接口在 workbench 端口(默认 18776)，请用 X-Workbench-Token 调用："
+                         "GET http://127.0.0.1:18776/api/v1/catalog/mtop?method=...&param={}",
+            })
+            return
         if path == "/api/v1/shutdown":
             if not self.authorized():
                 self.send_json(401, {"ok": False, "error": "unauthorized"})
@@ -6039,6 +6887,24 @@ class StandaloneBridge:
         self.browser = BrowserServer(self)
         self.nicknames = NicknameResolver(self)
         self.context = ContextEnricher(self)
+        # 任务 A：imsdk 挂钩诊断日志（60s 一行 + 状态跃变补一行）
+        self.hook_monitor = HookMonitor(self, logger=LOG)
+        # 任务 B（1.6.29）：强制挂钩 + 挂不上时提醒人工
+        self.hook_recovery = HookRecovery(self, logger=LOG)
+        # 福客同款 mtop 取数通道：商品目录 / 订单 / 店铺（页面 imsdk → invokeMTopChannelService）
+        self.catalog = QnCatalog(self)
+        # 商品目录定时沉凌（供工作台与 AI 检索）
+        self.catalog_sync = CatalogSyncer(self)
+        # 任务 A(1)：重启后先恢复已识别的客服号，再由新信息校正
+        self.known_accounts = self.load_accounts()
+        if not self.known_accounts:
+            # 升级后首次启动：从本地历史事件回填（页面可能还没刷新）
+            try:
+                self.known_accounts = self.db.recent_accounts(5)
+            except Exception:  # noqa: BLE001
+                self.known_accounts = []
+            for item in self.known_accounts:
+                self.remember_account(item, "history_backfill")
         self.cdp = CdpInjector(self)
         self.updater = UpdaterGuard(self)
         self.appbiz = AppBizSendAdapter(self)
@@ -6062,6 +6928,243 @@ class StandaloneBridge:
         self._conversation_open_lock = threading.Lock()
         self._conversation_watch: ConversationSelectionWatch | None = None
         self._conversation_watch_pid = 0
+
+    # ---- 任务 A(1)(2)：账号持久化 + 页面兜底 + 进程页面诊断（B3） ----
+    def _accounts_file(self) -> Path:
+        return ROOT / "state" / "accounts.json"
+
+    def load_accounts(self) -> list[str]:
+        try:
+            payload = json.loads(self._accounts_file().read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return []
+        rows = payload.get("accounts") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            return []
+        return [str(item).strip() for item in rows if str(item).strip()][:8]
+
+    def remember_account(self, account: str, source: str = "") -> None:
+        """把识别到的客服号持久化，重启后先恢复再由新信息校正。"""
+        account = str(account or "").strip()
+        if not account:
+            return
+        known = getattr(self, "known_accounts", None)
+        if known is None:
+            known = []
+            self.known_accounts = known
+        changed = False
+        if account not in known:
+            known.append(account)
+            del known[:-8]
+            changed = True
+        if not changed and source:
+            return
+        try:
+            atomic_write_json(self._accounts_file(), {
+                "accounts": list(known),
+                "updated_at": time.time(),
+                "last_source": source or "event",
+            })
+        except OSError as error:
+            LOG.warning("persist accounts failed: %s", str(error)[:200])
+
+    def refresh_page_identity(self) -> str:
+        """聊天页已挂钩时，直接从页面读当前登录客服号，作为兜底来源。"""
+        browser = getattr(self, "browser", None)
+        if browser is None or not getattr(browser, "connected", 0):
+            return ""
+        expression = (
+            "(() => { try { return (window.__qn_standalone_read_identity"
+            " && window.__qn_standalone_read_identity()) || null; } catch (e) { return null; } })()"
+        )
+        try:
+            value = browser.execute(expression, timeout=3.0)
+        except Exception:  # noqa: BLE001
+            return ""
+        if not isinstance(value, dict):
+            return ""
+        account = str(value.get("account") or "").strip()
+        if account:
+            self.remember_account(account, "page_identity")
+            LOG.info("account recovered from chat page source=%s", str(value.get("source") or "")[:40])
+        return account
+
+    def run_pages_refresh(self) -> None:
+        """后台预热 B3 页面清单，让 /api/v1/status 永远走缓存（不阻塞前端）。"""
+        while not self.stop_event.is_set():
+            try:
+                self._refresh_process_pages()
+            except Exception:  # noqa: BLE001
+                pass
+            self.stop_event.wait(20.0)
+
+    def run_identity_refresh(self) -> None:
+        """启动后先按页面兜底补一次；仍为空则每 60 秒重试。"""
+        while not self.stop_event.is_set():
+            try:
+                if getattr(self.browser, "connected", 0) or self.known_accounts:
+                    self.refresh_page_identity()
+            except Exception:  # noqa: BLE001
+                pass
+            if self.known_accounts:
+                # 已识别到账号：只在长时间没有新账号时低频校正
+                self.stop_event.wait(300.0)
+            else:
+                self.stop_event.wait(60.0)
+
+    def process_pages(self) -> list[dict[str, Any]]:
+        """B3：列出千牛相关进程里能枚举到的所有页面目标（最多 40 项）。
+
+        绝对不阻塞：/api/v1/status 每次都调它，而枚举要先扫
+        psutil.net_connections（千牛刚重启时 10~20 秒），前端 10 秒就判超时。
+        所以这里只读缓存，过期就丢给后台线程刷新。
+        """
+        cdp = getattr(self, "cdp", None)
+        if cdp is not None:
+            fresh = time.monotonic() - float(getattr(cdp, "pages_cache_at", 0.0)) < 20.0
+            if not fresh and not getattr(cdp, "pages_refreshing", False):
+                cdp.pages_refreshing = True
+
+                def _refresh() -> None:
+                    try:
+                        self._refresh_process_pages()
+                    finally:
+                        cdp.pages_refreshing = False
+
+                threading.Thread(target=_refresh, name="process-pages", daemon=True).start()
+        return list(getattr(getattr(self, "cdp", None), "pages_cache", []) or [])[:40]
+
+    def _refresh_process_pages(self) -> list[dict[str, Any]]:
+        """真正去枚举（只被后台线程调用），结果写进 cdp.pages_cache。"""
+        pages: list[dict[str, Any]] = []
+        cdp = getattr(self, "cdp", None)
+        raw_targets: list[dict[str, Any]] = []
+        if cdp is not None and (getattr(cdp, "cdp_port", 0) or self.config.get("cdp_injection_enabled", False)):
+            try:
+                raw_targets = cdp.discover_targets() or []
+            except Exception:  # noqa: BLE001
+                raw_targets = []
+        connections = []
+        try:
+            connections = self.browser.diagnostics_by_connection()
+        except Exception:  # noqa: BLE001
+            connections = []
+        connected_urls = {str(item.get("page_url") or "") for item in connections}
+        imsdk_by_url = {
+            str(item.get("page_url") or ""): str(item.get("imsdk_typeof") or "undefined")
+            in {"object", "function"}
+            for item in connections
+        }
+        for target in raw_targets:
+            if not isinstance(target, dict):
+                continue
+            url = sanitize_page_url(target.get("url"))
+            pages.append({
+                "kind": str(target.get("type") or "page")[:16],
+                "url": url,
+                "title": mask_title(target.get("title")),
+                "attached": url in connected_urls,
+                "has_imsdk": False,
+            })
+        if not pages:
+            for item in connections:
+                pages.append({
+                    "kind": "page",
+                    "url": str(item.get("page_url") or ""),
+                    "title": mask_title(item.get("page_title")),
+                    "attached": True,
+                    "has_imsdk": str(item.get("imsdk_typeof") or "undefined") in {"object", "function"},
+                })
+        for page in pages:
+            if page["url"] in connected_urls:
+                page["attached"] = True
+                page["has_imsdk"] = bool(imsdk_by_url.get(page["url"]))
+        # 任务 B3：把 frame 探测结果也列出来（聊天页可能藏在 dx-h5 的同源 iframe 里）
+        recovery = getattr(self, "hook_recovery", None)
+        for frame in (getattr(recovery, "frames_detail", []) or [])[:20]:
+            if not isinstance(frame, dict):
+                continue
+            pages.append({
+                "kind": "iframe",
+                "url": sanitize_page_url(frame.get("url")),
+                "title": "",
+                "attached": bool(frame.get("injected")),
+                "has_imsdk": str(frame.get("imsdk_typeof") or "undefined") in {"object", "function"},
+            })
+        pages = pages[:40]
+        if cdp is not None:
+            cdp.pages_cache = pages
+            cdp.pages_cache_at = time.monotonic()
+        return pages
+
+    def auto_open_recent_conversation(self) -> dict[str, Any]:
+        """没有可用聊天页时，自动用官方 openChat 打开"最近一个会话"。
+
+        目的：让千牛自己加载真正的聊天页（web_chat-packer/recent.html），
+        从而出现 window.imsdk。等价于人工点开一个买家会话，
+        不发消息、不模拟键鼠、不重启千牛。
+        """
+        if not self.config.get("imsdk_auto_open_chat_enabled", True):
+            return {"ok": False, "reason": "disabled"}
+        if not getattr(self.browser, "connected", 0):
+            return {"ok": False, "reason": "browser_not_connected"}
+        sessions = []
+        try:
+            sessions = self.db.workbench_sessions()
+        except Exception:  # noqa: BLE001
+            sessions = []
+        target = None
+        for row in sessions or []:
+            buyer = str(row.get("buyer_id") or "").strip()
+            account = str(row.get("account") or "").strip()
+            nick = str(row.get("buyer_nick") or "").strip()
+            if buyer and account and nick:
+                target = (account, buyer, nick)
+                break
+        if target is None:
+            return {"ok": False, "reason": "no_recent_conversation"}
+        account, buyer, nick = target
+        try:
+            security_uid = ContextEnricher.buyer_encrypt_id({"buyer_id": buyer})
+            result = self.browser.open_conversation(nick, expected_ccode=buyer, security_uid=security_uid)
+        except Exception as error:  # noqa: BLE001
+            return {"ok": False, "reason": f"open_failed: {mask_text(str(error), 120)}"}
+        ok = bool(result.get("ok")) if isinstance(result, dict) else False
+        LOG.info("auto open conversation ok=%s via=%s", ok, str((result or {}).get("via") or "")[:24])
+        return {"ok": ok, "reason": "" if ok else "open_rejected",
+                "via": str((result or {}).get("via") or "")[:24]}
+
+    def warm_send_route(self, account: str, ccode: str) -> bool:
+        """给发送补路由：用官方 openChat 让千牛自己轮询该会话（安全、可逆）。
+
+        仓库约定：绝不主动调用 GetNewMsg/PeekNewMsg（会推进千牛 UI 游标）。
+        openChat 等价于人手工点开会话，不会消费消息。
+        """
+        ccode = str(ccode or "").strip()
+        if not ccode:
+            return False
+        account = str(account or "").strip()
+        nick = ""
+        try:
+            nick = self.db.cached_nickname(account, ccode) if account else ""
+            if not nick:
+                nick = self.db.conversation_route_nickname(account, ccode) if account else ""
+        except Exception:  # noqa: BLE001
+            nick = ""
+        if not nick:
+            return False
+        try:
+            security_uid = ContextEnricher.buyer_encrypt_id({"buyer_id": ccode})
+            result = self.browser.open_conversation(
+                nick, expected_ccode=ccode, security_uid=security_uid
+            )
+            ok = bool(result.get("ok")) if isinstance(result, dict) else False
+            LOG.info("send route warmup openChat ok=%s account=%s nick_len=%s",
+                     ok, bool(account), len(nick))
+            return ok
+        except Exception as error:  # noqa: BLE001
+            LOG.warning("send route warmup failed: %s", str(error)[:200])
+            return False
 
     def open_conversation_protocol(
         self, account: str, buyer_nick: str, expected_ccode: str = ""
@@ -6224,7 +7327,25 @@ class StandaloneBridge:
                 user32.AttachThreadInput(current_thread, foreground_thread, False)
 
     def ingest_event(self, event: dict[str, Any]) -> tuple[str, bool]:
+        # 任务 A(3)：账号为空时，先按同一买家历史反查，再退到"只有唯一已知客服号"，
+        # 让会话/昵称/取订单都能继续工作；仍然为空则原样投递（服务器补全）。
+        if isinstance(event, dict) and not str(event.get("account") or "").strip():
+            buyer = str(event.get("buyer_id") or "").strip()
+            recovered = ""
+            try:
+                recovered = self.db.account_for_buyer(buyer) if buyer else ""
+            except Exception:  # noqa: BLE001
+                recovered = ""
+            if not recovered:
+                known = list(getattr(self, "known_accounts", []))
+                recovered = known[0] if len(known) == 1 else ""
+            if recovered:
+                event = {**event, "account": recovered, "account_recovered_by": "bridge_local"}
         normalized = normalize_event(event)
+        # 任务 A(1)：识别到的客服号持久化（重启后先恢复）
+        remember = getattr(self, "remember_account", None)
+        if callable(remember):
+            remember(str(normalized.get("account") or "").strip())
         if not self.config.get("delivery_enabled", True):
             return canonical_event_id(normalized), False
         role = str(normalized.get("role") or "user").strip().lower()
@@ -6447,6 +7568,11 @@ class StandaloneBridge:
         self.brain.start()
         self.browser.start()
         self.context.start()
+        self.hook_monitor.thread.start()
+        self.hook_recovery.thread.start()
+        threading.Thread(target=self.run_identity_refresh, name="identity-refresh", daemon=True).start()
+        threading.Thread(target=self.run_pages_refresh, name="pages-refresh", daemon=True).start()
+        self.catalog_sync.start()
         self.cdp.start()
         self.updater.start()
         self.appbiz.start()
@@ -6474,8 +7600,11 @@ class StandaloneBridge:
         self.expire_unconfirmed_sends()
         if workbench_session_count is None:
             workbench_session_count = len(self.db.workbench_sessions())
+        browser_connections = self.browser.diagnostics_by_connection()
         payload = {
             "ok": not bool(self.api_error or self.workbench_error or self.browser.error),
+            # 任务 B：需要人处理时，顶层给一句人话提示（与弹窗正文一致）
+            "hint": self.hook_recovery.hint(),
             "version": VERSION,
             "build_hash": BUILD_HASH,
             "nicknames": self.nicknames.status(),
@@ -6485,10 +7614,17 @@ class StandaloneBridge:
                 "total_events": self.browser.total_events,
                 "last_seen_at": self.browser.last_seen_at,
                 "diagnostics": self.browser.last_diagnostics,
-                "connections": self.browser.diagnostics_by_connection(),
+                "connections": browser_connections,
+                "hook_summary": hook_summary(browser_connections),
                 "error": self.browser.error,
+                "event_error": self.browser.event_error,
+                "rejected_events": self.browser.rejected_events,
+                "account_missing_events": self.browser.account_missing_events,
+                "process_pages": self.process_pages(),
             },
             "context_enrich": self.context.status(),
+            "hook_recovery": self.hook_recovery.status(),
+            "catalog": {**self.catalog.status(), "sync": self.catalog_sync.status()},
             "native_context": self.native_context.status(),
             "cdp": {
                 "enabled": bool(self.config.get("cdp_injection_enabled", False)),
@@ -6545,6 +7681,12 @@ class StandaloneBridge:
                 "enabled": bool(self.config.get("delivery_enabled", True)),
                 "last_success_at": self.delivery.last_success_at,
                 "last_error": self.delivery.last_error,
+                # 任务 A(5)：被服务器判为重复回放而去重的事件数
+                "duplicate_dropped": int(self.delivery.duplicate_dropped),
+            },
+            "accounts": {
+                "known": list(self.known_accounts),
+                "source_file": str(ROOT / "state" / "accounts.json"),
             },
             "send_enabled": bool(self.config.get("send_enabled", False)),
             "send_receipts": self.db.send_counts(),

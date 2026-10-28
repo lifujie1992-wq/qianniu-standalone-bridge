@@ -508,7 +508,18 @@ def stop_managed_qianniu(root: Path | None = None) -> list[int]:
     return failed
 
 
-def request_tray_exit(root: Path | None = None) -> bool:
+def write_tray_exit_marker(root: Path | None = None, include_qianniu: bool = True) -> Path:
+    """给托盘留退出指令；include_qianniu=False 时要求它保留千牛。"""
+    root = root or app_root()
+    state_dir = root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "tray.exit"
+    payload = "exit" if include_qianniu else "exit-keep-qianniu"
+    path.write_text(payload + chr(10), encoding="ascii")
+    return path
+
+
+def request_tray_exit(root: Path | None = None, include_qianniu: bool = True) -> bool:
     root = root or app_root()
     state_dir = root / "state"
     pid_file = state_dir / "tray.pid"
@@ -536,7 +547,10 @@ def request_tray_exit(root: Path | None = None) -> bool:
         pid_file.unlink(missing_ok=True)
         return True
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "tray.exit").write_text("exit\\n", encoding="ascii")
+    # 托盘自己退出时默认会连带关闭千牛；安装/升级要保留千牛，用标记传下去
+    (state_dir / "tray.exit").write_text(
+        "exit\n" if include_qianniu else "exit-keep-qianniu\n", encoding="ascii"
+    )
     if wait_for_exit(pid, timeout=5.0):
         pid_file.unlink(missing_ok=True)
         return True
@@ -577,7 +591,7 @@ def stop_all(*, include_tray: bool = True, include_qianniu: bool = True) -> None
             pid_file.unlink(missing_ok=True)
     if include_qianniu:
         failed.extend(stop_managed_qianniu(root))
-    if include_tray and not request_tray_exit(root):
+    if include_tray and not request_tray_exit(root, include_qianniu=include_qianniu):
         try:
             failed.append(int((root / "state" / "tray.pid").read_text(encoding="ascii").strip()))
         except (OSError, ValueError):
@@ -851,11 +865,17 @@ def check_for_updates() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Qianniu bridge one-click launcher")
     parser.add_argument("--stop", action="store_true", help="stop bridge and dock")
+    parser.add_argument("--stop-agent", action="store_true",
+                        help="只停助手（bridge/dock/tray），不关千牛 —— 安装/升级用")
     parser.add_argument("--status", action="store_true", help="show running status")
     parser.add_argument("--start-dock", action="store_true", help="start the dock only")
     parser.add_argument("--configure", action="store_true", help="open configuration dialog")
     parser.add_argument("--update", action="store_true", help="check for online updates")
     args = parser.parse_args()
+    if args.stop_agent:
+        # 安装包用这个：绝不能关千牛（关掉会丢登录态和正在回复的买家消息）
+        stop_all(include_qianniu=False)
+        return 0
     if args.stop:
         stop_all()
         return 0

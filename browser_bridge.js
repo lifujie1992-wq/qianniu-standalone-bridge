@@ -189,6 +189,18 @@
     passive_cache_changes: 0,
     passive_cache_last_at_ms: 0,
     invoke_notify_hooked: false,
+    // ---- 任务 A（1.6.28）imsdk 挂钩诊断：只加字段，不改行为 ----
+    page_url: "",
+    page_title: "",
+    page_kind: "other",
+    is_top_frame: true,
+    ready_state: "",
+    imsdk_typeof: "undefined",
+    imsdk_invoke_typeof: "n/a",
+    hook_attempts: 0,
+    last_hook_attempt_at_ms: 0,
+    last_hook_error: "",
+    first_hooked_at_ms: 0,
     has_onInvokeNotify: false,
     has_task_cache: false,
     has_conversationId: false,
@@ -356,6 +368,17 @@
         started_at_ms: diagnostics.started_at_ms,
         websocket_connected: diagnostics.websocket_connected,
         imsdk_hooked: diagnostics.imsdk_hooked,
+        page_url: diagnostics.page_url,
+        page_title: diagnostics.page_title,
+        page_kind: diagnostics.page_kind,
+        is_top_frame: diagnostics.is_top_frame,
+        ready_state: diagnostics.ready_state,
+        imsdk_typeof: diagnostics.imsdk_typeof,
+        imsdk_invoke_typeof: diagnostics.imsdk_invoke_typeof,
+        hook_attempts: diagnostics.hook_attempts,
+        last_hook_attempt_at_ms: diagnostics.last_hook_attempt_at_ms,
+        last_hook_error: diagnostics.last_hook_error,
+        first_hooked_at_ms: diagnostics.first_hooked_at_ms,
         poll_timer_running: diagnostics.poll_timer_running,
         dom_observer_running: diagnostics.dom_observer_running,
         last_poll_at_ms: diagnostics.last_poll_at_ms,
@@ -1705,10 +1728,73 @@
     return "";
   }
 
+  // ---- 任务 A（1.6.28）：页面侧诊断。只读页面状态，不改任何挂钩/取数行为 ----
+  function sanitizePageUrl(value) {
+    try {
+      var fallback = (typeof location !== "undefined" && location && location.href) ? location.href : "";
+      var parsed = new URL(String(value || fallback));
+      var path = parsed.pathname || "/";
+      if (path.length > 160) path = path.slice(0, 160);
+      return parsed.protocol + "//" + parsed.host + path;
+    } catch (e) {
+      return "";
+    }
+  }
+
+  var CHAT_URL_HINTS = ["web_chat-packer", "/chat", "reception"];
+  var CHAT_TITLE_HINTS = ["聊天", "接待"];
+
+  function classifyPageKind(url) {
+    var text = String(url || "");
+    if (text.indexOf("web_chat-packer/recent") >= 0) return "chat_recent";
+    if (text.indexOf("web_chat-packer") >= 0) return "chat_other";
+    if (text.indexOf("miniappNav") >= 0 || /miniapp/i.test(text)) return "miniapp";
+    if (text.indexOf("selectOrder") >= 0) return "select_order";
+    // 新版接待台换路径时按标题兜底（B2）
+    for (var i = 0; i < CHAT_URL_HINTS.length; i += 1) {
+      if (text.indexOf(CHAT_URL_HINTS[i]) >= 0) return "chat_other";
+    }
+    try {
+      var pageTitle = String(document.title || "");
+      for (var j = 0; j < CHAT_TITLE_HINTS.length; j += 1) {
+        if (pageTitle.indexOf(CHAT_TITLE_HINTS[j]) >= 0) return "chat_other";
+      }
+    } catch (e) {}
+    return "other";
+  }
+
+  function refreshPageDiagnostics() {
+    var href = "";
+    try { href = (typeof location !== "undefined" && location) ? String(location.href || "") : ""; } catch (e) { href = ""; }
+    var url = sanitizePageUrl(href);
+    diagnostics.page_url = url;
+    diagnostics.page_kind = classifyPageKind(url);
+    try { diagnostics.page_title = String(document.title || "").slice(0, 60); } catch (e) { diagnostics.page_title = ""; }
+    try { diagnostics.ready_state = String(document.readyState || "").slice(0, 16); } catch (e) {}
+    try { diagnostics.is_top_frame = (window.top === window); } catch (e) { diagnostics.is_top_frame = true; }
+    diagnostics.imsdk_typeof = typeof window.imsdk;
+    diagnostics.imsdk_invoke_typeof = (typeof window.imsdk === "undefined") ? "n/a" : typeof window.imsdk.invoke;
+  }
+
+  function hookErrorText(error) {
+    var name = (error && error.name) ? String(error.name) : "Error";
+    var message = String(error && error.message ? error.message : error);
+    return ("exception: " + name + ": " + message).slice(0, 200);
+  }
+
   function hookImSdk() {
+    refreshPageDiagnostics();
+    diagnostics.hook_attempts += 1;
+    diagnostics.last_hook_attempt_at_ms = Date.now();
     try {
       if (!window.imsdk) {
         diagnostics.imsdk_hooked = false;
+        diagnostics.last_hook_error = "imsdk_undefined";
+        return false;
+      }
+      if (typeof window.imsdk.invoke !== "function") {
+        diagnostics.imsdk_hooked = false;
+        diagnostics.last_hook_error = "invoke_missing";
         return false;
       }
       // Event subscription stays the primary path. The extra sources only
@@ -1718,10 +1804,17 @@
       installInvokeNotifyHook();
       installInvokeObserver();
       installWsMirror();
+      if (diagnostics.imsdk_hooked) {
+        diagnostics.last_hook_error = "";
+        if (!diagnostics.first_hooked_at_ms) diagnostics.first_hooked_at_ms = Date.now();
+      } else {
+        diagnostics.last_hook_error = "timeout";
+      }
       console.log("[qn-bridge] passive imsdk hook", BRIDGE_VERSION);
       return diagnostics.imsdk_hooked;
     } catch (e) {
       diagnostics.imsdk_hooked = false;
+      diagnostics.last_hook_error = hookErrorText(e);
       return false;
     }
   }
@@ -2337,6 +2430,39 @@
   }
 
   window.__qn_standalone_reconnect = setup;
+  // 任务 B（1.6.29）：供桥接触发一次现有挂钩（幂等，不改变挂钩实现）
+  window.__qn_standalone_rehook = hookImSdk;
+
+  // 任务 A(2)：页面兜底读取"当前登录客服号"（只读，不含任何消息内容）
+  // 实验能力：把当前 webview 导航到内置的老接待台页面（同源、可逆）。
+  // 仅当服务端显式开启 imsdk_navigate_to_chat_enabled 时才会被调用。
+  window.__qn_standalone_goto_chat_page = function (url) {
+    try {
+      var target = String(url || "https://alires-webui/web_chat-packer/recent.html");
+      if (location.href.indexOf("web_chat-packer/recent") >= 0) return {ok: true, already: true};
+      location.href = target;
+      return {ok: true, navigating: target};
+    } catch (e) {
+      return {ok: false, error: String(e && e.message ? e.message : e).slice(0, 120)};
+    }
+  };
+
+  window.__qn_standalone_read_identity = function () {
+    try {
+      var seller = lastSellerNick || "";
+      var ccode = currentCcode();
+      var fromCache = ccode ? cachedLoginAccount(ccode) : "";
+      var account = seller || fromCache || "";
+      return {
+        account: String(account || ""),
+        ccode: ccode,
+        source: seller ? "last_seller_nick" : (fromCache ? "login_cache" : ""),
+        page_kind: diagnostics.page_kind,
+      };
+    } catch (e) {
+      return {account: "", source: "error", error: String(e && e.message ? e.message : e).slice(0, 120)};
+    }
+  };
   window.__qn_standalone_self_heal = selfHeal;
   window.__qn_standalone_add_conversation = function (ccode) { return registerConversation(ccode, "debug", true); };
 })();

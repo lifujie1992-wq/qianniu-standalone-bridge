@@ -138,3 +138,29 @@ class TrayLifecycleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrayExitKeepsQianniuTest(unittest.TestCase):
+    """安装/升级用 --stop-agent：托盘退出可以，但绝不能连带关闭千牛。"""
+
+    def test_marker_asks_tray_to_keep_qianniu(self):
+        import tempfile
+        from pathlib import Path
+        import launcher
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True)
+            payload = launcher.write_tray_exit_marker(root, include_qianniu=False).read_text(encoding="ascii")
+        self.assertIn("keep-qianniu", payload)
+
+    def test_marker_default_closes_qianniu(self):
+        import tempfile
+        from pathlib import Path
+        import launcher
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "state").mkdir(parents=True)
+            payload = launcher.write_tray_exit_marker(root).read_text(encoding="ascii")
+        self.assertNotIn("keep-qianniu", payload)

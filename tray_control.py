@@ -58,7 +58,7 @@ class TrayCallbacks:
     start_all: Callable[[], None]
     restart_all: Callable[[], None]
     open_settings: Callable[[], None]
-    completely_exit: Callable[[], None]
+    completely_exit: Callable[..., None]
     show_dock: Callable[[], None]
 
 
@@ -549,8 +549,13 @@ class TrayControlCenter:
             self.show_file.unlink(missing_ok=True)
             self.show()
         if self.exit_file.is_file():
+            try:
+                payload = self.exit_file.read_text(encoding="ascii", errors="ignore")
+            except OSError:
+                payload = ""
             self.exit_file.unlink(missing_ok=True)
-            self._exit_without_confirmation()
+            # 安装/升级写的是 exit-keep-qianniu：退出但不要关千牛
+            self._exit_without_confirmation(keep_qianniu="keep-qianniu" in payload)
             return
         while True:
             try:
@@ -575,10 +580,10 @@ class TrayControlCenter:
         elif command == "exit":
             self._confirm_exit()
 
-    def _exit_without_confirmation(self) -> None:
-        self._begin_exit()
+    def _exit_without_confirmation(self, keep_qianniu: bool = False) -> None:
+        self._begin_exit(keep_qianniu=keep_qianniu)
 
-    def _begin_exit(self) -> None:
+    def _begin_exit(self, keep_qianniu: bool = False) -> None:
         if self._exiting:
             return
         self._exiting = True
@@ -587,7 +592,10 @@ class TrayControlCenter:
 
         def worker() -> None:
             try:
-                self.callbacks.completely_exit()
+                try:
+                    self.callbacks.completely_exit(keep_qianniu=keep_qianniu)
+                except TypeError:
+                    self.callbacks.completely_exit()
             finally:
                 try:
                     self.root.after(0, self.close)
