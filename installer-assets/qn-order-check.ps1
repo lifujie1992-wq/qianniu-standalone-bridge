@@ -112,7 +112,8 @@ if (-not $dir) {
     if ($buyer) {
         $orders = Get-Json "/api/v1/catalog/orders?buyer_encrypt_id=$buyer" 45
         if ($orders.ok) {
-            $lines.Add("订单查询: 成功（买家 $buyer，$($orders.count) 单）")
+            $src = if ($orders.source) { " 来源=$($orders.source)" } else { "" }
+            $lines.Add("订单查询: 成功（买家 $buyer，$($orders.count) 单$src）")
         } else {
             $lines.Add("订单查询: 失败（买家 $buyer）-> $($orders.error)")
         }
