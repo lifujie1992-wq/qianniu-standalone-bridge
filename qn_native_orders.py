@@ -24,6 +24,13 @@
   * 只读文件，不改千牛、不发消息、不模拟键鼠；
   * 启动时先 seek 到文件末尾（不重放历史），之后增量读取；
   * 单行 JSON 解析失败只计数，不影响其它行。
+
+“已知无单”与“没查到”必须区分：
+
+  客户端在 reception.detail.get 里返回某个买家、但 `tradeSimpleList` 为空，
+  表示**该买家此刻确实没有可展示的订单**；而日志里根本没出现过这个买家时，
+  只说明**我们还没看到他**。前者可以放心告诉 AI“0 单”，后者必须报“取不到”，
+  否则售前售后判断会错。缓存对两者都留痕，用 `known()` 区分。
 """
 
 from __future__ import annotations
@@ -44,7 +51,7 @@ RECEPTION_API = "mtop.taobao.qianniu.airisland.reception.detail.get"
 # `data=` / `#=` 之后是完整 JSON 对象；行尾还有 `]` 之类的包装，故用 raw_decode。
 _JSON_START = re.compile(r'(?:data=|#=)(\{"api":"[^"]+")')
 MAX_BUYERS = 5000
-BACKFILL_BYTES = 8 * 1024 * 1024
+BACKFILL_BYTES = 32 * 1024 * 1024
 MAX_ORDERS_PER_BUYER = 50
 
 
@@ -67,12 +74,65 @@ def normalize_order(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _scan_objects(text: str, start: int) -> list[dict[str, Any]]:
+    """从 `"data":[` 之后按大括号配平扫出完整对象。
+
+    千牛日志会把整行截断在 ~1100 字节（`app.log` 单行上限），`raw_decode`
+    必然失败；但被截断之前的每个买家对象是完整的，逐个吃下来即可。
+    """
+    rows: list[dict[str, Any]] = []
+    index = start
+    length = len(text)
+    while index < length:
+        if text[index] != "{":
+            index += 1
+            continue
+        depth = 0
+        in_string = False
+        escaped = False
+        cursor = index
+        closed = False
+        while cursor < length:
+            char = text[cursor]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            else:
+                if char == '"':
+                    in_string = True
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        closed = True
+                        break
+            cursor += 1
+        if not closed:
+            break  # 这一行被截断，剩下的半截丢掉
+        try:
+            obj = json.loads(text[index:cursor + 1])
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict) and str(obj.get("buyerId") or "").strip():
+            rows.append(obj)
+        index = cursor + 1
+    return rows
+
+
 def parse_line(line: str) -> list[dict[str, Any]]:
     """解析一行日志，返回 [{buyer_id, buyer_nick, orders:[...]}]（未命中返回 []）。
 
     兼容两种行：
       UnifiedMtop [...] data={"api":...,"data":{...}}
       qnmodel  [...] resultCode=...,#={"api":...,"data":{...}}
+
+    客户端日志按 ~1100 字节截断整行，长响应（接待列表一页几十个买家）的
+    JSON 一定不完整；此时退化为「逐个买家对象扫描」，至少把截断前的买家拿到。
     """
     if RECEPTION_API not in line:
         return []
@@ -80,15 +140,19 @@ def parse_line(line: str) -> list[dict[str, Any]]:
     if not match:
         return []
     start = match.start(1)
+    rows: list[Any] = []
+    payload: Any = None
     try:
         payload, _end = json.JSONDecoder().raw_decode(line[start:])
     except ValueError:
-        return []
-    if not isinstance(payload, dict):
-        return []
-    rows = ((payload.get("data") or {}).get("data")) or []
-    if not isinstance(rows, list):
-        return []
+        payload = None
+    if isinstance(payload, dict):
+        rows = ((payload.get("data") or {}).get("data")) or []
+        if not isinstance(rows, list):
+            rows = []
+    else:
+        marker = line.find('"data":[', start)
+        rows = _scan_objects(line, marker + len('"data":[')) if marker >= 0 else []
     parsed: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -288,14 +352,39 @@ class NativeOrderLog:
         with self.lock:
             return list(self.orders.keys())
 
+    def known(self, buyer_id: str) -> bool:
+        """该买家是否在原生 reception 响应里出现过（即使当时没有订单）。"""
+        key = str(buyer_id or "").strip()
+        if not key:
+            return False
+        with self.lock:
+            return key in self.orders
+
+    def sample_buyer(self) -> str:
+        """随便挑一个**确实有订单**的买家，给现场自检当取样点。"""
+        with self.lock:
+            for buyer_id, rows in reversed(list(self.orders.items())):
+                if rows:
+                    return buyer_id
+        return ""
+
     def status(self) -> dict[str, Any]:
         with self.lock:
             buyers = len(self.orders)
+            with_orders = sum(1 for rows in self.orders.values() if rows)
             order_count = sum(len(rows) for rows in self.orders.values())
+            sample = ""
+            for buyer_id, rows in reversed(list(self.orders.items())):
+                if rows:
+                    sample = buyer_id
+                    break
         return {
             "enabled": bool(self.path is not None),
             "path": str(self.path) if self.path else "",
             "buyers": buyers,
+            "buyers_with_orders": with_orders,
+            "buyers_without_orders": buyers - with_orders,
+            "sample_buyer": sample,
             "orders": order_count,
             "lines_read": self.lines_read,
             "updates": self.updates,

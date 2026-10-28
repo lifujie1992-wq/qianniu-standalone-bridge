@@ -114,7 +114,7 @@ def _probe_bridge(config: dict) -> tuple[bool, str, dict | None]:
     if not config:
         return False, "未配置", None
     port = int(config.get("api_port", 42111))
-    status, reason = launcher.fetch_status_with_reason(config, timeout=5.0)
+    status, reason = launcher.fetch_status_with_reason(config, timeout=20.0)
     key = str(port)
     state = _BRIDGE_PROBE_STATE.setdefault(key, {"failures": 0, "ever_ok": False})
     if isinstance(status, dict) and status.get("ok"):

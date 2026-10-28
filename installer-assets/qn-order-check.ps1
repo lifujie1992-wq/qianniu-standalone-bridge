@@ -91,11 +91,21 @@ if (-not $dir) {
     }
     $out["channels"] = $ch
 
+    # 千牛「无障碍模式」：关闭时客户端不注入 workbench，取单必然失败
+    if ($ch -and $ch.accessibility) {
+        $acc = $ch.accessibility
+        $accText = if ($acc.enabled -eq $true) { "开" } elseif ($acc.enabled -eq $false) { "关" } else { "读不到" }
+        $lines.Add("无障碍模式: $accText")
+        if ($acc.advice) { $lines.Add("            !! $($acc.advice)") }
+        $out["accessibility"] = $acc
+    }
+
     # 原生订单日志（1.6.55+）：页面没有 mtop 桥时靠它取订单
     $no = $bridge.native_orders
     if ($no) {
         $lines.Add("原生日志: 路径=$($no.path)")
-        $lines.Add("          买家=$($no.buyers) 订单=$($no.orders) 行=$($no.lines_read) 回读=$($no.backfilled) 错误=$($no.last_error)")
+        $lines.Add("          买家=$($no.buyers) 有单买家=$($no.buyers_with_orders) 订单=$($no.orders) 行=$($no.lines_read) 回读=$($no.backfilled) 错误=$($no.last_error)")
+        if ($no.sample_buyer) { $lines.Add("          取样买家=$($no.sample_buyer)（原生日志里确实有单的买家）") }
         $out["native_orders"] = $no
     } else {
         $lines.Add("原生日志: 该版本没有此功能（低于 1.6.55）")
@@ -110,22 +120,32 @@ if (-not $dir) {
     }
     $out["goods"] = $goods
 
-    # 4) 订单：从最近会话里取一个买家
+    # 4) 订单：优先用原生日志里「确实有单」的买家，别再拿没缓存的买家误判
     $sessions = Get-Json "/api/v1/sessions"
     $buyer = ""
-    if ($sessions.ok -and $sessions.sessions) {
+    $buyerSource = ""
+    if ($no -and $no.sample_buyer) {
+        $buyer = [string]$no.sample_buyer
+        $buyerSource = "native_orders.sample_buyer"
+    }
+    if (-not $buyer -and $sessions.ok -and $sessions.sessions) {
         foreach ($s in $sessions.sessions) {
-            if ($s.buyer_id -match '^(\d{6,22})\.1-') { $buyer = $matches[1]; break }
+            if ($s.buyer_id -match '^(\d{6,22})\.1-') { $buyer = $matches[1]; $buyerSource = "sessions"; break }
         }
     }
     $out["buyer_encrypt_id"] = $buyer
+    $out["buyer_source"] = $buyerSource
     if ($buyer) {
         $orders = Get-Json "/api/v1/catalog/orders?buyer_encrypt_id=$buyer" 45
         if ($orders.ok) {
             $src = if ($orders.source) { " 来源=$($orders.source)" } else { "" }
-            $lines.Add("订单查询: 成功（买家 $buyer，$($orders.count) 单$src）")
+            $known = if ($null -ne $orders.known) { " known=$($orders.known)" } else { "" }
+            $lines.Add("订单查询: 成功（买家 $buyer，取样=$buyerSource，$($orders.count) 单$src$known）")
         } else {
-            $lines.Add("订单查询: 失败（买家 $buyer）-> $($orders.error)")
+            $lines.Add("订单查询: 失败（买家 $buyer，取样=$buyerSource）-> $($orders.error)")
+            if ($no -and [int]$no.buyers_with_orders -gt 0) {
+                $lines.Add("          提示：原生日志里已捕获 $($no.buyers_with_orders) 个有单买家，可点开对应买家会话后重跑")
+            }
         }
         $out["orders"] = $orders
     } else {
@@ -146,9 +166,15 @@ if (-not $dir) {
 
 $lines.Add("")
 $lines.Add("==== 结论 ====")
-$ok = ($out["goods"].ok -eq $true) -or ($out["orders"].ok -eq $true)
+$goodsCount = 0
+if ($out["goods"] -and $out["goods"].ok -eq $true) { $goodsCount = @($out["goods"].goods).Count }
+$orderCount = 0
+if ($out["orders"] -and $out["orders"].ok -eq $true) { $orderCount = [int]($out["orders"].count) }
+$ok = ($goodsCount -gt 0) -or ($orderCount -gt 0)
 if ($ok) {
-    $lines.Add("能取数据：这条机器正常。把本报告发回即可。")
+    $lines.Add("能取数据：商品 $goodsCount 条、订单 $orderCount 单。把本报告发回即可。")
+} elseif ($out["orders"] -and $out["orders"].ok -eq $true -and $out["orders"].known -eq $true) {
+    $lines.Add("订单通道正常，但取样的买家确认无单（known=true, 0 单）；换一个有单的买家再跑一次。")
 } else {
     $lines.Add("取不到数据：把本报告（.txt 和 .json 两个文件）发给技术同学。")
 }

@@ -47,6 +47,7 @@ from native_context import NativeContext
 from native_image_lookup import enrich_native_image_event
 from nickname_support import event_nickname, nickname_event_id, valid_nickname
 from hook_recovery import HookRecovery
+import qn_client_settings
 from qn_native_orders import RECEPTION_API as reception_api
 from qn_native_orders import NativeOrderLog
 from hook_diagnostics import (
@@ -573,7 +574,7 @@ RETENTION_SECONDS = 30 * 24 * 3600
 WORKBENCH_EVENT_LIMIT = 20000
 WORKBENCH_MESSAGE_LIMIT = 10000
 WORKBENCH_SESSION_LIMIT = 500
-WORKBENCH_SESSION_CACHE_SECONDS = 2.0
+WORKBENCH_SESSION_CACHE_SECONDS = 10.0
 
 
 class StateDB:
@@ -587,12 +588,15 @@ class StateDB:
         # up to WORKBENCH_EVENT_LIMIT payloads); this lock only stops two
         # threads rebuilding at the same time.
         self._session_build_lock = threading.Lock()
+        self._session_refreshing = False
         self._initialize()
         self.prune_old_events()
 
     def _invalidate_session_cache(self) -> None:
+        # 只标记过期，**不清空**旧快照：现场每条消息都会走到这里，清空会让下一次
+        # /status 同步做一次全量重建（SQLite 被杀软扫描时 5~20 秒）。保留旧快照后
+        # workbench_sessions() 走 stale-while-revalidate，后台重建不阻塞请求。
         self._session_cache_at = 0.0
-        self._session_cache = []
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10.0)
@@ -603,7 +607,10 @@ class StateDB:
         # pages + antivirus scanning the SQLite file) is a known source of
         # multi-second stalls. `synchronous` is per-connection, so it stays.
         connection.execute("PRAGMA busy_timeout=8000")
-        connection.execute("PRAGMA synchronous=FULL")
+        # WAL + NORMAL 是 SQLite 官方推荐组合：崩溃不丢库，掉电最多丢最后几个
+        # 事务。现场 FULL 每次提交都 fsync，杀软环境下单次 100ms+，把全局锁拖到
+        # 1~2 秒，/status 和消息入库一起卡（2026-10-29）。
+        connection.execute("PRAGMA synchronous=NORMAL")
         return connection
 
     def prune_old_events(self, retention_seconds: float = RETENTION_SECONDS) -> int:
@@ -1053,7 +1060,9 @@ class StateDB:
                 self._invalidate_session_cache()
 
     def counts(self) -> dict[str, int]:
-        with self.lock, closing(self.connect()) as connection, connection:
+        # 只读统计不抢全局锁：WAL 下读不阻塞写，但抢 self.lock 会被写线程的
+        # fsync 拖到 1~2 秒（现场 /status 反复超时的直接原因）。
+        with closing(self.connect()) as connection:
             rows = connection.execute("SELECT status,COUNT(*) AS count FROM events GROUP BY status").fetchall()
         result = {"pending": 0, "delivered": 0}
         result.update({row["status"]: int(row["count"]) for row in rows})
@@ -1147,10 +1156,24 @@ class StateDB:
         antivirus on the SQLite file) that produced multi-second stalls and the
         tray reported the bridge as stopped. The scan now runs outside the lock;
         a dedicated build lock keeps a single rebuild in flight.
+
+        2026-10-29：现场 SQLite 被杀软扫描时冷重建要 5~20 秒，而浮窗/托盘每
+        2~3 秒就轮询一次，导致 /status 反复卡死、页面 8 秒超时。改成
+        stale-while-revalidate：过期先返回旧缓存，重建丢给后台线程，HTTP
+        请求不再等重建。
         """
         cached = self._cached_sessions(time.monotonic())
         if cached is not None:
             return cached
+        with self.lock:
+            stale = [dict(item) for item in self._session_cache] if self._session_cache else None
+            start_refresh = stale is not None and not self._session_refreshing
+            if start_refresh:
+                self._session_refreshing = True
+        if stale is not None:
+            if start_refresh:
+                self._refresh_sessions_async()
+            return stale
         with self._session_build_lock:
             cached = self._cached_sessions(time.monotonic())
             if cached is not None:
@@ -1160,6 +1183,21 @@ class StateDB:
                 self._session_cache = [dict(item) for item in result]
                 self._session_cache_at = time.monotonic()
             return [dict(item) for item in result]
+
+    def _refresh_sessions_async(self) -> None:
+        def worker() -> None:
+            try:
+                result = self._build_workbench_sessions()
+                with self.lock:
+                    self._session_cache = [dict(item) for item in result]
+                    self._session_cache_at = time.monotonic()
+            except Exception as error:  # noqa: BLE001
+                LOG.debug("session refresh failed: %s", error)
+            finally:
+                with self.lock:
+                    self._session_refreshing = False
+
+        threading.Thread(target=worker, name="session-refresh", daemon=True).start()
 
     def _build_workbench_sessions(self) -> list[dict[str, Any]]:
         with closing(self.connect()) as connection, connection:
@@ -1608,6 +1646,11 @@ class StateDB:
 
     def expire_unconfirmed_sends(self, timeout_seconds: float, now: float | None = None) -> int:
         current = time.time() if now is None else now
+        # /status 每次都调它；每次开连接 + 提交事务（synchronous=FULL）在现场要
+        # 1~2 秒，还会和投递线程抢全局锁。没有显式 now 时按 5 秒节流。
+        if now is None and current - getattr(self, "_last_expire_at", 0.0) < 5.0:
+            return 0
+        self._last_expire_at = current
         cutoff = current - max(1.0, timeout_seconds)
         with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute(
@@ -1738,7 +1781,8 @@ class StateDB:
             return json.loads(existing["response"])
 
     def send_counts(self) -> dict[str, int]:
-        with self.lock, closing(self.connect()) as connection, connection:
+        # 同上：只读，不抢全局锁。
+        with closing(self.connect()) as connection:
             rows = connection.execute(
                 "SELECT status,COUNT(*) AS count FROM sends GROUP BY status"
             ).fetchall()
@@ -4811,13 +4855,11 @@ class ContextEnricher:
                     orders = native_rows
                     native_source = "native_log"
                     status = "found"
-                    ok_native = True
-                else:
-                    ok_native = False
-            else:
-                ok_native = False
-        else:
-            ok_native = False
+                elif native_log.known(encrypt_id):
+                    # 客户端明确返回过这个买家、但接待详情里没有订单：
+                    # 这是“确认无单”，不是“取不到”。
+                    native_source = "native_log"
+                    status = "confirmed_empty"
 
         last_attempt = (found or attempts[-1]) if attempts else {}
         items_ok = bool(last_attempt.get("items_ok"))
@@ -6366,7 +6408,8 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path
-        if path == "/":
+        # 现场有人直接打开 /workbench.html；和根路径走同一份页面，避免 404 看起来像服务挂了。
+        if path in {"/", "/workbench.html", "/index.html"}:
             try:
                 page = (ROOT / "workbench.html").read_text(encoding="utf-8")
                 token = html.escape(str(self.app.config.get("workbench_token")), quote=True)
@@ -6382,13 +6425,12 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             self.send_json(401, {"ok": False, "error": "unauthorized"})
             return
         if path == "/api/v1/status":
-            sessions = self.app.db.workbench_sessions()
             self.send_json(200, {
                 "ok": True,
                 "version": VERSION,
                 "build_hash": BUILD_HASH,
-                "bridge": self.app.status(workbench_session_count=len(sessions)),
-                "sessions": len(sessions),
+                "bridge": self.app.status_cached(),
+                "sessions": self.app.status_session_count(),
             })
             return
         if path == "/api/v1/sessions":
@@ -6464,7 +6506,14 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             except Exception as error:  # noqa: BLE001
                 self.send_json(502, {"ok": False, "error": str(error)[:300]})
                 return
-            self.send_json(200, {"ok": True, **(value if isinstance(value, dict) else {"value": value})})
+            payload = value if isinstance(value, dict) else {"value": value}
+            settings = self.client_settings_status()
+            payload["accessibility"] = {
+                "enabled": settings.get("enabled"),
+                "readable": settings.get("readable"),
+                "advice": settings.get("advice", ""),
+            }
+            self.send_json(200, {"ok": True, **payload})
             return
         if path == "/api/v1/catalog/search":
             query = urllib.parse.parse_qs(parsed.query)
@@ -6557,51 +6606,24 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 if native is not None:
                     self.send_json(200, native)
                     return
-                self.send_json(502, {"ok": False, "error": str(error)[:300]})
+                # 页面没有 mtop 桥、原生日志里也还没出现过这个买家：给现场一句
+                # 能照做的提示，别把 raw mtop 报错直接甩到面板上。
+                self.send_json(502, {
+                    "ok": False,
+                    "error": "客户端还没有加载这个买家的接待详情，暂时取不到订单；"
+                             "请在千牛接待台点开该买家（或等列表刷新）后重试。",
+                    "detail": str(error)[:300],
+                })
                 return
             if not payload.get("orders"):
                 native = self._native_orders_payload(query, history=history)
-                if native is not None and native.get("count"):
+                # known=True 的空列表是“客户端明确说没有订单”，同样要采用，
+                # 否则会把“没单”误报成 502。
+                if native is not None and (native.get("count") or native.get("known")):
                     self.send_json(200, native)
                     return
             self.send_json(200, {"ok": True, **payload})
             return
-    def _native_orders_payload(self, query: dict[str, Any], history: bool = False,
-                              error: str = "") -> dict[str, Any] | None:
-        """把客户端原生日志里的订单包成 /api/v1/catalog/orders 的响应。
-
-        仅当页面 mtop 取不到时使用；`source` 字段会明确写 `native_log`，
-        方便现场自检区分“真拿到单”和“页面链路上游没通”。
-        """
-        log = getattr(self.app, "native_orders", None)
-        if log is None:
-            return None
-        buyer = str(query.get("buyer_encrypt_id", [""])[0]).strip()
-        orders = log.orders_for(buyer)
-        if not orders:
-            return None
-        biz_order_id = str(query.get("biz_order_id", [""])[0]).strip()
-        if biz_order_id:
-            orders = [row for row in orders if row.get("order_id") == biz_order_id]
-            if not orders:
-                return None
-        status = log.status()
-        payload: dict[str, Any] = {
-            "ok": True,
-            "orders": orders,
-            "count": len(orders),
-            "buyer_encrypt_id": buyer,
-            "method": "mtop.taobao.qianniu.airisland.reception.detail.get",
-            "source": "native_log",
-            "native_log": {
-                "path": status.get("path", ""),
-                "updates": status.get("updates", 0),
-                "last_update_at": status.get("last_update_at", 0.0),
-            },
-        }
-        if error:
-            payload["page_error"] = error
-        return payload
 
         if path == "/api/v1/catalog/order-memo":
             query = urllib.parse.parse_qs(parsed.query)
@@ -6648,13 +6670,13 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/diagnostics":
             self.send_json(200, {
                 "ok": True,
-                "bridge": self.app.status(),
+                "bridge": self.app.status_cached(),
                 "brain_activity": self.app.brain.activity(),
                 "recent_commands": self.app.db.recent_brain_commands(),
             })
             return
         if path == "/api/v1/support-diagnostics":
-            state = self.app.status(include_brain=False)
+            state = self.app.status_cached()
             try:
                 build = json.loads((ROOT / "build-info.json").read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
@@ -6676,6 +6698,53 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             })
             return
         self.send_json(404, {"ok": False, "error": "not_found"})
+
+    def client_settings_status(self) -> dict[str, Any]:
+        """工作台端口侧的入口（真正实现在 StandaloneBridge 上）。"""
+        return self.app.client_settings_status()
+
+    def _native_orders_payload(self, query: dict[str, Any], history: bool = False,
+                              error: str = "") -> dict[str, Any] | None:
+        """把客户端原生日志里的订单包成 /api/v1/catalog/orders 的响应。
+
+        仅当页面 mtop 取不到时使用；`source` 字段会明确写 `native_log`，
+        方便现场自检区分“真拿到单”和“页面链路上游没通”。
+
+        `known` 表示“客户端明确给过这个买家的接待详情”：
+          * known + 有单  → 返回订单；
+          * known + 无单  → 返回 ok/0 单（比 502 诚实，AI 可以据此说“暂无订单”）；
+          * 不 known      → 返回 None，让调用方继续按“取不到”处理。
+        """
+        log = getattr(self.app, "native_orders", None)
+        if log is None:
+            return None
+        buyer = str(query.get("buyer_encrypt_id", [""])[0]).strip()
+        orders = log.orders_for(buyer)
+        if not orders and not log.known(buyer):
+            return None
+        biz_order_id = str(query.get("biz_order_id", [""])[0]).strip()
+        if biz_order_id:
+            orders = [row for row in orders if row.get("order_id") == biz_order_id]
+            if not orders:
+                return None
+        status = log.status()
+        payload: dict[str, Any] = {
+            "ok": True,
+            "known": True,
+            "orders": orders,
+            "count": len(orders),
+            "buyer_encrypt_id": buyer,
+            "method": "mtop.taobao.qianniu.airisland.reception.detail.get",
+            "source": "native_log",
+            "native_log": {
+                "path": status.get("path", ""),
+                "updates": status.get("updates", 0),
+                "last_update_at": status.get("last_update_at", 0.0),
+            },
+        }
+        if error:
+            payload["page_error"] = error
+        return payload
 
     def do_POST(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
@@ -7008,6 +7077,12 @@ class StandaloneBridge:
         self._conversation_open_lock = threading.Lock()
         self._conversation_watch: ConversationSelectionWatch | None = None
         self._conversation_watch_pid = 0
+        # /status 是诊断快照：后台每 2 秒算一次，HTTP 请求只读快照，
+        # 不再让每个轮询都去等 expire_sends / 全局锁（现场 1~3 秒尖峰）。
+        self._status_snapshot: dict[str, Any] | None = None
+        self._status_snapshot_at = 0.0
+        self._status_sessions = 0
+        self._status_snapshot_lock = threading.Lock()
 
     # ---- 任务 A(1)(2)：账号持久化 + 页面兜底 + 进程页面诊断（B3） ----
     def _accounts_file(self) -> Path:
@@ -7659,6 +7734,8 @@ class StandaloneBridge:
         self.appbiz.start()
         self.native.start()
         self.client_support.start()
+        self._refresh_status_snapshot()
+        threading.Thread(target=self._status_snapshot_loop, name="status-snapshot", daemon=True).start()
         self.api_thread.start()
         self.nicknames.thread.start()
         threading.Thread(
@@ -7673,22 +7750,101 @@ class StandaloneBridge:
         self.appbiz.thread.join(timeout=3.0)
         self.native.thread.join(timeout=3.0)
 
+    def _refresh_status_snapshot(self) -> None:
+        try:
+            # 会话计数也放到后台算：workbench_sessions() 读缓存要拿全局锁，
+            # 写线程持锁时请求会被拖到 1 秒以上。
+            sessions = len(self.db.workbench_sessions())
+            snapshot = self.status(workbench_session_count=sessions)
+        except Exception as error:  # noqa: BLE001
+            LOG.debug("status snapshot failed: %s", error)
+            return
+        with self._status_snapshot_lock:
+            self._status_snapshot = snapshot
+            self._status_snapshot_at = time.time()
+            self._status_sessions = sessions
+
+    def _status_snapshot_loop(self) -> None:
+        while not self.stop_event.wait(2.0):
+            self._refresh_status_snapshot()
+
+    def status_session_count(self) -> int:
+        with self._status_snapshot_lock:
+            return int(getattr(self, "_status_sessions", 0) or 0)
+
+    def status_cached(self, max_age: float = 6.0) -> dict[str, Any]:
+        """返回后台维护的状态快照；过期或首次调用时才同步计算。"""
+        with self._status_snapshot_lock:
+            snapshot = self._status_snapshot
+            age = time.time() - self._status_snapshot_at
+        if snapshot is not None and age < max_age:
+            return snapshot
+        self._refresh_status_snapshot()
+        with self._status_snapshot_lock:
+            return self._status_snapshot or {}
+
+    def client_settings_status(self) -> dict[str, Any]:
+        """千牛本地设置（目前只看「无障碍模式」）。
+
+        2026-10-29 定位：无障碍模式关闭时客户端不向 webview 注入
+        `workbench` 等原生 JSAPI，页面级 mtop 必然失败 —— 这是现场
+        "取不到订单" 的根因，必须在 status 里显式暴露。
+        """
+        try:
+            return qn_client_settings.state()
+        except Exception as error:  # noqa: BLE001
+            return {"readable": False, "enabled": None, "error": str(error)[:200],
+                    "path": "", "raw": "", "advice": ""}
+
     def status(
         self,
         include_brain: bool = True,
         workbench_session_count: int | None = None,
     ) -> dict[str, Any]:
+        _status_started = time.perf_counter()
+        _timings: dict[str, float] = {}
+
+        def _mark(name: str, started: float) -> None:
+            _timings[name] = round((time.perf_counter() - started) * 1000.0, 1)
+
+        _step = time.perf_counter()
         self.expire_unconfirmed_sends()
+        _mark("expire_sends", _step)
         if workbench_session_count is None:
+            _step = time.perf_counter()
             workbench_session_count = len(self.db.workbench_sessions())
+            _mark("sessions", _step)
+        _step = time.perf_counter()
         browser_connections = self.browser.diagnostics_by_connection()
+        _mark("browser_diag", _step)
+        _step = time.perf_counter()
+        nickname_status = self.nicknames.status()
+        _mark("nicknames", _step)
+        _step = time.perf_counter()
+        hook_recovery_status = self.hook_recovery.status()
+        _mark("hook_recovery", _step)
+        _step = time.perf_counter()
+        catalog_status = {**self.catalog.status(), "sync": self.catalog_sync.status()}
+        _mark("catalog", _step)
+        _step = time.perf_counter()
+        client_support_status = self.client_support.status()
+        _mark("client_support", _step)
+        _step = time.perf_counter()
+        delivery_counts = self.db.counts()
+        send_counts = self.db.send_counts()
+        _mark("db_counts", _step)
+        brain_status: dict[str, Any] | None = None
+        if include_brain:
+            _step = time.perf_counter()
+            brain_status = self.brain.status()
+            _mark("brain", _step)
         payload = {
             "ok": not bool(self.api_error or self.workbench_error or self.browser.error),
             # 任务 B：需要人处理时，顶层给一句人话提示（与弹窗正文一致）
             "hint": self.hook_recovery.hint(),
             "version": VERSION,
             "build_hash": BUILD_HASH,
-            "nicknames": self.nicknames.status(),
+            "nicknames": nickname_status,
             "uptime_seconds": round(time.time() - self.started_at, 3),
             "browser": {
                 "connected": self.browser.connected,
@@ -7704,9 +7860,10 @@ class StandaloneBridge:
                 "process_pages": self.process_pages(),
             },
             "context_enrich": self.context.status(),
-            "hook_recovery": self.hook_recovery.status(),
-            "catalog": {**self.catalog.status(), "sync": self.catalog_sync.status()},
+            "hook_recovery": hook_recovery_status,
+            "catalog": catalog_status,
             "native_orders": self.native_orders.status(),
+            "client_settings": self.client_settings_status(),
             "native_context": self.native_context.status(),
             "cdp": {
                 "enabled": bool(self.config.get("cdp_injection_enabled", False)),
@@ -7724,7 +7881,7 @@ class StandaloneBridge:
                 "last_success_at": self.updater.last_success_at,
                 "last_error": self.updater.last_error,
             },
-            "client_support": self.client_support.status(),
+            "client_support": client_support_status,
             "appbiz_send": {
                 "enabled": bool(self.config.get("appbiz_send_adapter_enabled", True)),
                 "abi_validated": bool(self.config.get("appbiz_send_abi_validated", False)),
@@ -7759,7 +7916,7 @@ class StandaloneBridge:
                 "frames": self.native_frames,
             },
             "delivery": {
-                **self.db.counts(),
+                **delivery_counts,
                 "enabled": bool(self.config.get("delivery_enabled", True)),
                 "last_success_at": self.delivery.last_success_at,
                 "last_error": self.delivery.last_error,
@@ -7771,7 +7928,7 @@ class StandaloneBridge:
                 "source_file": str(ROOT / "state" / "accounts.json"),
             },
             "send_enabled": bool(self.config.get("send_enabled", False)),
-            "send_receipts": self.db.send_counts(),
+            "send_receipts": send_counts,
             "api": {
                 "url": f"http://127.0.0.1:{int(self.config.get('api_port'))}",
                 "error": self.api_error,
@@ -7782,8 +7939,11 @@ class StandaloneBridge:
                 "error": self.workbench_error,
             },
         }
-        if include_brain:
-            payload["brain"] = self.brain.status()
+        if include_brain and brain_status is not None:
+            payload["brain"] = brain_status
+        _total = round((time.perf_counter() - _status_started) * 1000.0, 1)
+        if _total >= 1000.0:
+            LOG.info("status slow total=%sms %s", _total, _timings)
         return payload
 
 

@@ -35,7 +35,15 @@ DEFAULT_INTERVAL_SECONDS = 600.0
 # The GPU probe walks every process and reads each one's command line, which
 # costs 1-2s on Windows. The status endpoint is polled by the launcher and the
 # dock, so cache the result briefly instead of re-scanning on every request.
-GPU_STATE_TTL_SECONDS = 5.0
+GPU_STATE_TTL_SECONDS = 120.0
+_EMPTY_GPU_STATE = {
+    "checked": False,
+    "software_rendering": False,
+    "gpu_processes": 0,
+    "cpu_seconds": 0.0,
+    "angle_backend": "",
+    "error": "",
+}
 
 
 def size_of_image(path: Path) -> int:
@@ -227,6 +235,7 @@ class ClientSupportWatcher(threading.Thread):
         self.last_error = ""
         self._gpu_warned = False
         self._gpu_state: dict[str, Any] = {}
+        self._gpu_scan_lock = threading.Lock()
         self._gpu_state_at = 0.0
 
     def refresh(self) -> dict[str, Any]:
@@ -278,9 +287,17 @@ class ClientSupportWatcher(threading.Thread):
 
     def _cached_gpu_state(self) -> dict[str, Any]:
         now = time.time()
-        if not self._gpu_state or now - self._gpu_state_at >= GPU_STATE_TTL_SECONDS:
+        if self._gpu_state and now - self._gpu_state_at < GPU_STATE_TTL_SECONDS:
+            return self._gpu_state
+        # 只允许一个线程做 psutil 全量扫描：GPU 扫描在现场要 3~10 秒，浮窗/托盘
+        # 每 2~3 秒轮询一次时，并发扫描会把整个进程拖死（2026-10-29 现场）。
+        if not self._gpu_scan_lock.acquire(blocking=False):
+            return self._gpu_state or dict(_EMPTY_GPU_STATE)
+        try:
             self._gpu_state = gpu_rendering_state()
-            self._gpu_state_at = now
+            self._gpu_state_at = time.time()
+        finally:
+            self._gpu_scan_lock.release()
         return self._gpu_state
 
     def status(self) -> dict[str, Any]:

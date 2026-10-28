@@ -62,6 +62,24 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(len(rows[0]["orders"]), 1)
         self.assertEqual(rows[1]["orders"], [])
 
+    def test_truncated_log_line_still_returns_complete_rows(self):
+        """千牛 app.log 单行 ~1100 字节截断；截断前的买家必须还能解析出来。"""
+        full = (
+            '[10-29 01:24:59 574622453 28260 21028 INFO] UnifiedMtop [MTOP ...]'
+            '[response. ... data: #][ data={"api":"mtop.taobao.qianniu.airisland.reception.detail.get",'
+            '"data":{"data":['
+            '{"bizDomain":"taobao","buyerId":"2204095449935","snsNick":"tb354062458"},'
+            '{"bizDomain":"taobao","buyerId":"2207930061980","snsNick":"tb383778639",'
+            '"tradeSimpleList":[{"bizOrderId":5127889285210159220,"payStatus":2}]},'
+            '{"bizDomain":"taobao","buyerId":"2209459033609","snsNick":"tb1094326136"},'
+            '{"bizDomain":"taobao","buyerId":"22128'
+        )
+        rows = n.parse_line(full)
+        self.assertEqual([r["buyer_id"] for r in rows],
+                         ["2204095449935", "2207930061980", "2209459033609"])
+        self.assertEqual(rows[1]["orders"][0]["order_id"], "5127889285210159220")
+        self.assertEqual(rows[0]["orders"], [])
+
 
 class CacheTests(unittest.TestCase):
     def _app(self, extra_config=None):
@@ -121,6 +139,40 @@ class CacheTests(unittest.TestCase):
         store = n.NativeOrderLog(app, poll_seconds=0.05)
         self.assertEqual(store.orders_for("999"), [])
         self.assertEqual(store.orders_for(""), [])
+        self.assertFalse(store.known("999"))
+        self.assertFalse(store.known(""))
+
+    def test_buyer_seen_without_orders_is_known_empty(self):
+        """"客户端明确返回、但没有 tradeSimpleList" ≠ "我们没见过这个买家"。"""
+        app = self._app({})
+        store = n.NativeOrderLog(app, poll_seconds=0.05)
+        line = (
+            'data={"api":"mtop.taobao.qianniu.airisland.reception.detail.get","data":{"data":['
+            '{"buyerId":"2222","snsNick":"no-order-buyer"}]}}]'
+        )
+        for row in n.parse_line(line):
+            store._remember(row["buyer_id"], row["buyer_nick"], row["orders"])
+        self.assertTrue(store.known("2222"))
+        self.assertEqual(store.orders_for("2222"), [])
+        status = store.status()
+        self.assertEqual(status["buyers"], 1)
+        self.assertEqual(status["buyers_with_orders"], 0)
+        self.assertEqual(status["buyers_without_orders"], 1)
+        self.assertEqual(status["orders"], 0)
+        self.assertEqual(status["sample_buyer"], "")
+
+    def test_status_sample_buyer_prefers_one_with_orders(self):
+        app = self._app({})
+        store = n.NativeOrderLog(app, poll_seconds=0.05)
+        store._remember("1111", "a", [])
+        store._remember("2222", "b", [
+            n.normalize_order({"bizOrderId": 22, "payStatus": 4}),
+        ])
+        store._remember("3333", "c", [])
+        status = store.status()
+        self.assertEqual(status["buyers"], 3)
+        self.assertEqual(status["buyers_with_orders"], 1)
+        self.assertEqual(status["sample_buyer"], "2222")
 
     def test_status_reports_disabled_without_log(self):
         app = self._app({})
@@ -170,6 +222,92 @@ class EndpointPayloadTests(unittest.TestCase):
     def test_payload_none_when_buyer_unknown(self):
         host = self._host()
         self.assertIsNone(host._native_orders_payload({"buyer_encrypt_id": ["123"]}))
+
+    def test_payload_returns_known_empty_instead_of_none(self):
+        """已知无单要返回 ok/0 单（AI 能说“暂无订单”），不能回落成 502。"""
+        host = self._host()
+        host.server.app.native_orders._remember("2222", "no-order-buyer", [])
+        payload = host._native_orders_payload({"buyer_encrypt_id": ["2222"]})
+        self.assertIsNotNone(payload)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["known"])
+        self.assertEqual(payload["count"], 0)
+        self.assertEqual(payload["orders"], [])
+        self.assertEqual(payload["source"], "native_log")
+
+    def test_payload_with_biz_order_id_filters(self):
+        host = self._host()
+        payload = host._native_orders_payload({
+            "buyer_encrypt_id": ["2252311170"],
+            "biz_order_id": ["5127834996048025044"],
+        })
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["count"], 1)
+        # 指定了一个缓存里没有的订单号时，不假装“0 单”，交给调用方按取不到处理
+        self.assertIsNone(host._native_orders_payload({
+            "buyer_encrypt_id": ["2252311170"],
+            "biz_order_id": ["999"],
+        }))
+
+
+class RouteOrderingTests(unittest.TestCase):
+    """1.6.58 回归：`_native_orders_payload` 曾被插在 do_GET 中间，
+    导致 order-memo / mtop / diagnostics / support-diagnostics / 404 全部变成
+    `return` 之后的死代码（线上表现为这些接口直接 404 或空响应）。"""
+
+    def _host(self, path, app):
+        import standalone_bridge as sb
+
+        host = object.__new__(sb.WorkbenchHandler)
+        host.path = path
+        host.workbench_authorized = lambda: True
+        host.server = type("Server", (), {"app": app})()
+        sent: dict = {}
+        host.send_json = lambda status, payload: sent.update({"status": status, "payload": payload})
+        return host, sent
+
+    def test_order_memo_route_is_live(self):
+        import standalone_bridge as sb
+
+        class Catalog:
+            def order_memo(self, order_id):
+                raise sb.QnCatalogError("page unavailable")
+
+        class App:
+            catalog = Catalog()
+
+        host, sent = self._host("/api/v1/catalog/order-memo?order_id=1", App())
+        host.do_GET()
+        self.assertEqual(sent.get("status"), 502)
+        self.assertIn("page unavailable", str(sent.get("payload")))
+
+    def test_diagnostics_route_is_live(self):
+        class Brain:
+            @staticmethod
+            def activity():
+                return {}
+
+        class Db:
+            @staticmethod
+            def recent_brain_commands():
+                return []
+
+        class App:
+            brain = Brain()
+            db = Db()
+
+            @staticmethod
+            def status(**kwargs):
+                return {"ok": True}
+
+            @staticmethod
+            def status_cached(**kwargs):
+                return {"ok": True}
+
+        host, sent = self._host("/api/v1/diagnostics", App())
+        host.do_GET()
+        self.assertEqual(sent.get("status"), 200)
+        self.assertTrue(sent["payload"]["bridge"]["ok"])
 
 
 class BackfillTests(unittest.TestCase):

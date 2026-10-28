@@ -473,7 +473,8 @@
     };
     async function api(path, options = {}) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), options.timeout || 8000);
+      // 老机器 + 杀软扫 SQLite 时 /status 偶尔要 10~20s，8s 会把正常响应掐断成“报错”。
+      const timeout = setTimeout(() => controller.abort(), options.timeout || 25000);
       try {
         const response = await fetch(path, {
           ...options,

@@ -79,7 +79,13 @@ class NicknameTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(event_id, nickname_event_id(update))
         app.context.enqueue.assert_not_called()
+        # stale-while-revalidate：先触发一次后台重建，再读新快照
+        self.db.workbench_sessions()
+        deadline = time.time() + 3.0
         after = self.db.workbench_sessions()[0]
+        while after['buyer_nick'] != '补传昵称' and time.time() < deadline:
+            time.sleep(0.05)
+            after = self.db.workbench_sessions()[0]
         self.assertEqual(after['buyer_nick'], '补传昵称')
         for key in ('message_count', 'last_ts', 'last_message'):
             self.assertEqual(after[key], before[key])

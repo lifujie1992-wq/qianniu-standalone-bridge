@@ -306,3 +306,35 @@ py tools\qn_catalog_cli.py memo --order 3317133288014022898
 
 > 买家标识用 `securityBuyerUid`（本地 `events.buyer_encrypt_id`）。收货信息由淘宝侧脱敏，
 > 桥接不解码、不外传。`trade.history.query` 在部分买家上返回空列表，属接口语义限制。
+
+## 9.98.49N / DX 接待台的订单兜底（1.6.55+，1.6.58 补全）
+
+9.98.49N 的新版 DX 接待台（`https://alires-webui/dx-h5/index.html`）里没有
+`workbench` / `imsdk` / `QN` 任何 JSAPI，页面级 mtop 发不出去；老的
+`recent.html` 有 imsdk 但没有 `workbench`。这两种页面都取不到订单。
+
+但千牛客户端自己渲染接待列表时会调
+`mtop.taobao.qianniu.airisland.reception.detail.get`，并把响应写进
+`AliWorkbenchData\System\log\app.log`。`qn_native_orders.NativeOrderLog` 只读 tail
+这个日志，把 `buyerId -> tradeSimpleList` 建成缓存，作为
+`/api/v1/catalog/orders` 与 AI 订单上下文的兜底：
+
+```text
+GET /api/v1/catalog/orders?buyer_encrypt_id=2252311170
+{"ok": true, "known": true, "count": 1, "source": "native_log",
+ "orders": [{"order_id": "5127834996048025044", ...}],
+ "page_error": "all mtop channels failed: imsdk: workbench is not defined | ..."}
+```
+
+语义（1.6.58 起）：
+
+| 情况 | 返回 | 含义 |
+|------|------|------|
+| 缓存里有单 | `ok=true, count>0` | 真实订单 |
+| 缓存里见过该买家、但没有 `tradeSimpleList` | `ok=true, known=true, count=0` | **确认无单**，AI 可以说“暂无订单” |
+| 日志里没见过该买家 | `502`（未知） | 不能瞎猜，按“取不到”处理 |
+
+日志路径默认自动探测 `D:\AliWorkbenchData\System\log\app.log`，也可用
+`native_order_log_paths` 显式指定；启动时回读尾部 8MB，之后增量读取。
+自检脚本会优先用 `native_orders.sample_buyer`（确实有单的买家）取样，
+不再拿没缓存的买家误判。

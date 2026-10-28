@@ -379,7 +379,7 @@ class DockedWorkbench:
         while not self.stop_event.is_set():
             try:
                 request = urllib.request.Request(self.workbench_url(), method="GET")
-                with urllib.request.urlopen(request, timeout=0.75) as response:
+                with urllib.request.urlopen(request, timeout=5.0) as response:
                     page = response.read(131072).decode("utf-8", errors="ignore")
                     if response.status == 200 and DOCK_TITLE in page:
                         return

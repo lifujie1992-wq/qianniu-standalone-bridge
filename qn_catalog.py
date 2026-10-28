@@ -832,11 +832,17 @@ class CatalogSyncer:
                     self.last_error = str(error)[:300]
             stop_event = getattr(self.app, "stop_event", None)
             interval = self._config().get("interval", 1800.0)
-            if stop_event is not None:
-                if stop_event.wait(interval):
+            # 这里必须等 wakeup：原来只 wait(stop_event, interval)，工作台点
+            # 「同步」设置的 wakeup 永远不会生效，只能等 30 分钟一轮。
+            deadline = time.monotonic() + interval
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if self.wakeup.wait(min(remaining, 5.0)):
+                    break
+                if stop_event is not None and stop_event.is_set():
                     return
-            else:
-                time.sleep(interval)
             self.wakeup.clear()
 
     # -- 干活 -----------------------------------------------------------

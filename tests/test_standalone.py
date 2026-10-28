@@ -1918,7 +1918,17 @@ class WorkbenchTests(unittest.TestCase):
                 buyer_nick="buyer-2",
                 ts=101.0,
             ))
-            self.assertEqual(len(db.workbench_sessions()), 2)
+            # stale-while-revalidate：过期先返回旧快照，后台线程重建，
+            # 下一次轮询才看到新会话（现场 2~3 秒一轮，不阻塞 /status）。
+            db.workbench_sessions()
+            deadline = time.time() + 3.0
+            sessions: list[dict] = []
+            while time.time() < deadline:
+                sessions = db.workbench_sessions()
+                if len(sessions) == 2:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(len(sessions), 2)
 
     def test_session_keeps_local_real_nickname_when_newer_event_has_numeric_uid(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1983,9 +1993,13 @@ class WorkbenchTests(unittest.TestCase):
         self.assertNotIn("setInterval(refresh, 1500)", source)
 
     def test_workbench_status_reuses_the_computed_session_snapshot(self):
+        """1.6.58：/status 走后台快照，不再每次同步重建会话表。"""
         source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
-        self.assertIn("self.app.status(workbench_session_count=len(sessions))", source)
-        self.assertIn('"sessions": workbench_session_count', source)
+        self.assertIn('"bridge": self.app.status_cached()', source)
+        self.assertIn('"sessions": self.app.status_session_count()', source)
+        self.assertIn("def status_cached(", source)
+        self.assertIn("def status_session_count(", source)
+        self.assertIn('name="status-snapshot"', source)
 
     def test_workbench_accepts_appbiz_as_a_receive_link(self):
         source = (ROOT / "workbench.html").read_text(encoding="utf-8")
