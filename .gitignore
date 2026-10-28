@@ -33,3 +33,7 @@ config.json
 
 # Isolated Windows packaging environment
 .venv-windows-build/
+
+# 安装包产物与全量载荷（不入库）
+delivery/安装版-*/
+delivery/*.exe

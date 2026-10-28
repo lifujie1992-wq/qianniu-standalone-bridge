@@ -1,0 +1,82 @@
+﻿#define AppName "淘宝千牛 AI 客服助手"
+#define AppVersion "1.6.51"
+#define AppPublisher "Qianniu AI Service"
+#define SourceDir "..\delivery\安装版-1.6.51"
+
+[Setup]
+AppId={{C31C8BA7-A990-4B80-99D2-E69EF3AD91CA}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppPublisher={#AppPublisher}
+DefaultDirName={sd}\QianniuAIService
+UsePreviousAppDir=yes
+DefaultGroupName={#AppName}
+DisableProgramGroupPage=yes
+OutputDir=..\delivery
+OutputBaseFilename=淘宝千牛AI客服-完整安装包-1.6.51
+Compression=lzma2/normal
+SolidCompression=yes
+WizardStyle=modern
+PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+CloseApplications=no
+RestartApplications=no
+SetupLogging=yes
+UninstallDisplayIcon={app}\QianniuAgent.exe
+VersionInfoVersion={#AppVersion}
+VersionInfoDescription={#AppName} 安装程序
+
+[Languages]
+Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
+
+[Tasks]
+Name: "closeclients"; Description: "安装时自动关闭旧客服助手和千牛（推荐）"; GroupDescription: "安装准备："; Flags: checkedonce
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked
+Name: "autostart"; Description: "登录 Windows 后自动启动客服助手"; GroupDescription: "自动启动："; Flags: unchecked
+
+[Files]
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "config.json,state\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\config.example.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist uninsneveruninstall skipifsourcedoesntexist
+
+[Files]
+Source: "..\installer-assets\取不到订单时点这里-自检.cmd"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\installer-assets\qn-order-check.ps1"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
+[Icons]
+Name: "{group}\启动客服助手"; Filename: "{app}\QianniuAgent.exe"
+Name: "{group}\配置中心大脑"; Filename: "{app}\QianniuAgent.exe"; Parameters: "--configure"
+Name: "{group}\检查在线更新"; Filename: "{app}\QianniuAgent.exe"; Parameters: "--update"
+Name: "{group}\查看运行状态"; Filename: "{app}\QianniuAgent.exe"; Parameters: "--status"
+Name: "{group}\彻底退出客服助手"; Filename: "{app}\QianniuAgent.exe"; Parameters: '--stop'
+Name: "{group}\取不到订单时点这里-自检"; Filename: "{app}\取不到订单时点这里-自检.cmd"
+Name: "{group}\卸载客服助手"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\千牛 AI 客服助手"; Filename: "{app}\QianniuAgent.exe"; Tasks: desktopicon
+Name: "{userstartup}\千牛 AI 客服助手"; Filename: "{app}\QianniuAgent.exe"; Tasks: autostart
+
+[Run]
+Filename: "{app}\QianniuAgent.exe"; Description: "启动客服助手控制中心"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{app}\QianniuAgent.exe"; Parameters: '--stop-agent'; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "StopQianniuAIService"
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\state"
+Type: files; Name: "{app}\config.json"
+Type: filesandordirs; Name: "{app}"
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  if FileExists(ExpandConstant('{app}\QianniuAgent.exe')) then
+    Exec(ExpandConstant('{app}\QianniuAgent.exe'), '--stop-agent', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode);
+  if WizardIsTaskSelected('closeclients') then begin
+    if FileExists(ExpandConstant('{app}\QianniuAgent.exe')) then
+      Exec(ExpandConstant('{app}\QianniuAgent.exe'), '--stop-agent', '', SW_HIDE,
+        ewWaitUntilTerminated, ResultCode);
+  end;
+end;

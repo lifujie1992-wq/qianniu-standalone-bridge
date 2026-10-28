@@ -237,3 +237,72 @@ powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1
 若已有验证过的原生适配器，可使用 `-AdapterPath D:\QianniuAIService\build\appbiz_adapter.dll`；否则脚本会调用现有 MSVC 构建脚本，需 Visual C++ x64 工具链。脚本在独立环境构建 EXE，输出升级 ZIP、源码提交号和 SHA256。
 
 这是升级包，保留现有 `config.json` 和 `runtime`，关闭旧助手后覆盖包内文件。它不包含千牛运行时、不改安装器。Windows 打包和真实发送仍需在 Windows 主机执行验证。
+
+## 商品与订单取数（1.6.27）
+
+学福客（fuke）的做法：**不碰账号密码、不导出 cookie**，而是在千牛页面上下文执行
+`window.imsdk.invoke('application.invokeMTopChannelService', {method, param, httpMethod:'post', version})`，
+用商家自己的登录态调千牛客服 MTOP 接口。
+
+| 用途 | mtop 方法 | 关键参数 |
+|------|-----------|----------|
+| 在售商品（分页） | `mtop.taobao.qianniu.cs.item.onsale.query` | `pageNo` / `pageSize` |
+| 商品详情 | `mtop.taobao.qianniu.cs.item.detail.query` | `itemId` + `encryptId` + `isNewCustomer` |
+| 商品描述图 | `mtop.wdetail.getItemDescx`（version 4.1） | `item_num_id` |
+| 买家订单 | `mtop.taobao.qianniu.cs.trade.query` | `securityBuyerUid`（+`bizOrderId`） |
+| 买家历史订单 | `mtop.taobao.qianniu.cs.trade.history.query` | `securityBuyerUid` / `pageNum` / `pageSize` |
+| 订单备注/标旗 | `mtop.com.taobao.order.sold.memo` | `operation=query` + `orderId` |
+| 店铺信息 | `mtop.taobao.jdy.resource.shop.info.get` | 无（返回 `tmallSeller`） |
+
+### 工作台面板
+
+「AI 白盒」右侧新增 **订单 / 商品**：
+- 选中会话自动查该买家订单（状态、金额、件数、快递、商品）
+- 商品搜索走**本地库**（毫秒级，不压 mtop 通道）
+- 「同步」按钮触发全量在售商品入库
+
+### 本地目录同步
+
+`CatalogSyncer` 后台线程把在售商品分批写入 `state/bridge.sqlite3` 的 `catalog_goods`：
+
+```json
+"catalog_sync_enabled": true,
+"catalog_sync_interval_seconds": 1800,
+"catalog_sync_page_size": 100,
+"catalog_sync_max_pages": 20
+```
+
+启动 20 秒后首跑，之后每 `interval` 一次；页面未连接时跳过。状态见
+`/api/v1/catalog` 的 `sync` 与 `stored.stored_goods`。
+
+### HTTP / CLI
+
+```text
+GET  /api/v1/catalog                                  通道 + 同步 + 本地库状态
+GET  /api/v1/catalog/shop                             店铺 / 是否天猫
+GET  /api/v1/catalog/goods?page_no=1&page_size=20     一页在售商品
+GET  /api/v1/catalog/goods?all=1&max_pages=8          翻页取全量（去重）
+GET  /api/v1/catalog/goods-detail?item_id=&buyer_encrypt_id=
+GET  /api/v1/catalog/goods-desc?item_id=
+GET  /api/v1/catalog/orders?buyer_encrypt_id=         买家订单
+GET  /api/v1/catalog/orders?buyer_encrypt_id=&history=1
+GET  /api/v1/catalog/order-memo?order_id=
+GET  /api/v1/catalog/search?q=&limit=20               本地库检索
+POST /api/v1/catalog/sync                             立即触发同步
+GET  /api/v1/catalog/mtop?method=&param={json}&strict=0  逆向调试
+```
+
+```powershell
+py tools\qn_catalog_cli.py shop
+py tools\qn_catalog_cli.py goods --all --max-pages 8
+py tools\qn_catalog_cli.py orders --buyer 2210703046212
+py tools\qn_catalog_cli.py memo --order 3317133288014022898
+```
+
+### 安装包
+
+`installer/QianniuAIService.iss`（AppVersion 1.6.27）编译产出
+`delivery/淘宝千牛AI客服安装包-1.6.27.exe`；安装时保留已有 `config.json` 与 `state`。
+
+> 买家标识用 `securityBuyerUid`（本地 `events.buyer_encrypt_id`）。收货信息由淘宝侧脱敏，
+> 桥接不解码、不外传。`trade.history.query` 在部分买家上返回空列表，属接口语义限制。
