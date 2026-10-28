@@ -47,6 +47,8 @@ from native_context import NativeContext
 from native_image_lookup import enrich_native_image_event
 from nickname_support import event_nickname, nickname_event_id, valid_nickname
 from hook_recovery import HookRecovery
+from qn_native_orders import RECEPTION_API as reception_api
+from qn_native_orders import NativeOrderLog
 from hook_diagnostics import (
     HookMonitor,
     chat_page_hooked,
@@ -4797,6 +4799,26 @@ class ContextEnricher:
                 items = list(attempts[-1]["items"]) if attempts else []
                 from_cache = False
 
+        # dx-h5 / workbench 缺失时页面 mtop 永远拿不到订单，但千牛客户端
+        # 自己渲染接待列表时会调 reception.detail.get 并写进 app.log。
+        # 这里做兜底，保证 AI 侧也能拿到订单上下文。
+        native_source = ""
+        if not orders:
+            native_log = getattr(self.app, "native_orders", None)
+            if native_log is not None:
+                native_rows = native_log.orders_for(encrypt_id)
+                if native_rows:
+                    orders = native_rows
+                    native_source = "native_log"
+                    status = "found"
+                    ok_native = True
+                else:
+                    ok_native = False
+            else:
+                ok_native = False
+        else:
+            ok_native = False
+
         last_attempt = (found or attempts[-1]) if attempts else {}
         items_ok = bool(last_attempt.get("items_ok"))
         raw_order_count = max((int(item.get("raw_order_count") or 0) for item in attempts), default=0)
@@ -4818,11 +4840,17 @@ class ContextEnricher:
             "provider": "qianniu_standalone_mtop",
             "build_hash": BUILD_HASH,
             "trace_id": trace_id,
-            "mtop_api": self.ORDER_METHOD,
+            "mtop_api": (reception_api if native_source else self.ORDER_METHOD),
             "ret_code": ret_code,
             "elapsed_ms": elapsed_ms,
             "retry_count": retry_count,
         }
+        if native_source:
+            context_status["source"] = native_source
+            context_status["native_order_log"] = (
+                getattr(self.app, "native_orders", None).status()
+                if getattr(self.app, "native_orders", None) is not None else {}
+            )
         if shop:
             context_status["shop_is_tmall"] = shop.get("is_tmall")
             context_status["shop_info"] = dict(shop)
@@ -6464,8 +6492,20 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                         only_channel=str(query.get("channel", [""])[0]),
                     )
             except (QnCatalogError, ValueError) as error:
+                # 页面里没有 mtop 桥（dx-h5 / workbench 缺失）时，退回到
+                # 千牛客户端原生日志里捕获的 reception.detail.get 订单。
+                native = self._native_orders_payload(query, history=history,
+                                                    error=str(error)[:300])
+                if native is not None:
+                    self.send_json(200, native)
+                    return
                 self.send_json(502, {"ok": False, "error": str(error)[:300]})
                 return
+            if not payload.get("orders"):
+                native = self._native_orders_payload(query, history=history)
+                if native is not None and native.get("count"):
+                    self.send_json(200, native)
+                    return
             self.send_json(200, {"ok": True, **payload})
             return
         if path == "/api/v1/catalog/shop":
@@ -6526,6 +6566,43 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(200, {"ok": True, **payload})
             return
+    def _native_orders_payload(self, query: dict[str, Any], history: bool = False,
+                              error: str = "") -> dict[str, Any] | None:
+        """把客户端原生日志里的订单包成 /api/v1/catalog/orders 的响应。
+
+        仅当页面 mtop 取不到时使用；`source` 字段会明确写 `native_log`，
+        方便现场自检区分“真拿到单”和“页面链路上游没通”。
+        """
+        log = getattr(self.app, "native_orders", None)
+        if log is None:
+            return None
+        buyer = str(query.get("buyer_encrypt_id", [""])[0]).strip()
+        orders = log.orders_for(buyer)
+        if not orders:
+            return None
+        biz_order_id = str(query.get("biz_order_id", [""])[0]).strip()
+        if biz_order_id:
+            orders = [row for row in orders if row.get("order_id") == biz_order_id]
+            if not orders:
+                return None
+        status = log.status()
+        payload: dict[str, Any] = {
+            "ok": True,
+            "orders": orders,
+            "count": len(orders),
+            "buyer_encrypt_id": buyer,
+            "method": "mtop.taobao.qianniu.airisland.reception.detail.get",
+            "source": "native_log",
+            "native_log": {
+                "path": status.get("path", ""),
+                "updates": status.get("updates", 0),
+                "last_update_at": status.get("last_update_at", 0.0),
+            },
+        }
+        if error:
+            payload["page_error"] = error
+        return payload
+
         if path == "/api/v1/catalog/order-memo":
             query = urllib.parse.parse_qs(parsed.query)
             order_id = str(query.get("order_id", [""])[0]).strip()
@@ -6893,6 +6970,9 @@ class StandaloneBridge:
         self.hook_recovery = HookRecovery(self, logger=LOG)
         # 福客同款 mtop 取数通道：商品目录 / 订单 / 店铺（页面 imsdk → invokeMTopChannelService）
         self.catalog = QnCatalog(self)
+        # dx-h5 等无 JS 桥的客户端：从千牛 app.log 里捕获客户端原生的
+        # mtop.taobao.qianniu.airisland.reception.detail.get（带 bizOrderId）
+        self.native_orders = NativeOrderLog(self)
         # 商品目录定时沉凌（供工作台与 AI 检索）
         self.catalog_sync = CatalogSyncer(self)
         # 任务 A(1)：重启后先恢复已识别的客服号，再由新信息校正
@@ -7572,6 +7652,7 @@ class StandaloneBridge:
         self.hook_recovery.thread.start()
         threading.Thread(target=self.run_identity_refresh, name="identity-refresh", daemon=True).start()
         threading.Thread(target=self.run_pages_refresh, name="pages-refresh", daemon=True).start()
+        self.native_orders.start()
         self.catalog_sync.start()
         self.cdp.start()
         self.updater.start()
@@ -7625,6 +7706,7 @@ class StandaloneBridge:
             "context_enrich": self.context.status(),
             "hook_recovery": self.hook_recovery.status(),
             "catalog": {**self.catalog.status(), "sync": self.catalog_sync.status()},
+            "native_orders": self.native_orders.status(),
             "native_context": self.native_context.status(),
             "cdp": {
                 "enabled": bool(self.config.get("cdp_injection_enabled", False)),
