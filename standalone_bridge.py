@@ -6492,20 +6492,8 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                         only_channel=str(query.get("channel", [""])[0]),
                     )
             except (QnCatalogError, ValueError) as error:
-                # 页面里没有 mtop 桥（dx-h5 / workbench 缺失）时，退回到
-                # 千牛客户端原生日志里捕获的 reception.detail.get 订单。
-                native = self._native_orders_payload(query, history=history,
-                                                    error=str(error)[:300])
-                if native is not None:
-                    self.send_json(200, native)
-                    return
                 self.send_json(502, {"ok": False, "error": str(error)[:300]})
                 return
-            if not payload.get("orders"):
-                native = self._native_orders_payload(query, history=history)
-                if native is not None and native.get("count"):
-                    self.send_json(200, native)
-                    return
             self.send_json(200, {"ok": True, **payload})
             return
         if path == "/api/v1/catalog/shop":
@@ -6562,8 +6550,20 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                         only_channel=str(query.get("channel", [""])[0]),
                     )
             except (QnCatalogError, ValueError) as error:
+                # 页面里没有 mtop 桥（dx-h5 / workbench 缺失）时，退回到
+                # 千牛客户端原生日志里捕获的 reception.detail.get 订单。
+                native = self._native_orders_payload(query, history=history,
+                                                     error=str(error)[:300])
+                if native is not None:
+                    self.send_json(200, native)
+                    return
                 self.send_json(502, {"ok": False, "error": str(error)[:300]})
                 return
+            if not payload.get("orders"):
+                native = self._native_orders_payload(query, history=history)
+                if native is not None and native.get("count"):
+                    self.send_json(200, native)
+                    return
             self.send_json(200, {"ok": True, **payload})
             return
     def _native_orders_payload(self, query: dict[str, Any], history: bool = False,
