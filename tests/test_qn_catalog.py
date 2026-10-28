@@ -100,6 +100,8 @@ class NormalizeTests(unittest.TestCase):
         self.assertTrue(qc.mtop_ok({"ret": ["SUCCESS::ok"]}))
         self.assertFalse(qc.mtop_ok({"ret": ["FAIL_SYS_TOKEN_EMPTY::token"]}))
         self.assertTrue(qc.mtop_ok({"data": {}}))
+        self.assertFalse(qc.mtop_ok(None))
+        self.assertFalse(qc.mtop_ok({}))
         self.assertEqual(qc.mtop_ret({"ret": "SUCCESS::x"}), ["SUCCESS::x"])
 
     def test_collect_lists_walks_nested_wrappers(self):

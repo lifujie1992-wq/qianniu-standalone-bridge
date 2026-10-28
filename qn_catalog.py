@@ -92,7 +92,7 @@ _INVOKE_TEMPLATE = """
       param: { method: call.method, version: call.version || '1.0', param: call.param || {} }
     })]);
   }
-  // 通道 4：新版 dx-h5 的 QNAbilityCenter.ability.invoke
+  // 通道 4：官方 QNAbilityCenter JSSDK（sendMtop，不是把 mtop 方法名当 cmd）
   const center = window.QNAbilityCenter;
   if (want('QNAbilityCenter') && center && center.ability && typeof center.ability.invoke === 'function') {
     channels.push(['QNAbilityCenter', () => new Promise((resolve, reject) => {
@@ -102,8 +102,12 @@ _INVOKE_TEMPLATE = """
       }, 6000);
       try {
         center.ability.invoke({
-          cmd: call.method,
-          param: call.param,
+          cmd: 'sendMtop',
+          param: {
+            method: call.method,
+            version: call.version || '1.0',
+            param: JSON.stringify(call.param || {})
+          },
           success(info) { if (!settled) { settled = true; clearTimeout(timer); resolve(info === undefined ? null : info); } },
           error(err) {
             if (settled) return;
@@ -230,7 +234,16 @@ def mtop_ret(value: Any) -> list[str]:
 
 
 def mtop_ok(value: Any) -> bool:
-    """mtop 约定：`ret` 首项以 SUCCESS:: 开头即成功；没有 ret 视为成功。"""
+    """判断 mtop 是否至少返回了一个有效响应对象。
+
+    某些页面桥（现场的 imsdk2）会 Promise.resolve(null)。旧逻辑把
+    "没有 ret" 一律当成功，导致 null/{} 抢在真正的 QN.app 通道前面，
+    对外显示 ok=true、订单商品却都是 0。空响应必须失败；没有 ret 的
+    非空对象仍允许通过，因为 QN.app 的包装响应可能只带 data/api。
+    """
+    value = decode(value)
+    if not isinstance(value, dict) or not value:
+        return False
     ret = mtop_ret(value)
     if not ret:
         return True
