@@ -132,7 +132,8 @@ def advice(state_payload: dict[str, Any]) -> str:
     """给现场的一句人话；无障碍关着时这就是取不到订单的根因。"""
     enabled = state_payload.get("enabled")
     if enabled is True:
-        return ""
+        return ("千牛「无障碍模式」已打开。若仍取不到订单，请完全退出千牛"
+                "（托盘图标也要退出）后再打开，并在接待台点开该买家一次。")
     if enabled is False:
         return ("千牛「无障碍模式」是关闭的：客户端不会向页面注入原生 JSAPI，"
                 "取订单/商品必然失败。请在千牛 设置 → 通用 → 无障碍模式 打开，"

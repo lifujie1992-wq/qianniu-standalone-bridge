@@ -55,6 +55,23 @@ BACKFILL_BYTES = 32 * 1024 * 1024
 MAX_ORDERS_PER_BUYER = 50
 
 
+def buyer_lookup_keys(buyer_id: str) -> list[str]:
+    """工作台 cid / encrypt_id / 原生日志 buyerId 对不上时，把能试的键都列出来。
+
+    现场：会话 buyer_id 是 `2216107692369.1-126446588.1#11001@cntaobao`，
+    面板用点号前的数字当 securityBuyerUid；原生日志却按 reception.detail.get
+    的 `buyerId`（另一串数字）建索引。只拿其中一个去查，就会显示「暂无订单」。
+    """
+    value = str(buyer_id or "").strip()
+    if not value:
+        return []
+    keys = [value]
+    prefix = value.split(".", 1)[0].strip()
+    if prefix and prefix != value:
+        keys.append(prefix)
+    return list(dict.fromkeys(keys))
+
+
 def normalize_order(raw: dict[str, Any]) -> dict[str, Any]:
     """把 tradeSimpleList 的一条规整成助手内部订单结构。"""
     order_id = str(raw.get("bizOrderId") or raw.get("orderId") or "").strip()
@@ -336,29 +353,37 @@ class NativeOrderLog:
                 self.orders.pop(next(iter(self.orders)))
 
     # ---- 查询 ----
-    def orders_for(self, buyer_id: str) -> list[dict[str, Any]]:
-        key = str(buyer_id or "").strip()
-        if not key:
-            return []
+    def _match_buyer(self, buyer_id: str, nick: str = "") -> str:
+        for key in buyer_lookup_keys(buyer_id):
+            if key in self.orders:
+                return key
+        wanted = str(nick or "").strip()
+        if wanted:
+            for stored_id, stored_nick in self.nicks.items():
+                if stored_nick == wanted and stored_id in self.orders:
+                    return stored_id
+        return ""
+
+    def orders_for(self, buyer_id: str, nick: str = "") -> list[dict[str, Any]]:
         with self.lock:
+            key = self._match_buyer(buyer_id, nick)
+            if not key:
+                return []
             rows = self.orders.get(key) or []
-            nick = self.nicks.get(key, "")
+            stored_nick = self.nicks.get(key, "")
         result = [dict(row) for row in rows]
         for row in result:
-            row.setdefault("buyer_nick", nick)
+            row.setdefault("buyer_nick", stored_nick)
         return result
 
     def buyer_ids(self) -> list[str]:
         with self.lock:
             return list(self.orders.keys())
 
-    def known(self, buyer_id: str) -> bool:
+    def known(self, buyer_id: str, nick: str = "") -> bool:
         """该买家是否在原生 reception 响应里出现过（即使当时没有订单）。"""
-        key = str(buyer_id or "").strip()
-        if not key:
-            return False
         with self.lock:
-            return key in self.orders
+            return bool(self._match_buyer(buyer_id, nick))
 
     def sample_buyer(self) -> str:
         """随便挑一个**确实有订单**的买家，给现场自检当取样点。"""

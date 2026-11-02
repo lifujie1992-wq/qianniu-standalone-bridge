@@ -105,7 +105,7 @@
     .session-name { min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .handoff-tag { flex: 0 0 auto; padding: 1px 4px; border: 1px solid #e6a23c; border-radius: 3px; color: #9a4f00; background: #fff4df; font-size: 9px; line-height: 1.35; }
     .session-preview { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .session-side { align-self: stretch; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; gap: 6px; }
+    .session-side { align-self: stretch; min-width: 64px; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; gap: 6px; }
     .session-time { color: var(--subtle); font-size: 10px; white-space: nowrap; }
     .reply-countdown { padding: 2px 5px; border: 1px solid #dfb765; border-radius: 4px; background: #fff8e7; color: #895300; font-size: 10px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .reply-countdown.urgent { border-color: #e59367; background: #fff0e6; color: #a24116; }
@@ -188,7 +188,9 @@
     .catalog-tools { display: flex; gap: 6px; margin: 8px 0 7px; }
     .catalog-tools input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: inherit; font-size: 11px; }
     .catalog-tools button { padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
-    .catalog-tools button:disabled { opacity: .5; cursor: default; }    .signal-rail::before { content: ""; position: absolute; left: 3px; top: 4px; bottom: 6px; width: 1px; background: var(--border); }
+    .catalog-tools button:disabled { opacity: .5; cursor: default; }
+    .catalog-orders .empty, .catalog-goods .empty, .signal-rail .empty { min-height: 48px; padding: 10px; }
+    .signal-rail::before { content: ""; position: absolute; left: 3px; top: 4px; bottom: 6px; width: 1px; background: var(--border); }
     .signal-item { position: relative; padding: 0 0 13px; }
     .signal-dot { position: absolute; left: -18px; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--subtle); box-shadow: 0 0 0 3px var(--surface); }
     .signal-dot.ok { background: var(--success); }
@@ -265,6 +267,9 @@
     body.dock .search-wrap { padding: 8px; }
     body.dock .session-row { min-height: 58px; grid-template-columns: 32px minmax(0, 1fr) auto; padding-left: 8px; }
     body.dock .avatar { width: 30px; height: 30px; }
+    body.dock .session-side { min-width: 86px; max-width: 110px; overflow: hidden; }
+    body.dock .session-tools { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+    body.dock .session-preview { font-size: 11px; }
     /* The dock runs in an Edge --app window whose native title bar we strip; the
        topbar doubles as the drag handle (like 福客's panel) and carries its own
        window controls so the panel reads as a native app component. */
@@ -632,8 +637,8 @@
         const nameWrap = document.createElement('span'); nameWrap.className = 'session-name-wrap';
         const name = document.createElement('span'); name.className = 'session-name'; name.textContent = session.buyer_nick || session.buyer_id;
         nameWrap.append(name);
-        if (session.ai_mode === 'human') { const tag = document.createElement('span'); tag.className = 'handoff-tag'; tag.textContent = '待人工'; tag.title = session.handoff_reason || '需要人工介入'; nameWrap.append(tag); }
-        const preview = document.createElement('span'); preview.className = 'session-preview'; preview.textContent = session.ai_mode === 'human' && session.handoff_reason ? `${session.handoff_reason} · ${session.last_message || '暂无消息内容'}` : (session.last_message || '暂无消息内容');
+        if (session.ai_mode === 'human') { const tag = document.createElement('span'); tag.className = 'handoff-tag'; tag.textContent = '待人工'; tag.title = humanHandoffReason(session.handoff_reason) || '需要人工介入'; nameWrap.append(tag); }
+        const preview = document.createElement('span'); preview.className = 'session-preview'; preview.textContent = sessionPreview(session);
         main.append(nameWrap, preview);
         const side = document.createElement('span'); side.className = 'session-side';
         const time = document.createElement('span'); time.className = 'session-time'; time.textContent = shortTime(session.last_ts);
@@ -643,8 +648,14 @@
         }
         const glyph = document.createElement('span'); glyph.className = 'open-glyph';
         glyph.textContent = session.ai_mode === 'human' ? (dockMode ? '人↗' : '人工') : (dockMode ? '↗' : '›');
-        if (dockMode) side.append(aiToggleChip(session), time, glyph);
-        else side.append(time, glyph);
+        if (dockMode) {
+          const tools = document.createElement('span');
+          tools.className = 'session-tools';
+          tools.append(aiToggleChip(session), glyph);
+          side.append(time, tools);
+        } else {
+          side.append(time, glyph);
+        }
         button.append(avatar, main, side);
         button.addEventListener('click', () => selectSession(session, dockMode));
         list.append(button);
@@ -683,9 +694,22 @@
         item.append(small, strong); ledger.append(item);
       }
     }
+    function humanHandoffReason(reason) {
+      const value = String(reason || '').trim();
+      if (!value) return '';
+      if (/^[a-z0-9_.:-]+$/i.test(value)) return '';
+      return value;
+    }
+    function sessionPreview(session) {
+      let text = String(session.last_message || '').replace(/\s+/g, ' ').trim();
+      if (/^https?:\/\//i.test(text) || /alicdn\.com/i.test(text)) text = '[图片]';
+      const reason = session.ai_mode === 'human' ? humanHandoffReason(session.handoff_reason) : '';
+      if (reason) return `${reason} · ${text || '暂无消息内容'}`;
+      return text || '暂无消息内容';
+    }
     function renderMessages(scroll = false) {
       const box = el('messages'); box.replaceChildren();
-      if (!state.current || !state.messages.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = state.current ? '暂无消息' : '请选择左侧会话'; box.append(empty); renderContext(); return; }
+      if (!state.current || !state.messages.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = state.current ? (state.messageError || '暂无消息') : '请选择左侧会话'; box.append(empty); renderContext(); return; }
       for (const message of state.messages) {
         const row = document.createElement('div'); row.className = `message ${message.role === 'seller' ? 'seller' : (message.role === 'draft' ? 'draft' : 'user')}`;
         const bubble = document.createElement('div'); bubble.className = 'bubble';
@@ -703,14 +727,21 @@
     async function loadMessages(forceScroll = false) {
       if (!state.current || dockMode) return;
       const sessionKey = keyOf(state.current), sequence = ++state.messageLoadSequence;
-      const query = new URLSearchParams({account: state.current.account, buyer_id: state.current.buyer_id});
-      const data = await api(`/api/v1/session?${query}`);
-      if (!state.current || keyOf(state.current) !== sessionKey || sequence !== state.messageLoadSequence) return;
-      const newest = data.messages.length ? data.messages[data.messages.length - 1].event_id : '';
-      const revision = data.messages.map(item => `${item.event_id}\u0000${item.msg_id}\u0000${item.role}\u0000${item.status}\u0000${item.content}`).join('\u0001');
-      const changed = newest !== state.lastNewest || revision !== state.lastMessageRevision;
-      state.messages = data.messages; state.lastNewest = newest; state.lastMessageRevision = revision;
-      if (changed || forceScroll) renderMessages(forceScroll || changed);
+      try {
+        const query = new URLSearchParams({account: state.current.account, buyer_id: state.current.buyer_id});
+        const data = await api(`/api/v1/session?${query}`);
+        if (!state.current || keyOf(state.current) !== sessionKey || sequence !== state.messageLoadSequence) return;
+        state.messageError = '';
+        const newest = data.messages.length ? data.messages[data.messages.length - 1].event_id : '';
+        const revision = data.messages.map(item => `${item.event_id}\u0000${item.msg_id}\u0000${item.role}\u0000${item.status}\u0000${item.content}`).join('\u0001');
+        const changed = newest !== state.lastNewest || revision !== state.lastMessageRevision;
+        state.messages = data.messages; state.lastNewest = newest; state.lastMessageRevision = revision;
+        if (changed || forceScroll) renderMessages(forceScroll || changed);
+      } catch (error) {
+        if (!state.current || keyOf(state.current) !== sessionKey || sequence !== state.messageLoadSequence) return;
+        state.messageError = error.message || String(error);
+        if (!state.messages.length) renderMessages(true);
+      }
     }
     async function openInQianniu(session) {
       const sequence = ++state.openSequence;
@@ -746,7 +777,7 @@
       await state.openingPromise;
     }
     async function selectSession(session, open = false) {
-      state.current = session; state.messages = []; state.lastNewest = ''; state.lastMessageRevision = '';
+      state.current = session; state.messages = []; state.lastNewest = ''; state.lastMessageRevision = ''; state.messageError = '';
       renderSessionMode();
       el('replyInput').disabled = false;
       renderSessions(); renderMessages();
@@ -798,9 +829,14 @@
         el('sendState').className = 'send-state';
         el('sendState').textContent = '';
       }
+      const settings = bridge.client_settings || {};
+      const ordersCapable = (bridge.browser.connections || []).some(page => page.imsdk_hooked);
+      let qianniuLabel = !receiveReady ? (appbiz.last_error || '接收链路断开') : (state.canSend ? '收发就绪' : '仅接收就绪');
+      if (settings.enabled === false) qianniuLabel = '无障碍模式关闭，取不到订单';
+      else if (settings.enabled === true && !ordersCapable) qianniuLabel = '无障碍已开，页面仍无 JSAPI，请彻底退出千牛再开';
       dotState(el('qianniuDot'), receiveReady ? (state.canSend ? 'ok' : 'warn') : 'bad');
-      el('qianniuText').textContent = !receiveReady ? (appbiz.last_error || '接收链路断开') : (state.canSend ? '收发就绪' : '仅接收就绪');
-      el('qianniuConnection').title = !receiveReady ? (appbiz.last_error || '千牛消息接收通道未就绪') : '';
+      el('qianniuText').textContent = qianniuLabel;
+      el('qianniuConnection').title = settings.advice || (!receiveReady ? (appbiz.last_error || '千牛消息接收通道未就绪') : '');
       const brain = bridge.brain || {};
       const server = brain.server_status || {};
       const serverKnown = !!brain.last_server_status_at;
@@ -903,7 +939,12 @@
       if (!encryptId) { box.innerHTML = '<div class="empty">当前会话没有可用的买家标识</div>'; return; }
       box.innerHTML = '<div class="empty">查询中…</div>';
       try {
-        const data = await api(`/api/v1/catalog/orders?buyer_encrypt_id=${encodeURIComponent(encryptId)}`);
+        const params = new URLSearchParams({
+          buyer_encrypt_id: encryptId,
+          buyer_id: session.buyer_id || '',
+          buyer_nick: session.buyer_nick || '',
+        });
+        const data = await api(`/api/v1/catalog/orders?${params}`);
         box.replaceChildren();
         if (!data.orders || !data.orders.length) box.innerHTML = '<div class="empty">该买家暂无订单</div>';
         for (const order of (data.orders || []).slice(0, 5)) {
@@ -913,7 +954,8 @@
             (order.items || []).map(item => item.goods_name).filter(Boolean).slice(0, 2).join(' / '),
           ]));
         }
-        el('catalogState').textContent = `${data.count || 0} 单`;
+        const source = data.source === 'native_log' ? ' · 原生日志' : '';
+        el('catalogState').textContent = `${data.count || 0} 单${source}`;
       } catch (error) {
         box.replaceChildren(catalogRow('订单查询失败', [error.message]));
         el('catalogState').textContent = '失败';

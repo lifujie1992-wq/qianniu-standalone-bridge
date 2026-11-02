@@ -782,6 +782,16 @@ class StateDB:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS sends_match_status ON sends(status,buyer_cid,created_at)"
             )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS events_payload_account_buyer_created
+                ON events(
+                    json_extract(payload, '$.account'),
+                    json_extract(payload, '$.buyer_id'),
+                    created_at DESC
+                )
+                """
+            )
 
     def remember_nickname(self, account: str, buyer_id: str, nickname: str) -> bool:
         nick = valid_nickname(nickname, buyer_id)
@@ -1443,10 +1453,22 @@ class StateDB:
     def workbench_messages(
         self, account: str, buyer_id: str, limit: int = 300
     ) -> list[dict[str, Any]]:
-        with self.lock, closing(self.connect()) as connection, connection:
+        """Load one conversation. Never scan the global newest-N window."""
+        account = str(account or "").strip()
+        buyer_id = str(buyer_id or "").strip()
+        cap = max(1, min(int(limit or 300), 1000))
+        if not account or not buyer_id:
+            return []
+        with closing(self.connect()) as connection:
             rows = connection.execute(
-                "SELECT event_id,payload,status FROM events ORDER BY created_at DESC LIMIT ?",
-                (WORKBENCH_MESSAGE_LIMIT,),
+                """
+                SELECT event_id,payload,status FROM events
+                WHERE json_extract(payload, '$.account')=?
+                  AND json_extract(payload, '$.buyer_id')=?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (account, buyer_id, cap),
             ).fetchall()
             send_rows = connection.execute(
                 """
@@ -1460,16 +1482,20 @@ class StateDB:
                 (buyer_id,),
             ).fetchall()
         messages: list[dict[str, Any]] = []
-        suppressed_parent_ids = self.brain_suppressed_message_ids()
+        suppressed_parent_ids: set[str] = set()
+        parsed_rows: list[tuple[Any, dict[str, Any]]] = []
         for row in rows:
             try:
                 event = json.loads(row["payload"])
             except (TypeError, ValueError):
                 continue
-            if str(event.get("account") or "") != account:
-                continue
-            if str(event.get("buyer_id") or "") != buyer_id:
-                continue
+            parsed_rows.append((row, event))
+            if event.get("brain_suppressed") or brain_event_suppression_reason(event):
+                for key in ("original_msg_id", "msg_id"):
+                    value = str(event.get(key) or "").strip()
+                    if value:
+                        suppressed_parent_ids.add(value)
+        for row, event in parsed_rows:
             content = str(event.get("content") or "")
             if not content:
                 continue
@@ -4758,7 +4784,7 @@ class ContextEnricher:
                     return output
         return output
 
-    def fetch(self, encrypt_id: str, biz_order_id: str = "", account: str = "") -> dict[str, Any]:
+    def fetch(self, encrypt_id: str, biz_order_id: str = "", account: str = "", nick: str = "", buyer_id: str = "") -> dict[str, Any]:
         account = str(account or "").strip()
         cache_key = (account, encrypt_id + ("|" + biz_order_id if tmall_guard_scope(account) and biz_order_id else ""))
         if tmall_guard_scope(account):
@@ -4850,12 +4876,12 @@ class ContextEnricher:
         if not orders:
             native_log = getattr(self.app, "native_orders", None)
             if native_log is not None:
-                native_rows = native_log.orders_for(encrypt_id)
+                native_rows = native_log.orders_for(encrypt_id, nick=nick) or native_log.orders_for(buyer_id, nick=nick)
                 if native_rows:
                     orders = native_rows
                     native_source = "native_log"
                     status = "found"
-                elif native_log.known(encrypt_id):
+                elif native_log.known(encrypt_id, nick=nick) or native_log.known(buyer_id, nick=nick):
                     # 客户端明确返回过这个买家、但接待详情里没有订单：
                     # 这是“确认无单”，不是“取不到”。
                     native_source = "native_log"
@@ -5217,8 +5243,10 @@ class ContextEnricher:
                 encrypt_id = self.buyer_encrypt_id(event)
                 biz_order_id = self.event_order_id(event)
                 account = str(event.get("account") or "").strip()
+                nick = str(event.get("buyer_nick") or event.get("nickname") or "").strip()
+                buyer_id = str(event.get("buyer_id") or "").strip()
                 self.requests += 1
-                enrichment = self.fetch(encrypt_id, biz_order_id, account)
+                enrichment = self.fetch(encrypt_id, biz_order_id, account, nick, buyer_id)
                 self.app.db.enrich_event(event_id, enrichment)
                 status = str(enrichment.get("context_enrich", {}).get("status") or "")
                 with self.lock:
@@ -6444,7 +6472,6 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             if not account or not buyer_id:
                 self.send_json(400, {"ok": False, "error": "account and buyer_id are required"})
                 return
-            self.app.expire_unconfirmed_sends()
             messages = self.app.db.workbench_messages(account, buyer_id)
             self.send_json(200, {
                 "ok": True,
@@ -6719,8 +6746,10 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if log is None:
             return None
         buyer = str(query.get("buyer_encrypt_id", [""])[0]).strip()
-        orders = log.orders_for(buyer)
-        if not orders and not log.known(buyer):
+        buyer_id = str(query.get("buyer_id", [""])[0]).strip()
+        nick = str(query.get("buyer_nick", [""])[0]).strip()
+        orders = log.orders_for(buyer, nick=nick) or log.orders_for(buyer_id, nick=nick)
+        if not orders and not (log.known(buyer, nick=nick) or log.known(buyer_id, nick=nick)):
             return None
         biz_order_id = str(query.get("biz_order_id", [""])[0]).strip()
         if biz_order_id:

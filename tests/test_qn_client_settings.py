@@ -54,8 +54,10 @@ class ReadTests(unittest.TestCase):
         self.assertIn("无障碍模式", text)
         self.assertIn("重启千牛", text)
 
-    def test_state_advice_empty_when_enabled(self):
-        self.assertEqual(cs.advice({"enabled": True, "readable": True}), "")
+    def test_state_advice_when_enabled_still_explains_restart(self):
+        text = cs.advice({"enabled": True, "readable": True})
+        self.assertIn("已打开", text)
+        self.assertIn("完全退出", text)
 
     def test_locate_prefers_existing(self):
         with tempfile.TemporaryDirectory() as tmp:
