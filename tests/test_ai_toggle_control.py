@@ -142,7 +142,9 @@ class DockToggleMarkupTests(unittest.TestCase):
 
     def test_dock_rows_render_an_ai_toggle(self):
         assert "function aiToggleChip(session)" in self.html
-        assert "if (dockMode) side.append(aiToggleChip(session), time, glyph);" in self.html
+        # 1.6.80 起行尾重构：AI 芯片和跳转箭头放进 tools 容器，时间在最左。
+        assert "tools.append(aiToggleChip(session), glyph);" in self.html
+        assert "side.append(time, tools);" in self.html
 
     def test_toggle_does_not_open_the_conversation(self):
         # 行本身是 <button>：芯片必须是 span，且点击/回车都要 stopPropagation。
@@ -161,7 +163,9 @@ class DockToggleMarkupTests(unittest.TestCase):
 
     def test_dock_only_chip_keeps_full_workbench_unchanged(self):
         # 非 dock 模式仍用原来的 AI / 人工 按钮，不重复渲染芯片。
-        assert "else side.append(time, glyph);" in self.html
+        assert "side.append(time, glyph);" in self.html
+        # 完整工作台分支不得挂芯片。
+        assert self.html.count("tools.append(aiToggleChip(session), glyph);") == 1
 
 
 if __name__ == "__main__":
