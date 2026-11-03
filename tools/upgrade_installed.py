@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 import zipfile
@@ -27,6 +28,26 @@ from device_identity import stable_device_id
 
 
 from app_version import VERSION
+UPGRADER_REVISION = "r2"
+
+
+def failure_report(error: Exception, stage: str, root: Path) -> str:
+    """Keep the failing operation and traceback without dumping seat credentials."""
+    detail = f"升级步骤：{stage}\n安装目录：{root}\n{type(error).__name__}: {error}"
+    filename = getattr(error, "filename", None)
+    if filename:
+        detail += f"\n相关文件：{filename}"
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    folders = [root / "upgrade-logs", Path(tempfile.gettempdir()) / "QianniuUpgradeLogs"]
+    for folder in folders:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            log = folder / f"upgrade-{VERSION}-{UPGRADER_REVISION}-{stamp}.log"
+            log.write_text(detail + "\n\n" + traceback.format_exc(), encoding="utf-8")
+            return detail + f"\n日志：{log}"
+        except OSError:
+            continue
+    return detail
 PROTECTED = {"config.json", "state", "runtime", "upgrade-backups"}
 PAYLOAD_FILES = {
     "QianniuAgent.exe", "_internal", "build", "browser_bridge.js", "appbiz_agent.js",
@@ -315,7 +336,12 @@ class Seat:
         args = [str(self.root / "QianniuAgent.exe")]
         if role != "tray":
             args += ["--role", role, "--config", str(self.root / "config.json")]
-        process = subprocess.Popen(args, cwd=self.root, creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+        executable = self.root / "QianniuAgent.exe"
+        if not executable.is_file():
+            raise FileNotFoundError(2, "升级后的助手程序不存在，可能被安全软件移除", str(executable))
+        environment = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+        process = subprocess.Popen(args, cwd=self.root, env=environment,
+                                   creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
         name = {"bridge": "standalone_bridge.pid", "dock": "docked_workbench.pid"}.get(role)
         if name:
             (self.root / "state").mkdir(exist_ok=True)
@@ -348,25 +374,41 @@ def resource_root() -> Path:
 
 
 def upgrade(root: Path, progress):
-    if installation(root) is None:
-        raise RuntimeError("未找到完整的旧版助手，请先打开原来的助手，再重新检测。")
-    manifest = read_json(resource_root() / "payload-manifest.json")
-    with tempfile.TemporaryDirectory(prefix="qn-upgrade-") as directory:
-        progress("正在校验升级文件…")
-        source = extract_payload(resource_root()/"payload.zip", Path(directory), manifest)
-        validate_runtime(root, source)
-        seat = Seat(root)
-        seat.ensure_idle()
-        backup = root / "upgrade-backups" / ("auto-" + VERSION + "-" + time.strftime("%Y%m%d-%H%M%S"))
-        return replace_program(root, source, backup, seat.stop, seat.start, progress)
+    stage = "检查安装目录"
+
+    def report(text):
+        nonlocal stage
+        stage = text
+        progress(text)
+
+    try:
+        report(stage)
+        if installation(root) is None:
+            raise RuntimeError("未找到完整的旧版助手，请先打开原来的助手，再重新检测。")
+        report("读取内置升级清单")
+        manifest = read_json(resource_root() / "payload-manifest.json")
+        report("创建升级临时目录")
+        with tempfile.TemporaryDirectory(prefix="qn-upgrade-") as directory:
+            report("正在校验并解压升级文件…")
+            source = extract_payload(resource_root()/"payload.zip", Path(directory), manifest)
+            report("检查千牛运行环境")
+            validate_runtime(root, source)
+            report("检测旧助手进程")
+            seat = Seat(root)
+            report("检查接待任务和本地服务")
+            seat.ensure_idle()
+            backup = root / "upgrade-backups" / ("auto-" + VERSION + "-" + time.strftime("%Y%m%d-%H%M%S"))
+            return replace_program(root, source, backup, seat.stop, seat.start, report)
+    except Exception as error:
+        raise RuntimeError(failure_report(error, stage, root)) from error
 
 
 def show_window():
     import tkinter as tk
     from tkinter import filedialog, ttk
     window = tk.Tk()
-    window.title(f"千牛助手 · 自动升级到 {VERSION}")
-    window.geometry("620x340")
+    window.title(f"千牛助手 · 自动升级到 {VERSION}（{UPGRADER_REVISION}）")
+    window.geometry("720x440")
     window.resizable(False, False)
     window.configure(bg="#f4f7fb")
     events = queue.Queue()
@@ -379,7 +421,7 @@ def show_window():
     picker = ttk.Combobox(window,textvariable=selection,state="readonly",font=("Microsoft YaHei UI",10),width=65)
     picker.pack(fill="x",padx=30,pady=(23,8))
     info = tk.StringVar(value="正在寻找旧版助手…")
-    tk.Label(window,textvariable=info,justify="left",wraplength=550,bg="#f4f7fb",fg="#33435a",font=("Microsoft YaHei UI",10)).pack(anchor="w",padx=30,pady=7)
+    tk.Label(window,textvariable=info,justify="left",wraplength=650,bg="#f4f7fb",fg="#33435a",font=("Microsoft YaHei UI",10)).pack(anchor="w",padx=30,pady=7)
     bar = ttk.Progressbar(window,mode="indeterminate")
     bar.pack(fill="x",padx=30,pady=10)
     controls = tk.Frame(window,bg="#f4f7fb")
@@ -510,7 +552,9 @@ def main():
             found = discover()
             for row in found:
                 validate_runtime(Path(row["path"]),source)
-        report = {"version": VERSION, "payload_verified": True, "installations": found, "read_only": True}
+                Seat(Path(row["path"])).ensure_idle()
+        report = {"version": VERSION, "upgrader_revision": UPGRADER_REVISION,
+                  "payload_verified": True, "installations": found, "read_only": True}
         if args.report:
             args.report.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
         elif sys.stdout is not None:

@@ -176,6 +176,34 @@ class AutoUpgradeTests(unittest.TestCase):
         with patch.object(upgrade,"stable_device_id",return_value="stable-test-device"), self.assertRaisesRegex(RuntimeError,"配置"):
             upgrade.check_preserved_config(original,path)
 
+    def test_missing_payload_reports_stage_path_and_saves_traceback(self):
+        empty = self.base / "missing-payload"
+        empty.mkdir()
+        with patch.object(upgrade, "resource_root", return_value=empty):
+            with self.assertRaisesRegex(RuntimeError, "读取内置升级清单") as caught:
+                upgrade.upgrade(self.root, Mock())
+        self.assertIn("payload-manifest.json", str(caught.exception))
+        logs = list((self.root / "upgrade-logs").glob("*.log"))
+        self.assertEqual(len(logs), 1)
+        text = logs[0].read_text(encoding="utf-8")
+        self.assertIn("Traceback", text)
+        self.assertNotIn("private-test-token", text)
+        self.assertEqual((self.root / "QianniuAgent.exe").read_bytes(), b"old-program")
+
+    def test_launch_resets_frozen_environment_for_independent_helper(self):
+        seat = upgrade.Seat(self.root)
+        with patch.object(upgrade.subprocess, "Popen") as launch:
+            seat.launch("tray")
+        self.assertEqual(launch.call_args.kwargs["env"]["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+
+    def test_missing_helper_executable_has_concrete_path(self):
+        seat = upgrade.Seat(self.root)
+        executable = self.root / "QianniuAgent.exe"
+        executable.unlink()
+        with self.assertRaises(FileNotFoundError) as caught:
+            seat.launch("tray")
+        self.assertEqual(caught.exception.filename, str(executable))
+
 
 if __name__ == "__main__":
     unittest.main()
