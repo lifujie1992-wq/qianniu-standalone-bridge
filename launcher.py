@@ -502,7 +502,8 @@ def sync_running_brain_config(config: dict, timeout: float = 3.0) -> dict:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # 127.0.0.1 不走系统代理（代理/加速器会把本机请求也接管）。
+        with direct_opener().open(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")[:400]
@@ -584,7 +585,7 @@ def request_bridge_shutdown(root: Path) -> bool:
                 "X-Bridge-Token": token,
             },
         )
-        with urllib.request.urlopen(request, timeout=2.0) as response:
+        with direct_opener().open(request, timeout=2.0) as response:
             return response.status == 202
     except (OSError, ValueError, urllib.error.URLError):
         return False

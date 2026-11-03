@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app_version import VERSION
-from device_identity import brain_workstation_token, http_header_value
+from device_identity import brain_workstation_token, direct_opener, http_header_value
 
 
 def version_key(value: str) -> tuple[int, ...]:
@@ -50,7 +50,8 @@ def fetch_update_manifest(config: dict[str, Any], timeout: float = 8.0) -> dict[
         "X-Agent-Id": http_header_value(config.get("brain_agent_id"), "大脑工位 ID"),
     })
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # 升级清单/安装包与大脑同源，同样绕过系统代理（2026-11-03 现场）。
+        with direct_opener().open(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8", "replace") or "{}")
     except (OSError, ValueError, urllib.error.URLError) as error:
         raise RuntimeError(f"检查更新失败：{error}") from error
@@ -83,7 +84,7 @@ def download_installer(release: dict[str, Any], timeout: float = 30.0) -> Path:
     total = 0
     request = urllib.request.Request(str(release["installer_url"]), headers={"Accept": "application/octet-stream"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response, temporary.open("wb") as output:
+        with direct_opener().open(request, timeout=timeout) as response, temporary.open("wb") as output:
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:

@@ -18,6 +18,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from app_version import VERSION
+from device_identity import direct_opener
 from brain_endpoint import brain_server_url
 from config_defaults import DEFAULT_WORKBENCH_PORT, apply_operational_defaults
 from device_identity import (
@@ -157,7 +158,10 @@ def test_brain_connection(config: dict, timeout: float = 5.0) -> None:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # 配置窗口的「测试连接」也必须绕过系统代理：现场（2026-11-03）
+        # 就是这里报的「无法连接大脑」—— 机器上的代理/加速器把请求
+        # 交给了一个不存在的出口。
+        with direct_opener().open(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8", "replace") or "{}")
     except (OSError, ValueError, urllib.error.URLError) as error:
         raise RuntimeError(f"无法连接大脑：{error}") from error

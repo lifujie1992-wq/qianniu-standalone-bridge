@@ -27,6 +27,17 @@ class DeviceIdentityError(RuntimeError):
 _DIRECT_OPENER: urllib.request.OpenerDirector | None = None
 
 
+def direct_opener() -> urllib.request.OpenerDirector:
+    """公共入口：绕过系统/环境代理的直连 opener（带缓存）。
+
+    大脑是固定公网 IP、本机探测是 127.0.0.1，都不需要代理；机器上装了
+    代理/加速器时，系统代理会把请求交给一个不存在的出口，报出
+    「[Errno 2] No such file or directory」「无法连接大脑」这类误导性
+    错误（2026-11-03 现场）。所有出站 HTTP 一律走这里。
+    """
+    return _direct_opener()
+
+
 def _direct_opener() -> urllib.request.OpenerDirector:
     """绕过系统/环境代理直连大脑。
 

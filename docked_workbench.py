@@ -19,6 +19,7 @@ from pathlib import Path
 import psutil
 
 from config_defaults import DEFAULT_WORKBENCH_PORT
+from device_identity import direct_opener
 
 
 def _app_root() -> Path:
@@ -279,8 +280,9 @@ class Win32:
 
 
 class DockedWorkbench:
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path, mode_override: str | None = None):
         self.config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        self.mode_override = mode_override
         self.stop_event = threading.Event()
         self.edge: subprocess.Popen[bytes] | None = None
         self.dock_hwnd = 0
@@ -379,9 +381,13 @@ class DockedWorkbench:
         while not self.stop_event.is_set():
             try:
                 request = urllib.request.Request(self.workbench_url(), method="GET")
-                with urllib.request.urlopen(request, timeout=5.0) as response:
-                    page = response.read(131072).decode("utf-8", errors="ignore")
-                    if response.status == 200 and DOCK_TITLE in page:
+                # 本机 workbench 探测不走系统代理（2026-11-03 现场）。
+                with direct_opener().open(request, timeout=5.0) as response:
+                    # The local workbench may serve a localized or refreshed
+                    # title, but an HTTP 200 already proves the panel endpoint
+                    # is ready. Requiring an exact Chinese title caused the
+                    # optional dock to time out on otherwise healthy pages.
+                    if response.status == 200:
                         return
             except (OSError, urllib.error.URLError):
                 pass
@@ -486,7 +492,7 @@ class DockedWorkbench:
         return False
 
     def run(self) -> int:
-        mode = str(self.config.get("dock_mode") or "snap").strip().lower()
+        mode = str(getattr(self, "mode_override", None) or self.config.get("dock_mode") or "snap").strip().lower()
         if mode == "snap":
             return self.run_snapping()
         return self.run_floating()
@@ -533,7 +539,6 @@ class DockedWorkbench:
         screen_w, _screen_h = self.screen_size()
         left = int(self.config.get("dock_x", max(0, screen_w - width - 24)))
         top = int(self.config.get("dock_y", 80))
-        self.wait_for_workbench()
         self.launch(Rect(left, top, left + width, top + height))
         # Stay alive until the app is stopped or the user closes the window.
         last_check = 0.0
@@ -650,6 +655,7 @@ def close_existing() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Dock the local reception list beside Qianniu")
     parser.add_argument("--config", default=str(ROOT / "config.json"))
+    parser.add_argument("--mode", choices=("snap", "floating"), default=None)
     parser.add_argument("--stop", action="store_true")
     args = parser.parse_args()
     if args.stop:
@@ -666,14 +672,17 @@ def main() -> int:
     LOG.addHandler(handler)
     LOG.setLevel(logging.INFO)
     LOG.info("Dock starting config=%s", args.config)
-    app = DockedWorkbench(Path(args.config))
+    app = DockedWorkbench(Path(args.config), mode_override=args.mode)
     signal.signal(signal.SIGINT, lambda *_: app.stop_event.set())
     signal.signal(signal.SIGTERM, lambda *_: app.stop_event.set())
     try:
         return app.run()
-    except Exception:
-        LOG.exception("Dock exited unexpectedly")
-        raise
+    except Exception as error:
+        # A missing or restarting Qianniu window is a normal startup condition
+        # for the optional floating panel. Keep the traceback out of the user's
+        # console; the tray will show the dock as stopped and can retry it.
+        LOG.warning("Dock unavailable: %s", error)
+        return 1
     finally:
         app.close()
         LOG.removeHandler(handler)

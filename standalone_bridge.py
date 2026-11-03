@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import http.client
 import gzip
 import hashlib
 from copy import deepcopy
@@ -296,6 +297,46 @@ def local_seat_ack_payload(db: Any, events: list[Any]) -> dict[str, Any]:
     return {"ok": True, "event_acks": acknowledgements}
 
 
+def urlopen_without_system_proxy(request: urllib.request.Request, timeout: float):
+    """Open a configured bridge endpoint without inheriting desktop proxy state."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(request, timeout=timeout)
+
+
+class _DirectHTTPResponse:
+    """Small urllib-compatible response wrapper backed by http.client."""
+
+    def __init__(self, connection: http.client.HTTPConnection, response: Any):
+        self._connection = connection
+        self._response = response
+        self.status = int(response.status)
+        self.headers = response.headers
+
+    def read(self, amount: int = -1) -> bytes:
+        return self._response.read(amount)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self._connection.close()
+
+
+def direct_http_open(request: urllib.request.Request, timeout: float) -> _DirectHTTPResponse:
+    parsed = urllib.parse.urlsplit(request.full_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("brain endpoint must use an http(s) URL")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    connection_type = (
+        http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    )
+    connection = connection_type(parsed.hostname, port, timeout=timeout)
+    path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    headers = {key: value for key, value in request.header_items()}
+    connection.request(request.get_method(), path, body=request.data, headers=headers)
+    return _DirectHTTPResponse(connection, connection.getresponse())
+
+
 def merge_events(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     merged = dict(current)
     for key, value in incoming.items():
@@ -574,6 +615,10 @@ RETENTION_SECONDS = 30 * 24 * 3600
 WORKBENCH_EVENT_LIMIT = 20000
 WORKBENCH_MESSAGE_LIMIT = 10000
 WORKBENCH_SESSION_LIMIT = 500
+# Manual/automatic human takeover is a session aid, not an archive.  Keeping
+# old controls in the dock made the handoff tab fill up to the hard 500-row
+# cap, even though those conversations no longer had usable messages.
+WORKBENCH_HUMAN_SESSION_MAX_AGE_SECONDS = 7 * 24 * 3600
 WORKBENCH_SESSION_CACHE_SECONDS = 10.0
 
 
@@ -781,6 +826,16 @@ class StateDB:
                 )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS sends_match_status ON sends(status,buyer_cid,created_at)"
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS events_payload_account_buyer_created
+                ON events(
+                    json_extract(payload, '$.account'),
+                    json_extract(payload, '$.buyer_id'),
+                    created_at DESC
+                )
+                """
             )
 
     def remember_nickname(self, account: str, buyer_id: str, nickname: str) -> bool:
@@ -1321,6 +1376,21 @@ class StateDB:
                 "control_updated_at": 0.0,
                 "handoff_expires_at": 0.0,
             }))
+        # A permanent manual control must not turn the floating handoff tab
+        # into an archive of every conversation ever handed to a person.  Keep
+        # a human session while it has recent activity or a recent takeover;
+        # stale rows are removed from the snapshot and can no longer consume
+        # the 500-session cap or open an empty conversation.
+        human_cutoff = now - WORKBENCH_HUMAN_SESSION_MAX_AGE_SECONDS
+        sessions = {
+            key: session
+            for key, session in sessions.items()
+            if session.get("ai_mode") != "human"
+            or max(
+                float(session.get("last_ts") or 0.0),
+                float(session.get("control_updated_at") or 0.0),
+            ) >= human_cutoff
+        }
         result = sorted(
             sessions.values(), key=lambda item: (item["ai_mode"] == "human", float(item["last_ts"])), reverse=True
         )[:WORKBENCH_SESSION_LIMIT]
@@ -1443,10 +1513,22 @@ class StateDB:
     def workbench_messages(
         self, account: str, buyer_id: str, limit: int = 300
     ) -> list[dict[str, Any]]:
-        with self.lock, closing(self.connect()) as connection, connection:
+        """Load one conversation. Never scan the global newest-N window."""
+        account = str(account or "").strip()
+        buyer_id = str(buyer_id or "").strip()
+        cap = max(1, min(int(limit or 300), 1000))
+        if not account or not buyer_id:
+            return []
+        with closing(self.connect()) as connection:
             rows = connection.execute(
-                "SELECT event_id,payload,status FROM events ORDER BY created_at DESC LIMIT ?",
-                (WORKBENCH_MESSAGE_LIMIT,),
+                """
+                SELECT event_id,payload,status FROM events
+                WHERE json_extract(payload, '$.account')=?
+                  AND json_extract(payload, '$.buyer_id')=?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (account, buyer_id, cap),
             ).fetchall()
             send_rows = connection.execute(
                 """
@@ -1460,16 +1542,20 @@ class StateDB:
                 (buyer_id,),
             ).fetchall()
         messages: list[dict[str, Any]] = []
-        suppressed_parent_ids = self.brain_suppressed_message_ids()
+        suppressed_parent_ids: set[str] = set()
+        parsed_rows: list[tuple[Any, dict[str, Any]]] = []
         for row in rows:
             try:
                 event = json.loads(row["payload"])
             except (TypeError, ValueError):
                 continue
-            if str(event.get("account") or "") != account:
-                continue
-            if str(event.get("buyer_id") or "") != buyer_id:
-                continue
+            parsed_rows.append((row, event))
+            if event.get("brain_suppressed") or brain_event_suppression_reason(event):
+                for key in ("original_msg_id", "msg_id"):
+                    value = str(event.get(key) or "").strip()
+                    if value:
+                        suppressed_parent_ids.add(value)
+        for row, event in parsed_rows:
             content = str(event.get("content") or "")
             if not content:
                 continue
@@ -2377,16 +2463,25 @@ class DeliveryWorker:
             },
         )
         try:
-            response_context = urllib.request.urlopen(
-                # This is a *local* durability self-check (default target is the
-                # bundled workbench on 127.0.0.1). A 1.5s budget is below what a
-                # busy seat can honour while 7 injected pages write SQLite, so the
-                # batch timed out, was marked failed and retried with backoff - the
-                # retry backoff, not the message itself, was the 10-30s delay seen
-                # on the brain side. Keep a generous local budget; the loop is
-                # woken by new events and drains immediately.
-                request, timeout=float(cfg.get("delivery_timeout_seconds", 8.0))
-            )
+            # This is a *local* durability self-check (default target is the
+            # bundled workbench on 127.0.0.1). A desktop proxy must never be
+            # allowed to intercept it; retry once with a direct opener when a
+            # stale proxy produces a local OSError.
+            timeout = float(cfg.get("delivery_timeout_seconds", 8.0))
+            if getattr(sys, "frozen", False):
+                try:
+                    response_context = direct_http_open(request, timeout)
+                except urllib.error.HTTPError:
+                    raise
+                except OSError:
+                    response_context = urllib.request.urlopen(request, timeout=timeout)
+            else:
+                try:
+                    response_context = urllib.request.urlopen(request, timeout=timeout)
+                except urllib.error.HTTPError:
+                    raise
+                except OSError:
+                    response_context = direct_http_open(request, timeout)
         except urllib.error.HTTPError as error:
             # 带上服务器正文：A(5) 需要按"是否重复回放"决定是否出队，
             # 只有状态码会丢失这个信息。
@@ -2732,7 +2827,21 @@ class BrainConnector:
             self.app.config.get("brain_request_timeout_seconds", 8.0)
         )
         try:
-            with urllib.request.urlopen(request, timeout=request_timeout) as response:
+            if getattr(sys, "frozen", False):
+                try:
+                    response_context = direct_http_open(request, request_timeout)
+                except urllib.error.HTTPError:
+                    raise
+                except OSError:
+                    response_context = urllib.request.urlopen(request, timeout=request_timeout)
+            else:
+                try:
+                    response_context = urllib.request.urlopen(request, timeout=request_timeout)
+                except urllib.error.HTTPError:
+                    raise
+                except OSError:
+                    response_context = direct_http_open(request, request_timeout)
+            with response_context as response:
                 raw = self._read_http_response(response)
         except urllib.error.HTTPError as error:
             detail = self._read_http_response(error)[:400]
@@ -4124,32 +4233,45 @@ class BrowserServer:
             raise RuntimeError("Qianniu browser bridge is not connected")
         values: list[Any] = []
         last_error: Exception | None = None
-        for connection in connections:
-            request_id = uuid.uuid4().hex
-            response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
-            with self.connection_lock:
-                self.pending[request_id] = response_queue
-            try:
+        requests: dict[str, queue.Queue[dict[str, Any]]] = {}
+        try:
+            for connection in connections:
+                request_id = uuid.uuid4().hex
+                response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
+                requests[request_id] = response_queue
+                with self.connection_lock:
+                    self.pending[request_id] = response_queue
                 self.send(connection, {
                     "method": "execute",
                     "request_id": request_id,
                     "expression": expression,
                 })
-                try:
-                    response = response_queue.get(timeout=timeout)
-                except queue.Empty:
-                    last_error = RuntimeError("Qianniu browser command timed out")
-                    continue
-                if not response.get("ok"):
-                    last_error = RuntimeError(
-                        str(response.get("error") or "Qianniu browser command failed")
-                    )
-                    continue
-                values.append(response.get("value"))
-            except Exception as error:
-                last_error = error
-            finally:
-                with self.connection_lock:
+            deadline = time.monotonic() + max(0.0, timeout)
+            pending_ids = set(requests)
+            while pending_ids and time.monotonic() < deadline:
+                progressed = False
+                for request_id in list(pending_ids):
+                    try:
+                        response = requests[request_id].get_nowait()
+                    except queue.Empty:
+                        continue
+                    pending_ids.remove(request_id)
+                    progressed = True
+                    if not response.get("ok"):
+                        last_error = RuntimeError(
+                            str(response.get("error") or "Qianniu browser command failed")
+                        )
+                        continue
+                    values.append(response.get("value"))
+                if pending_ids and not progressed:
+                    time.sleep(0.01)
+            if pending_ids:
+                last_error = RuntimeError("Qianniu browser command timed out")
+        except Exception as error:
+            last_error = error
+        finally:
+            with self.connection_lock:
+                for request_id in requests:
                     self.pending.pop(request_id, None)
         if not values:
             raise last_error or RuntimeError("Qianniu browser command could not be sent")
@@ -4248,7 +4370,7 @@ class BrowserServer:
       settled = true;
       resolve(value);
     };
-    const timer = setTimeout(() => finish({ok: false, err: 'Qianniu openChat callback timed out'}), 6000);
+    const timer = setTimeout(() => finish({ok: true, pending: true, href: location.href}), 1200);
     try {
       center.ability.invoke({
         cmd: 'openChat',
@@ -4311,7 +4433,7 @@ class BrowserServer:
         # has no conversation state, so an empty reading is inconclusive; only a
         # different ccode is a real mismatch.
         verified = not expected_ccode
-        if expected_ccode:
+        if expected_ccode and not accepted.get("pending"):
             deadline = time.time() + 3.5
             while time.time() < deadline:
                 try:
@@ -4333,6 +4455,7 @@ class BrowserServer:
             "ability_nick": ability_nick,
             "opened_ccode": str(current.get("ccode") or ""),
             "verified": verified,
+            "pending": bool(accepted.get("pending")),
             "page": str(accepted.get("href") or ""),
             "result": accepted.get("result"),
         }
@@ -4758,7 +4881,7 @@ class ContextEnricher:
                     return output
         return output
 
-    def fetch(self, encrypt_id: str, biz_order_id: str = "", account: str = "") -> dict[str, Any]:
+    def fetch(self, encrypt_id: str, biz_order_id: str = "", account: str = "", nick: str = "", buyer_id: str = "") -> dict[str, Any]:
         account = str(account or "").strip()
         cache_key = (account, encrypt_id + ("|" + biz_order_id if tmall_guard_scope(account) and biz_order_id else ""))
         if tmall_guard_scope(account):
@@ -4850,12 +4973,12 @@ class ContextEnricher:
         if not orders:
             native_log = getattr(self.app, "native_orders", None)
             if native_log is not None:
-                native_rows = native_log.orders_for(encrypt_id)
+                native_rows = native_log.orders_for(encrypt_id, nick=nick) or native_log.orders_for(buyer_id, nick=nick)
                 if native_rows:
                     orders = native_rows
                     native_source = "native_log"
                     status = "found"
-                elif native_log.known(encrypt_id):
+                elif native_log.known(encrypt_id, nick=nick) or native_log.known(buyer_id, nick=nick):
                     # 客户端明确返回过这个买家、但接待详情里没有订单：
                     # 这是“确认无单”，不是“取不到”。
                     native_source = "native_log"
@@ -5217,8 +5340,10 @@ class ContextEnricher:
                 encrypt_id = self.buyer_encrypt_id(event)
                 biz_order_id = self.event_order_id(event)
                 account = str(event.get("account") or "").strip()
+                nick = str(event.get("buyer_nick") or event.get("nickname") or "").strip()
+                buyer_id = str(event.get("buyer_id") or "").strip()
                 self.requests += 1
-                enrichment = self.fetch(encrypt_id, biz_order_id, account)
+                enrichment = self.fetch(encrypt_id, biz_order_id, account, nick, buyer_id)
                 self.app.db.enrich_event(event_id, enrichment)
                 status = str(enrichment.get("context_enrich", {}).get("status") or "")
                 with self.lock:
@@ -5587,7 +5712,10 @@ class CdpInjector:
 
     @staticmethod
     def targets(port: int) -> list[dict[str, Any]]:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=0.6) as response:
+        # 127.0.0.1 的 CDP 发现不走系统代理。
+        with urlopen_without_system_proxy(
+            urllib.request.Request(f"http://127.0.0.1:{port}/json/list"), 0.6
+        ) as response:
             payload = json.loads(response.read().decode("utf-8", "replace"))
         return payload if isinstance(payload, list) else []
 
@@ -6444,7 +6572,6 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             if not account or not buyer_id:
                 self.send_json(400, {"ok": False, "error": "account and buyer_id are required"})
                 return
-            self.app.expire_unconfirmed_sends()
             messages = self.app.db.workbench_messages(account, buyer_id)
             self.send_json(200, {
                 "ok": True,
@@ -6719,8 +6846,10 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if log is None:
             return None
         buyer = str(query.get("buyer_encrypt_id", [""])[0]).strip()
-        orders = log.orders_for(buyer)
-        if not orders and not log.known(buyer):
+        buyer_id = str(query.get("buyer_id", [""])[0]).strip()
+        nick = str(query.get("buyer_nick", [""])[0]).strip()
+        orders = log.orders_for(buyer, nick=nick) or log.orders_for(buyer_id, nick=nick)
+        if not orders and not (log.known(buyer, nick=nick) or log.known(buyer_id, nick=nick)):
             return None
         biz_order_id = str(query.get("biz_order_id", [""])[0]).strip()
         if biz_order_id:
@@ -6908,11 +7037,50 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 buyer_nick = valid_nickname(session.get("buyer_nick"), buyer_id)
                 if not buyer_nick:
                     raise ValueError("该会话暂未获取到有效买家昵称，请等待昵称同步后重试")
+                # Prefer native openChat when the browser bridge is connected;
+                # it carries the encrypted buyer identity and avoids waiting
+                # for WWCmd's slow timeout.
+                if self.app.browser.connected:
+                    try:
+                        security_uid = ContextEnricher.buyer_encrypt_id({"buyer_id": buyer_id})
+                        native_response = self.app.browser.open_conversation(
+                            buyer_nick,
+                            expected_ccode=buyer_id,
+                            security_uid=security_uid,
+                        )
+                        if isinstance(native_response, dict) and native_response.get("ok"):
+                            native_response["via"] = "qianniu_openChat"
+                            native_response["focused"] = self.app.focus_qianniu()
+                            native_response.update(account=account, buyer_id=buyer_id)
+                            self.send_json(200, native_response)
+                            return
+                    except RuntimeError:
+                        pass
                 try:
                     # dx-h5 can be connected without any native openChat API.
                     # WWCmd targets the seller account explicitly and works
                     # even when the message-center web page is not loaded.
                     response = self.app.open_conversation_protocol(account, buyer_nick, buyer_id)
+                    # WWCmd can return success before Qianniu finishes creating
+                    # the conversation. If native selection was not confirmed,
+                    # retry through openChat with the buyer's encrypted ID.
+                    if (isinstance(response, dict) and not response.get("verified")
+                            and self.app.browser.connected):
+                        security_uid = ContextEnricher.buyer_encrypt_id({"buyer_id": buyer_id})
+                        try:
+                            native_response = self.app.browser.open_conversation(
+                                buyer_nick,
+                                expected_ccode=buyer_id,
+                                security_uid=security_uid,
+                            )
+                            if isinstance(native_response, dict) and native_response.get("ok"):
+                                response = {
+                                    **response,
+                                    **native_response,
+                                    "via": "qianniu_wwcmd+openChat",
+                                }
+                        except RuntimeError as error:
+                            LOG.warning("native openChat fallback failed: %s", str(error)[:200])
                 except FileNotFoundError as error:
                     if not self.app.browser.connected:
                         raise RuntimeError("未找到千牛会话跳转入口，请确认千牛已启动") from error

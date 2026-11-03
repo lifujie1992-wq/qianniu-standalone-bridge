@@ -406,3 +406,42 @@ class DeviceMigrationProxyBypassTests(unittest.TestCase):
         )
         device_identity._DIRECT_OPENER = None
         opener.assert_called_once()
+
+
+class BrainTestConnectionProxyBypassTests(unittest.TestCase):
+    """1.6.82：配置窗「测试连接」必须绕过系统代理（现场报「无法连接大脑」）。"""
+
+    def test_test_connection_uses_direct_opener(self):
+        import config_dialog
+        import urllib.request
+
+        response = mock.MagicMock()
+        response.status = 200
+        response.read.return_value = b'{"ok": true}'
+        opener = mock.MagicMock()
+        opener.open.return_value.__enter__.return_value = response
+        config = {
+            "brain_server_url": "http://127.0.0.1:1",
+            "brain_agent_token": "t",
+            "brain_agent_id": "agent-x",
+            "device_id": "device-x",
+        }
+        with mock.patch.object(config_dialog, "direct_opener", return_value=opener), \
+                mock.patch.object(urllib.request, "urlopen", side_effect=AssertionError("must not use proxied urlopen")):
+            config_dialog.test_brain_connection(config, timeout=0.5)
+        opener.open.assert_called_once()
+
+    def test_dock_workbench_wait_uses_direct_opener(self):
+        import docked_workbench
+
+        response = mock.MagicMock()
+        response.status = 200
+        opener = mock.MagicMock()
+        opener.open.return_value.__enter__.return_value = response
+        holder = object.__new__(docked_workbench.DockedWorkbench)
+        holder.stop_event = mock.MagicMock()
+        holder.stop_event.is_set.return_value = False
+        holder.workbench_url = lambda: "http://127.0.0.1:18776/"
+        with mock.patch.object(docked_workbench, "direct_opener", return_value=opener):
+            holder.wait_for_workbench(timeout=1.0)
+        opener.open.assert_called_once()
