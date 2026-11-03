@@ -15,7 +15,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -173,7 +173,9 @@ class SetupAndUpdateTests(unittest.TestCase):
             "sha256": "a" * 64,
             "size": 123,
         })
-        with patch.object(client_updater.urllib.request, "urlopen", return_value=response):
+        opener = MagicMock()
+        opener.open.return_value.__enter__.return_value = response
+        with patch.object(client_updater, "direct_opener", return_value=opener):
             release = client_updater.fetch_update_manifest(config)
         self.assertTrue(client_updater.update_available(release))
         response = FakeHttpResponse(200, {
@@ -181,7 +183,9 @@ class SetupAndUpdateTests(unittest.TestCase):
             "installer_url": "http://downloads.example/setup.exe",
             "sha256": "a" * 64,
         })
-        with patch.object(client_updater.urllib.request, "urlopen", return_value=response):
+        opener = MagicMock()
+        opener.open.return_value.__enter__.return_value = response
+        with patch.object(client_updater, "direct_opener", return_value=opener):
             with self.assertRaisesRegex(ValueError, "HTTPS"):
                 client_updater.fetch_update_manifest(config)
 
@@ -226,7 +230,9 @@ class SetupAndUpdateTests(unittest.TestCase):
 
     def test_download_rejects_a_checksum_mismatch(self):
         response = io.BytesIO(b"installer bytes")
-        with patch.object(client_updater.urllib.request, "urlopen", return_value=response):
+        opener = MagicMock()
+        opener.open.return_value.__enter__.return_value = response
+        with patch.object(client_updater, "direct_opener", return_value=opener):
             with self.assertRaisesRegex(RuntimeError, "校验失败"):
                 client_updater.download_installer({
                     "version": "9.9.9",
@@ -607,13 +613,11 @@ class LauncherLifecycleTests(unittest.TestCase):
             "brain_ai_reply_enabled": True,
             "brain_remote_open_chat_enabled": True,
         }
-        with patch.object(
-            launcher.urllib.request,
-            "urlopen",
-            return_value=FakeHttpResponse(200, {"ok": True}),
-        ) as urlopen:
+        opener = MagicMock()
+        opener.open.return_value.__enter__.return_value = FakeHttpResponse(200, {"ok": True})
+        with patch.object(launcher, "direct_opener", return_value=opener):
             payload = launcher.sync_running_brain_config(config)
-        request = urlopen.call_args.args[0]
+        request = opener.open.call_args.args[0]
         sent = json.loads(request.data.decode("utf-8"))
         headers = {key.lower(): value for key, value in request.header_items()}
         self.assertTrue(payload["ok"])
