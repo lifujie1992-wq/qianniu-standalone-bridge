@@ -18,6 +18,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from app_version import VERSION
+from brain_auth import describe_brain_error, format_brain_error, token_fingerprint
 from device_identity import direct_opener
 from brain_endpoint import brain_server_url
 from config_defaults import DEFAULT_WORKBENCH_PORT, apply_operational_defaults
@@ -165,11 +166,11 @@ def test_brain_connection(config: dict, timeout: float = 5.0) -> None:
             payload = json.loads(response.read().decode("utf-8", "replace") or "{}")
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")[:400]
-        if "invalid agent token" in detail.lower():
-            raise RuntimeError(
-                "大脑已连通，但工位令牌无效（invalid agent token）。"
-                "请从当前大脑后台复制此客服工位的有效令牌，保存后重新测试连接。"
-            ) from error
+        described = describe_brain_error(
+            error.code, detail, token=token, server_url=server_url
+        )
+        if described["auth"]:
+            raise RuntimeError(format_brain_error(described)) from error
         raise RuntimeError(f"大脑拒绝连接：HTTP {error.code}: {detail or error.reason}") from error
     except (OSError, ValueError, urllib.error.URLError) as error:
         raise RuntimeError(f"无法连接大脑：{error}") from error
@@ -256,10 +257,20 @@ class ConfigDialog:
         self.config["brain_agent_name"] = self.brain_name.get().strip() or "千牛本机工位"
 
     def _settings_error(self) -> str:
-        return validate_brain_settings(
-            str(self.config.get("brain_server_url") or ""),
-            brain_workstation_token(self.config),
+        token = brain_workstation_token(self.config)
+        error = validate_brain_settings(
+            str(self.config.get("brain_server_url") or ""), token
         )
+        if error:
+            return error
+        gateway = str(self.config.get("gateway_agent_token") or "").strip()
+        if gateway and gateway == token:
+            # 现场最常见的填错：把本地网关令牌粘到了大脑工位令牌上。
+            return (
+                "这里要填「大脑工位令牌」，不是本机网关令牌；两者是不同令牌，"
+                "填反了打开大脑就会报 invalid agent token。"
+            )
+        return ""
 
     def _test_connection(self) -> None:
         self._collect_brain()
@@ -272,7 +283,10 @@ class ConfigDialog:
         try:
             test_brain_connection(self.config)
         except (ValueError, RuntimeError) as error:
-            self.connection_status.set("连接失败")
+            fingerprint = token_fingerprint(brain_workstation_token(self.config))
+            self.connection_status.set(
+                f"连接失败 · {fingerprint}" if fingerprint else "连接失败"
+            )
             messagebox.showerror("千牛客服助手", str(error))
             return
         self.connection_status.set("连接成功")

@@ -195,6 +195,71 @@ foreach ($v in $verDirs) {
     }
 }
 
+# ---------- 8.5 大脑注册探针（只读，令牌只留指纹） ----------
+# 2026-11-04 现场：助手只显示一句 invalid agent token，无法判断是"令牌被重置"
+# 还是"网络/代理/换机"。这里用同一套 header 直接打一次 register，把服务端的
+# 原始状态码和回包记下来；令牌本身绝不落盘，只留 sha256 前 10 位。
+$brainUrl = [string]$cfg.brain_server_url
+$brainToken = [string]$cfg.brain_agent_token
+Say ""
+if ($brainUrl -and $brainToken) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $hashHex = (($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($brainToken))) |
+                ForEach-Object { $_.ToString("x2") }) -join ""
+    $fp = "sha256:" + $hashHex.Substring(0, 10)
+    $probe = [ordered]@{
+        url = "$brainUrl/api/bridge/v1/register"; status = 0; ms = 0; ok = $false
+        error = ""; body = ""; token_fingerprint = $fp
+        agent_id = [string]$cfg.brain_agent_id; device_id = [string]$cfg.device_id
+    }
+    $payload = @{
+        agent_id = [string]$cfg.brain_agent_id
+        agent_name = "现场诊断探针"
+        version = "diagnostic-probe"
+    } | ConvertTo-Json -Compress
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $r = Invoke-WebRequest -Uri $probe.url -Method Post -UseBasicParsing -TimeoutSec 10 `
+             -ContentType "application/json; charset=utf-8" `
+             -Headers @{
+                 "X-Agent-Token" = $brainToken
+                 "X-Agent-Id" = [string]$cfg.brain_agent_id
+                 "X-Device-Id" = [string]$cfg.device_id
+             } -Body $payload
+        $sw.Stop()
+        $probe.status = [int]$r.StatusCode
+        $probe.body = [string]$r.Content
+        $probe.ok = ($probe.status -eq 200)
+    } catch {
+        $sw.Stop()
+        $resp = $_.Exception.Response
+        if ($resp) {
+            $probe.status = [int]$resp.StatusCode
+            try {
+                $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+                $probe.body = $sr.ReadToEnd()
+            } catch { }
+        }
+        $probe.error = $_.Exception.Message
+    }
+    $probe.ms = $sw.ElapsedMilliseconds
+    ($probe | ConvertTo-Json -Depth 4) | Set-Content (Join-Path $work "brain-register-probe.json") -Encoding UTF8
+    Say "大脑注册  : HTTP $($probe.status)  $($probe.body)"
+    Say "工位令牌  : $fp（只记指纹，令牌本身不入报告）  工位ID=$($probe.agent_id)"
+    if ($probe.ok) {
+        Say "            令牌有效，注册通过。"
+    } elseif ($probe.status -eq 403 -and $probe.body -match 'invalid agent token') {
+        Say "            服务端不认这串工位令牌：请在大脑后台该工位下重新生成令牌。"
+        Say "            重装客户端、改网络、关代理都不会恢复。"
+    } elseif ($probe.status -eq 0) {
+        Say "            请求没有完成：查本机到大脑的连通性（断网/防火墙/地址不对）。"
+    } else {
+        Say "            服务端原话见上，请连同本报告发回技术同学。"
+    }
+} else {
+    Say "大脑注册  : 跳过（未配置大脑地址或工位令牌）"
+}
+
 # ---------- 9. 日志尾部 ----------
 $log = Join-Path $dir "state\standalone_bridge.log"
 if (Test-Path $log) {
@@ -219,6 +284,17 @@ Say ""
 Say "==== 结论 ===="
 $good = ($goods.ok -and $goods.data.ok) -or ($orders.ok -and $orders.data.ok)
 if ($good) { Say "能取到数据。" } else { Say "取不到数据，请把本报告发回技术同学。" }
+if ($brainUrl -and $brainToken) {
+    if ($probe.ok) {
+        Say "大脑注册  : 正常（HTTP 200）"
+    } elseif ($probe.status -eq 403 -and $probe.body -match 'invalid agent token') {
+        Say "大脑注册  : 被拒（HTTP 403 invalid agent token，令牌 $fp）—— 令牌失效，需大脑后台重新生成。"
+    } elseif ($probe.status -eq 0) {
+        Say "大脑注册  : 请求未完成 —— 网络/地址问题，不是令牌问题。"
+    } else {
+        Say "大脑注册  : HTTP $($probe.status)，见 brain-register-probe.json。"
+    }
+}
 $lines | Set-Content (Join-Path $work "summary.txt") -Encoding UTF8
 
 $zipOut = Join-Path ([Environment]::GetFolderPath("Desktop")) "千牛诊断-$($env:COMPUTERNAME)-$stamp.zip"

@@ -174,6 +174,8 @@
     .facts { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; }
     .facts dt { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .facts dd { margin: 0; text-align: right; max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* 最近错误/处理建议是整句话，占满一行换行显示，不要截成省略号 */
+    .facts dd.wide { grid-column: 1 / -1; text-align: left; max-width: none; white-space: normal; overflow: visible; line-height: 1.5; }
     .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 10px; }
     .metrics { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--border); border-radius: 4px; }
     .metric { padding: 8px; border-right: 1px solid var(--border); }
@@ -346,6 +348,8 @@
         <div class="section-title"><h2>大脑连接</h2><span class="state-label" id="brainState">未配置</span></div>
         <dl class="facts">
           <dt>工位</dt><dd class="mono" id="brainAgent">-</dd>
+          <dt>工位来源</dt><dd id="brainAgentSource">-</dd>
+          <dt>令牌</dt><dd class="mono" id="brainToken">-</dd>
           <dt>地址</dt><dd class="mono" id="brainUrl">-</dd>
           <dt>注册</dt><dd id="brainRegister">-</dd>
           <dt>心跳</dt><dd id="brainHeartbeat">-</dd>
@@ -353,7 +357,8 @@
           <dt>自动发送</dt><dd id="brainAutoSend">-</dd>
           <dt>最近命令</dt><dd id="brainLastCommand">-</dd>
           <dt>请求耗时</dt><dd class="mono" id="brainLatency">-</dd>
-          <dt>最近错误</dt><dd id="brainError">-</dd>
+          <dt>最近错误</dt><dd class="wide" id="brainError">-</dd>
+          <dt>处理建议</dt><dd class="wide" id="brainFix">-</dd>
         </dl>
       </section>
       <section class="evidence-section">
@@ -868,15 +873,24 @@
       const bridge = state.status.bridge; const brain = bridge.brain || {};
       const server = brain.server_status || {}; const serverKnown = !!brain.last_server_status_at;
       const shadowOnly = serverKnown && !server.own_auto_send_enabled;
-      el('brainState').textContent = !brain.configured ? '未配置' : (brain.state === 'online' ? (shadowOnly ? '在线 · 仅影子' : '在线') : '降级');
+      const brainRejected = !!brain.auth_rejected;
+      const brainLabel = !brain.configured ? '未配置' : (brain.state === 'online' ? (shadowOnly ? '在线 · 仅影子' : '在线') : (brainRejected ? '令牌被拒' : '降级'));
+      el('brainState').textContent = brainLabel;
       el('brainState').className = `state-label ${brain.state === 'online' ? (shadowOnly ? 'warn' : 'ok') : (brain.last_error ? 'bad' : 'warn')}`;
       el('brainAgent').textContent = brain.agent_id || '-'; el('brainUrl').textContent = brain.server_url || '-';
+      el('brainAgentSource').textContent = brain.agent_id_source || '-';
+      const tokenSourceLabel = brain.token_source === 'gateway_agent_token' ? ' · 误用本地网关令牌' : '';
+      el('brainToken').textContent = brain.token_fingerprint ? `${brain.token_fingerprint}${tokenSourceLabel}` : '未配置';
       el('brainRegister').textContent = relativeTime(brain.last_register_at); el('brainHeartbeat').textContent = relativeTime(brain.last_heartbeat_at);
       el('brainServerMode').textContent = serverKnown ? `${server.brain_mode || '未知'} / ${server.send_mode || '未知'}` : '-';
       el('brainAutoSend').textContent = serverKnown ? (server.own_auto_send_enabled ? `已开启 · ${server.armed_shop_count || 0} 家店` : '未开启（只生成草稿）') : '-';
       el('brainLastCommand').textContent = brain.last_command_at ? `${relativeTime(brain.last_command_at)} · ${brain.last_command_type || 'unknown'}` : '从未收到';
       el('brainLatency').textContent = brain.last_request_ms ? `${brain.last_request_ms} ms` : '-';
-      el('brainError').textContent = brain.last_error || '-'; el('brainError').title = brain.last_error || '';
+      el('brainError').textContent = brain.last_error || '-';
+      el('brainError').title = [brain.last_error, brain.last_error_hint].filter(Boolean).join('\n');
+      const brainWarnings = brain.config_warnings || [];
+      el('brainFix').textContent = brain.last_error_hint || brainWarnings[0] || '-';
+      el('brainFix').title = [brain.last_error_hint].concat(brainWarnings).filter(Boolean).join('\n');
       const events = brain.events || {}; const commands = brain.commands || {};
       el('queuePending').textContent = String(events.pending || 0); el('queueDelivered').textContent = String(events.delivered || 0);
       el('commandPending').textContent = String(commands.result_pending || 0);

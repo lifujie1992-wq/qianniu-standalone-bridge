@@ -16,6 +16,20 @@
 
 完整协议证据、架构和验证说明见 [`docs/2026-08-15_reverse-brain-workbench-integration-report.md`](docs/2026-08-15_reverse-brain-workbench-integration-report.md)。
 
+### 大脑报 `invalid agent token` 怎么办
+
+这是**服务端不认这串工位令牌**，不是网络、代理或千牛的问题：重装客户端、换网络都不会恢复。
+
+```powershell
+python tools\check_brain_token.py          # 打一次 register，打印令牌指纹 + 服务端回包 + 结论
+```
+
+- 工作台「AI 白盒 → 大脑连接」现在会显示「令牌指纹 / 最近错误 / 处理建议」；状态标签直接写「令牌被拒」。
+- 把令牌指纹（`sha256:xxxxxxxxxx`，不是令牌本身）发给大脑同学：若库里令牌哈希不同，说明被重置，重新签发即可；若相同，查 `/api/bridge/v1/*` 的网关上游。
+- 现场只需要跑 `field-support\诊断-双击我.cmd`，诊断包里的 `brain-register-probe.json` 会带上同样的证据。
+
+详见 [`docs/2026-11-04-brain-agent-token-diagnostics.md`](docs/2026-11-04-brain-agent-token-diagnostics.md)。
+
 独立千牛消息桥。它复用操作者在官方千牛中的正常登录会话，不依赖探域账号、探域进程、探域云接口、旧 IPC 或旧注入 DLL。
 
 完整逆向与验收记录见 [docs/2026-08-14_reverse-qianniu-standalone-bridge-report.md](docs/2026-08-14_reverse-qianniu-standalone-bridge-report.md)。

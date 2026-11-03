@@ -34,6 +34,11 @@ import psutil
 import websocket
 
 from app_version import VERSION
+from brain_auth import (
+    describe_brain_error,
+    format_brain_error,
+    token_fingerprint,
+)
 from taobao_message_contract import select_parent as tmall_select_parent
 from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence
 from tmall_delivery_guard import delivery_identity_view as tmall_delivery_identity_view
@@ -215,29 +220,46 @@ def brain_event_suppression_reason(event: dict[str, Any]) -> str:
 
 
 
-def token_fingerprint(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    digest = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
-    return f"sha256:{digest[:10]}"
-
-
 def classify_brain_http_error(status_code: int, detail: str, *, token: str = "") -> str:
-    text = str(detail or "").strip()
-    lowered = text.lower()
-    suffix = f" ({token_fingerprint(token)})" if token else ""
-    if status_code == 401:
-        return f"大脑 HTTP 401：令牌无效或已失效{suffix}"
-    if status_code == 403:
-        if any(key in lowered for key in ("device binding", "binding mismatch", "device_mismatch", "machine", "device_id")):
-            return "大脑 HTTP 403：设备绑定不匹配"
-        if any(key in lowered for key in ("invalid token", "token invalid", "token expired", "bad token", "forbidden token", "signature")):
-            return f"大脑 HTTP 403：令牌无效{suffix}"
-        return "大脑 HTTP 403：服务端拒绝访问"
-    if text:
-        return f"大脑 HTTP {status_code}: {text[:400]}"
-    return f"大脑 HTTP {status_code}"
+    """One-line, dialog-ready conclusion for a rejected brain request.
+
+    The heavy lifting lives in :mod:`brain_auth` so the config dialog, the field
+    diagnostic package and this module all describe a failure identically.
+    """
+    return format_brain_error(
+        describe_brain_error(status_code, detail, token=token)
+    )
+
+
+class BrainRequestError(RuntimeError):
+    """A brain request the server answered, but refused.
+
+    Carries the machine-readable parts so the connector can publish them in
+    ``/api/v1/status`` instead of one opaque English sentence: which token was
+    rejected (fingerprint only), the HTTP status, the server's error code, and
+    whether retrying the same credential can ever help.
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        detail: str = "",
+        *,
+        token: str = "",
+        server_url: str = "",
+    ) -> None:
+        self.info = describe_brain_error(
+            status_code, detail, token=token, server_url=server_url
+        )
+        self.status_code = int(self.info["status"])
+        self.error_code = str(self.info["code"])
+        self.auth_rejected = bool(self.info["auth"])
+        self.retryable = bool(self.info["retryable"])
+        self.hint = str(self.info["hint"])
+        self.fingerprint = str(self.info["fingerprint"])
+        self.detail = str(detail or "")[:400]
+        super().__init__(str(self.info["message"]))
+
 
 
 def backoff_delay(attempts: int, minimum: float = 0.5, maximum: float = 15.0) -> float:
@@ -2629,6 +2651,16 @@ class BrainConnector:
         self._activity: list[dict[str, Any]] = []
         self._draft_watch: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._draft_seeded = False
+        # 鉴权失败的结构化证据（见 brain_auth）：面板/状态接口/诊断包都读这里。
+        # 现场 2026-11-04 的 `invalid agent token` 只能显示一句英文，无法判断
+        # 是哪串令牌、服务端给了什么状态码、重试有没有意义。
+        self.last_error_code = ""
+        self.last_error_status = 0
+        self.last_error_hint = ""
+        self.last_error_fingerprint = ""
+        self.auth_rejected = False
+        self._last_auth_record_at = 0.0
+
 
     def start(self) -> None:
         self.start_sender_pool()
@@ -2664,6 +2696,114 @@ class BrainConnector:
             or self.app.config.get("device_id")
             or ""
         ).strip()
+
+    def agent_id_source(self) -> str:
+        """Which config key currently supplies ``X-Agent-Id``.
+
+        An empty ``brain_agent_id`` silently falls back to the *local gateway*
+        agent id, which the brain deployment has never heard of. That used to be
+        invisible: the panel showed only "invalid agent token" while the request
+        was in fact addressed to a workstation that does not exist upstream.
+        """
+        for key in ("brain_agent_id", "gateway_agent_id", "device_id"):
+            if str(self.app.config.get(key) or "").strip():
+                return key
+        return ""
+
+    def token_source(self) -> str:
+        """Flag the classic mix-up: the local gateway token pasted as brain token."""
+        token = brain_workstation_token(self.app.config)
+        if not token:
+            return ""
+        gateway = str(self.app.config.get("gateway_agent_token") or "").strip()
+        return "gateway_agent_token" if gateway and token == gateway else "brain_agent_token"
+
+    def config_warnings(self) -> list[str]:
+        """Configuration shapes that guarantee a registration failure."""
+        warnings: list[str] = []
+        if self.token_source() == "gateway_agent_token":
+            warnings.append(
+                "brain_agent_token 与本机 gateway_agent_token 相同：这是两套令牌，"
+                "大脑不认本地网关令牌。"
+            )
+        source = self.agent_id_source()
+        if source in {"gateway_agent_id", "device_id"}:
+            warnings.append(
+                f"brain_agent_id 为空，正在拿 {source} 当工位 ID；"
+                "大脑侧查不到这个工位，注册会被拒。"
+            )
+        return warnings
+
+    def clear_failure(self) -> None:
+        """Reset the structured failure record after any successful round trip."""
+        with self.lock:
+            self.last_error = ""
+            self.last_error_code = ""
+            self.last_error_status = 0
+            self.last_error_hint = ""
+            self.last_error_fingerprint = ""
+            self.auth_rejected = False
+            self._last_auth_record_at = 0.0
+
+    def note_failure(self, stage: str, error: BaseException) -> None:
+        """Publish a failure as structured status instead of a bare string.
+
+        Auth rejections are recorded at most once a minute: the control loop
+        retries every few seconds and would otherwise flush the 80-row activity
+        ring with the same sentence, pushing the interesting evidence out.
+        """
+        info = getattr(error, "info", None)
+        if not isinstance(info, dict) and isinstance(
+            error, (urllib.error.URLError, OSError, TimeoutError)
+        ):
+            info = describe_brain_error(
+                0,
+                str(error),
+                token=brain_workstation_token(self.app.config),
+                server_url=str(self.app.config.get("brain_server_url") or ""),
+            )
+        if not isinstance(info, dict):
+            # 本地异常（数据库/编码/断言）不是"连不上大脑"，别硬套网络结论。
+            info = {
+                "message": str(error),
+                "code": "internal",
+                "status": 0,
+                "auth": False,
+                "retryable": True,
+                "hint": "",
+                "fingerprint": "",
+            }
+        now = time.time()
+        auth = bool(info.get("auth"))
+        with self.lock:
+            self.last_error = str(info.get("message") or str(error))[:500]
+            self.last_error_code = str(info.get("code") or "")[:80]
+            self.last_error_status = int(info.get("status") or 0)
+            self.last_error_hint = str(info.get("hint") or "")[:500]
+            self.last_error_fingerprint = str(info.get("fingerprint") or "")
+            self.auth_rejected = auth
+            self.state = "degraded"
+            should_record = True
+            if auth:
+                should_record = (now - self._last_auth_record_at) >= 60.0
+                if should_record:
+                    self._last_auth_record_at = now
+            message = self.last_error
+        if should_record:
+            self.record(stage, "error", message, {
+                "code": self.last_error_code,
+                "status": self.last_error_status,
+                "token": self.last_error_fingerprint,
+                "agent_id_source": self.agent_id_source(),
+                "hint": self.last_error_hint,
+                "detail": str(error)[:200],
+            })
+
+    def failure_backoff(self, current: float) -> float:
+        """Next retry delay. Auth rejections back off harder (nothing self-heals)."""
+        limit = 60.0 if self.auth_rejected else 15.0
+        return min(limit, max(0.5, current) * 2.0)
+
 
     def event_channel(self) -> BrainEventChannel | None:
         """Return the persistent WS event channel, creating it on first use.
@@ -2782,11 +2922,11 @@ class BrainConnector:
             self.registered = False
             self.last_heartbeat_at = 0.0
             self.state = "connecting" if self.configured() else "disabled"
-            self.last_error = ""
             self._configuration_key = ""
             self._draft_watch.clear()
             self._draft_seeded = False
             self.last_handoff_poll_at = 0.0
+        self.clear_failure()
         self.record("config", "ok", "大脑配置已保存，连接器正在重新加载")
         self.wakeup.set()
         self.event_wakeup.set()
@@ -2845,7 +2985,12 @@ class BrainConnector:
                 raw = self._read_http_response(response)
         except urllib.error.HTTPError as error:
             detail = self._read_http_response(error)[:400]
-            raise RuntimeError(f"大脑 HTTP {error.code}: {detail or error.reason}") from error
+            raise BrainRequestError(
+                error.code,
+                detail,
+                token=brain_workstation_token(self.app.config),
+                server_url=base,
+            ) from error
         finally:
             with self.lock:
                 self.last_request_ms = round((time.perf_counter() - started) * 1000.0, 2)
@@ -2857,7 +3002,14 @@ class BrainConnector:
         if not isinstance(payload, dict):
             raise RuntimeError("大脑返回值不是 JSON 对象")
         if payload.get("ok") is False:
-            raise RuntimeError(str(payload.get("error") or "大脑拒绝了请求"))
+            # 200 + ok:false 也是拒绝；同样走结构化诊断（含令牌指纹），
+            # 否则面板又只剩服务器那句英文。
+            raise BrainRequestError(
+                200,
+                json_text(payload),
+                token=brain_workstation_token(self.app.config),
+                server_url=base,
+            )
         return payload
 
     @staticmethod
@@ -2896,9 +3048,12 @@ class BrainConnector:
             self.registered = True
             self.state = "online"
             self.last_register_at = now
-            self.last_error = ""
+        self.clear_failure()
         self.record("register", "ok", "工位注册成功", {
-            "agent_id": self.agent_id(), "request_ms": self.last_request_ms,
+            "agent_id": self.agent_id(),
+            "agent_id_source": self.agent_id_source(),
+            "token": token_fingerprint(brain_workstation_token(self.app.config)),
+            "request_ms": self.last_request_ms,
         })
         backfilled = self.app.db.enqueue_untracked_brain_events_after_rowid(
             self.session_start_rowid
@@ -3902,12 +4057,9 @@ class BrainConnector:
                 backoff = 1.0
                 self.app.stop_event.wait(max(0.05, min(0.5, next_heartbeat - time.time())))
             except Exception as error:
-                with self.lock:
-                    self.last_error = str(error)[:500]
-                    self.state = "degraded"
-                self.record("brain", "error", self.last_error)
+                self.note_failure("brain", error)
                 self.app.stop_event.wait(backoff)
-                backoff = min(15.0, backoff * 2.0)
+                backoff = self.failure_backoff(backoff)
 
     def run_commands(self) -> None:
         backoff = 0.5
@@ -3926,15 +4078,12 @@ class BrainConnector:
                     self.dispatch_command(command)
                 with self.lock:
                     self.state = "online"
-                    self.last_error = ""
+                self.clear_failure()
                 backoff = 0.5
             except Exception as error:
-                with self.lock:
-                    self.last_error = str(error)[:500]
-                    self.state = "degraded"
-                self.record("command_poll", "error", self.last_error)
+                self.note_failure("command_poll", error)
                 self.app.stop_event.wait(backoff)
-                backoff = min(15.0, backoff * 2.0)
+                backoff = self.failure_backoff(backoff)
                 continue
             # 补报独立隔离：失败只记一条，绝不拖慢取指令循环。
             try:
@@ -3991,7 +4140,7 @@ class BrainConnector:
                 if committed:
                     with self.lock:
                         self.last_event_upload_at = time.time()
-                        self.last_error = ""
+                    self.clear_failure()
                     self.record("events", "ok", f"上报队列已处理 {len(committed)} 条消息", {
                         "event_ids": sorted(committed), "request_ms": self.last_request_ms,
                     })
@@ -3999,14 +4148,14 @@ class BrainConnector:
             except Exception as error:
                 message = str(error)[:500]
                 self.app.db.finish_brain_events(rows, set(), message)
-                with self.lock:
-                    self.last_error = message
-                    self.state = "degraded"
-                self.record("events", "error", message, {
+                self.note_failure("events", error)
+                self.record("events", "error", self.last_error, {
                     "event_ids": [str(row["event_id"]) for row in rows],
+                    "code": self.last_error_code,
+                    "status": self.last_error_status,
                 })
                 self.app.stop_event.wait(backoff)
-                backoff = min(15.0, backoff * 2.0)
+                backoff = self.failure_backoff(backoff)
 
     def run_events(self) -> None:
         """事件上报总入口：并发度=1 走旧单线程；>1 起 worker 池，本线程只做监督。"""
@@ -4034,8 +4183,14 @@ class BrainConnector:
                 "state": self.state,
                 "registered": self.registered,
                 "agent_id": self.agent_id(),
+                "agent_id_source": self.agent_id_source(),
                 "server_url": str(self.app.config.get("brain_server_url") or ""),
                 "token_configured": bool(brain_workstation_token(self.app.config)),
+                "token_source": self.token_source(),
+                "token_fingerprint": token_fingerprint(
+                    brain_workstation_token(self.app.config)
+                ),
+                "config_warnings": self.config_warnings(),
                 "ai_reply_enabled": bool(self.app.config.get("brain_ai_reply_enabled", True)),
                 "remote_open_chat_enabled": bool(
                     self.app.config.get("brain_remote_open_chat_enabled", False)
@@ -4073,6 +4228,12 @@ class BrainConnector:
                 "request_count": self.request_count,
                 "reconnect_count": self.reconnect_count,
                 "last_error": self.last_error,
+                "last_error_code": self.last_error_code,
+                "last_error_status": self.last_error_status,
+                "last_error_hint": self.last_error_hint,
+                "last_error_fingerprint": self.last_error_fingerprint,
+                "auth_rejected": self.auth_rejected,
+                "needs_operator": self.auth_rejected,
             }
         snapshot["events"] = self.app.db.brain_event_counts()
         snapshot["commands"] = self.app.db.brain_command_counts()
@@ -6961,6 +7122,19 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     "message": "大脑连接和大脑工位令牌验证成功",
                     "brain": self.app.brain.status(),
                     "register": payload,
+                })
+            except BrainRequestError as error:
+                # 服务端给了明确拒绝（403/401/设备绑定）：把"哪串令牌被拒、
+                # 下一步该做什么"一起回给面板，而不是丢一句英文原始 body。
+                self.app.brain.note_failure("brain", error)
+                self.send_json(502, {
+                    "ok": False,
+                    "error": format_brain_error(error.info),
+                    "hint": error.hint,
+                    "code": error.error_code,
+                    "status": error.status_code,
+                    "token": error.fingerprint,
+                    "brain": self.app.brain.status(),
                 })
             except (OSError, RuntimeError, ValueError) as error:
                 self.send_json(502, {"ok": False, "error": str(error)})
