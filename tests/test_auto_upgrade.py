@@ -202,7 +202,7 @@ class AutoUpgradeTests(unittest.TestCase):
         executable.unlink()
         with self.assertRaises(FileNotFoundError) as caught:
             seat.launch("tray")
-        self.assertEqual(caught.exception.filename, str(executable))
+        self.assertEqual(caught.exception.filename, str(executable.resolve()))
 
 
 if __name__ == "__main__":
