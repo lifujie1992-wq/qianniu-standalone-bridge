@@ -35,7 +35,14 @@ RELATIVE_DB = Path("NewAppData") / "globalConfig" / "Global.db"
 
 
 def candidate_data_dirs() -> list[Path]:
-    """千牛数据根目录（`AliWorkbenchData`）候选。"""
+    """千牛数据根目录（`AliWorkbenchData`）候选。
+
+    2026-11-04 现场：9.98.49N 的数据目录在
+    ``C:\\Users\\Public\\Documents\\AliWorkbench\\AliWorkbenchData``，
+    旧候选只查了 ``C:\\AliWorkbenchData`` / ``D:\\AliWorkbenchData`` /
+    ``%LOCALAPPDATA%`` —— 于是托盘一直显示「读取失败 / Global.db not found」，
+    实际上 `EnableAccessibility` 是 true（开关本身没问题，是路径没找对）。
+    """
     dirs: list[Path] = []
     env = os.environ.get("QNQIANNIU_DATA_DIR")
     if env:
@@ -45,6 +52,15 @@ def candidate_data_dirs() -> list[Path]:
     local = os.environ.get("LOCALAPPDATA")
     if local:
         dirs.append(Path(local) / "AliWorkbenchData")
+    roaming = os.environ.get("APPDATA")
+    if roaming:
+        dirs.append(Path(roaming) / "AliWorkbench" / "AliWorkbenchData")
+    public = os.environ.get("PUBLIC")
+    if public:
+        dirs.append(Path(public) / "Documents" / "AliWorkbench" / "AliWorkbenchData")
+    profile = os.environ.get("USERPROFILE")
+    if profile:
+        dirs.append(Path(profile) / "Documents" / "AliWorkbench" / "AliWorkbenchData")
     seen: set[str] = set()
     unique: list[Path] = []
     for item in dirs:

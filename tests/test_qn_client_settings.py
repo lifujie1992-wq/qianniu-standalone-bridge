@@ -68,6 +68,29 @@ class ReadTests(unittest.TestCase):
             with mock.patch.object(cs, "candidate_data_dirs", return_value=[root]):
                 self.assertEqual(cs.locate_global_db(), db)
 
+    def test_candidates_cover_the_public_documents_layout(self):
+        # 9.98.49N 的真实位置：%PUBLIC%\Documents\AliWorkbench\AliWorkbenchData
+        with tempfile.TemporaryDirectory() as tmp:
+            public = Path(tmp) / "Public"
+            expected = public / "Documents" / "AliWorkbench" / "AliWorkbenchData"
+            with mock.patch.dict("os.environ", {"PUBLIC": str(public)}, clear=False):
+                candidates = cs.candidate_data_dirs()
+            self.assertIn(expected, candidates)
+
+    def test_state_finds_db_under_public_documents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            public = Path(tmp) / "Public"
+            root = public / "Documents" / "AliWorkbench" / "AliWorkbenchData"
+            db = root / cs.RELATIVE_DB
+            db.parent.mkdir(parents=True)
+            make_db(db, "true")
+            with mock.patch.dict("os.environ", {"PUBLIC": str(public)}, clear=False), \
+                    mock.patch.object(cs, "candidate_data_dirs", return_value=[root]):
+                state = cs.state()
+            self.assertTrue(state["readable"])
+            self.assertTrue(state["enabled"])
+            self.assertEqual(state["path"], str(db))
+
 
 class EnableTests(unittest.TestCase):
     def test_enable_refuses_while_qianniu_running(self):
