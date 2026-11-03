@@ -181,6 +181,18 @@ class CacheTests(unittest.TestCase):
         self.assertFalse(status["enabled"])
         self.assertEqual(status["orders"], 0)
 
+    def test_orders_for_accepts_cid_prefix_and_nick(self):
+        app = self._app({})
+        store = n.NativeOrderLog(app, poll_seconds=0.05)
+        store._remember("2252311170", "hshking1", [
+            n.normalize_order({"bizOrderId": 99, "payStatus": 4}),
+        ])
+        cid = "2252311170.1-126446588.1#11001@cntaobao"
+        self.assertEqual(len(store.orders_for(cid)), 1)
+        self.assertTrue(store.known(cid))
+        self.assertEqual(len(store.orders_for("", nick="hshking1")), 1)
+        self.assertTrue(store.known("", nick="hshking1"))
+
 
 class EndpointPayloadTests(unittest.TestCase):
     def _host(self):
