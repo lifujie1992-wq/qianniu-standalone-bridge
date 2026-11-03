@@ -163,6 +163,14 @@ def test_brain_connection(config: dict, timeout: float = 5.0) -> None:
         # 交给了一个不存在的出口。
         with direct_opener().open(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8", "replace") or "{}")
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")[:400]
+        if "invalid agent token" in detail.lower():
+            raise RuntimeError(
+                "大脑已连通，但工位令牌无效（invalid agent token）。"
+                "请从当前大脑后台复制此客服工位的有效令牌，保存后重新测试连接。"
+            ) from error
+        raise RuntimeError(f"大脑拒绝连接：HTTP {error.code}: {detail or error.reason}") from error
     except (OSError, ValueError, urllib.error.URLError) as error:
         raise RuntimeError(f"无法连接大脑：{error}") from error
     if not isinstance(payload, dict) or payload.get("ok") is False:

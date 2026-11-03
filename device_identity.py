@@ -169,7 +169,7 @@ def _request_migration(
             "Content-Type": "application/json",
         },
     )
-    open_request = opener or _direct_opener()
+    open_request = opener or _direct_opener().open
     try:
         timeout = float(config.get("brain_request_timeout_seconds", 8.0))
     except (TypeError, ValueError) as error:

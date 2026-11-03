@@ -407,6 +407,29 @@ class DeviceMigrationProxyBypassTests(unittest.TestCase):
         device_identity._DIRECT_OPENER = None
         opener.assert_called_once()
 
+    def test_default_opener_completes_migration_and_persists_identity(self):
+        import device_identity
+
+        response = mock.MagicMock()
+        response.status = 200
+        response.read.return_value = b'{"ok": true}'
+        opener = mock.Mock()
+        context = mock.MagicMock()
+        context.__enter__.return_value = response
+        opener.open.return_value = context
+        config = {"brain_server_url": "http://brain.test", "brain_agent_token": "t",
+                  "device_id": "old-device"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            with mock.patch.object(device_identity, "_direct_opener", return_value=opener):
+                result = device_identity.prepare_device_identity(config, path, machine_guid="test-guid")
+            self.assertTrue(result.migrated)
+            self.assertEqual(json.loads(path.read_text())["device_id"], result.device_id)
+        opener.open.assert_called_once()
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.get_header("X-agent-token"), "t")
+        self.assertEqual(request.get_header("X-device-id"), "old-device")
+
 
 class BrainTestConnectionProxyBypassTests(unittest.TestCase):
     """1.6.82：配置窗「测试连接」必须绕过系统代理（现场报「无法连接大脑」）。"""
@@ -430,6 +453,20 @@ class BrainTestConnectionProxyBypassTests(unittest.TestCase):
                 mock.patch.object(urllib.request, "urlopen", side_effect=AssertionError("must not use proxied urlopen")):
             config_dialog.test_brain_connection(config, timeout=0.5)
         opener.open.assert_called_once()
+
+    def test_invalid_token_is_reported_as_authentication_failure(self):
+        import config_dialog
+        import io
+        import urllib.error
+
+        opener = mock.Mock()
+        opener.open.side_effect = urllib.error.HTTPError(
+            "http://brain.test", 403, "Forbidden", {},
+            io.BytesIO(b'{"error":"invalid agent token"}'))
+        config = {"brain_server_url": "http://brain.test", "brain_agent_token": "t"}
+        with mock.patch.object(config_dialog, "direct_opener", return_value=opener):
+            with self.assertRaisesRegex(RuntimeError, "大脑已连通，但工位令牌无效"):
+                config_dialog.test_brain_connection(config)
 
     def test_dock_workbench_wait_uses_direct_opener(self):
         import docked_workbench
