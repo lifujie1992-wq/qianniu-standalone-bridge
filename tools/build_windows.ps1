@@ -11,7 +11,7 @@ function Invoke-Checked {
     & $Program @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Program failed: $LASTEXITCODE" }
 }
-Invoke-Checked -Program $PythonExe -Arguments @('-c', 'import struct,sys;assert struct.calcsize("P")==8,"Use x64 Python";assert sys.version_info>=(3,10),"Use Python 3.10+"')
+Invoke-Checked -Program $PythonExe -Arguments @('-c', 'import struct,sys; assert struct.calcsize(chr(80))==8 and sys.version_info>=(3,10)')
 $venv = Join-Path $root '.venv-windows-build'
 if (-not (Test-Path -LiteralPath $venv)) {
     Invoke-Checked -Program $PythonExe -Arguments @('-m', 'venv', $venv)

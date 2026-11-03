@@ -767,18 +767,41 @@ class LauncherLifecycleTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def test_passive_upgrade_refuses_while_qianniu_is_running(self):
+    def test_start_proceeds_while_qianniu_is_running(self):
+        """1.6.80 起：千牛开着也能启动，不再拿“退出千牛”挡用户。
+
+        临时目录里没有 runtime/webui.zip，注入会失败并返回 4 ——
+        这正是真实世界里 webui.zip 被占用时的准确报错路径。
+        """
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(launcher, "app_root", return_value=Path(directory)), \
                 patch.object(launcher, "load_config_silent", return_value={}), \
                 patch.object(launcher, "ensure_device_identity", return_value=True), \
                 patch.object(launcher.config_dialog, "needs_setup", return_value=False), \
                 patch.object(launcher, "fetch_status", return_value=None), \
+                patch.object(launcher, "running_assistant_processes", return_value=[]), \
                 patch.object(launcher, "running_qianniu_processes", return_value=["aliworkbench.exe"]), \
-                patch.object(launcher, "message_box"), \
+                patch.object(launcher, "message_box") as message_box, \
                 patch.object(launcher, "start_process") as start_process:
-            self.assertEqual(launcher.start_all(), 5)
+            self.assertEqual(launcher.start_all(), 4)
             start_process.assert_not_called()
+            self.assertIn("注入失败", message_box.call_args.args[1])
+
+    def test_marker_is_still_written_after_injection(self):
+        """守卫删了，但升级工具还靠这个标记判断 runtime 是否注入过。"""
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(launcher, "app_root", return_value=Path(directory)), \
+                patch.object(launcher, "load_config_silent", return_value={}), \
+                patch.object(launcher, "ensure_device_identity", return_value=True), \
+                patch.object(launcher.config_dialog, "needs_setup", return_value=False), \
+                patch.object(launcher, "fetch_status", return_value=None), \
+                patch.object(launcher, "running_assistant_processes", return_value=[]), \
+                patch.object(launcher, "inject_all_webui", return_value=None), \
+                patch.object(launcher, "start_process", side_effect=RuntimeError("boom")), \
+                patch.object(launcher, "message_box"):
+            self.assertEqual(launcher.start_all(), 5)
+            marker = Path(directory) / "state" / launcher.PASSIVE_UPGRADE_MARKER
+            self.assertTrue(marker.is_file())
 
 
 class DockPlacementTests(unittest.TestCase):

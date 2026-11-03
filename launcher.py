@@ -739,7 +739,6 @@ def start_all() -> int:
         return 0
 
     state_dir = app_root() / "state"
-    passive_upgrade_marker = state_dir / PASSIVE_UPGRADE_MARKER
     current_status = fetch_status(config, timeout=5.0)
     if current_status is None and live_managed_pid(state_dir / "standalone_bridge.pid"):
         # Probe timed out but the bridge process is alive: treat it as running
@@ -751,39 +750,25 @@ def start_all() -> int:
             webbrowser.open(workbench_url(config))
         return 0
 
-    if not passive_upgrade_marker.is_file():
-        # 只拦真的东西：先清掉自己的残留桥接/浮窗（用户看不见它们，
-        # 却会把启动永久卡住），再看千牛客户端。自己的 exe 名和千牛不同，
-        # 不能再混在一起判断。
-        stale = running_assistant_processes({"bridge", "dock"})
-        if stale:
-            failed = [pid for pid in stale if not kill_tree(pid)]
-            if failed:
-                message_box(
-                    "千牛客服助手 · 启动受阻",
-                    "上一个版本的桥接/浮窗进程还在运行，但自动清理失败：\n"
-                    f"pid {', '.join(map(str, failed))}\n\n"
-                    "请以管理员身份运行“停止客服助手.cmd”，或在任务管理器里"
-                    "结束这些 QianniuAgent.exe 后再启动。",
-                    MB_ICONWARNING,
-                )
-                return 5
-            LOG.warning("launcher: cleaned stale assistant processes: %s", stale)
-        running = running_qianniu_processes()
-        if running:
+    # 1.6.80 起不再有「千牛在跑就不给启动」的守卫：被动桥只旁听
+    # （不替换 imsdk.invoke、不调 imsdk.off），千牛开着也能直接启动，
+    # 注入只影响千牛下次启动后的页面。webui.zip 真被占用时，
+    # inject_all_webui 的报错会给出准确指引，而不是让用户猜。
+    # 这里只清自己的残留桥接/浮窗 —— 用户看不见它们，却会让两条桥抢端口。
+    stale = running_assistant_processes({"bridge", "dock"})
+    if stale:
+        failed = [pid for pid in stale if not kill_tree(pid)]
+        if failed:
             message_box(
-                "千牛客服助手 · 请先退出千牛",
-                "检测到千牛客户端仍在运行：\n"
-                f"{', '.join(running)}\n\n"
-                "首次启动需要把新的桥注入千牛页面，所以必须先完全退出千牛：\n"
-                "1. 右键任务栏托盘里的千牛图标 → 退出（只关窗口不算退出）；\n"
-                "2. 任务管理器确认没有 AliWorkbench.exe / AliRender.exe；\n"
-                "3. 再双击“启动千牛客服助手.cmd”。\n\n"
-                "提示：如果任务管理器里一个千牛进程都没有，却仍然弹出本窗口，\n"
-                "请把这张截图连同《诊断-双击我》生成的报告一起发回。",
+                "千牛客服助手 · 启动受阻",
+                "上一个版本的桥接/浮窗进程还在运行，但自动清理失败：\n"
+                f"pid {', '.join(map(str, failed))}\n\n"
+                "请以管理员身份运行“停止客服助手.cmd”，或在任务管理器里"
+                "结束这些 QianniuAgent.exe 后再启动。",
                 MB_ICONWARNING,
             )
             return 5
+        LOG.warning("launcher: cleaned stale assistant processes: %s", stale)
 
     if config.get("dock_enabled", False):
         ensure_edge(config, config_path)
@@ -800,7 +785,10 @@ def start_all() -> int:
         return 4
 
     state_dir.mkdir(parents=True, exist_ok=True)
-    passive_upgrade_marker.write_text("qn-standalone-browser-v5-passive\n", encoding="ascii")
+    # 标记保留：升级工具用它判断「这套 runtime 已注入过桥」。
+    (state_dir / PASSIVE_UPGRADE_MARKER).write_text(
+        "qn-standalone-browser-v5-passive\n", encoding="ascii"
+    )
 
     bridge = None
     dock = None
