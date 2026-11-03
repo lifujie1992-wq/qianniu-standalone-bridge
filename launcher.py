@@ -139,7 +139,23 @@ _DIRECT_OPENER: urllib.request.OpenerDirector | None = None
 
 def ensure_device_identity(config: dict, config_path: Path) -> bool:
     try:
-        prepare_device_identity(config, config_path)
+        result = prepare_device_identity(config, config_path, allow_fallback=True)
+        if result.migration_error:
+            # 换机或拷了别人的 config：服务端 403 拒绝迁移，但本地桥接不依赖
+            # 这个 id，照常启动即可 —— 大脑侧会明确报"令牌已绑另一台电脑"。
+            # 以前这里直接 return False，导致助手根本起不来，现场误判成
+            # "这个版本坏了"（2026-11-04）。
+            LOG.warning("device identity fallback: %s", result.migration_error)
+            message_box(
+                "千牛客服助手 · 设备身份未迁移",
+                "这台电脑的设备和原令牌登记的机器不一致，大脑拒绝了设备迁移：\n"
+                f"{result.migration_error}\n\n"
+                "助手会照常启动，但大脑连接会显示「令牌被拒（已绑另一台电脑）」。\n"
+                "处理办法：在大脑后台给这台机器重新签发一把工位令牌，"
+                "或在后台把原令牌解绑后重新保存。\n\n"
+                "提示：不要把别人机器上的 config.json 直接拷过来用。",
+                MB_ICONWARNING,
+            )
         return True
     except DeviceIdentityError as error:
         message_box(

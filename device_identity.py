@@ -69,6 +69,7 @@ class DeviceIdentityResult:
     device_id: str
     changed: bool
     migrated: bool
+    migration_error: str = ""
 
 
 def brain_workstation_token(config: Any) -> str:
@@ -206,6 +207,7 @@ def prepare_device_identity(
     *,
     machine_guid: str | None = None,
     opener: Callable[..., Any] | None = None,
+    allow_fallback: bool = False,
 ) -> DeviceIdentityResult:
     old_device_id = str(config.get("device_id") or "").strip()
     new_device_id = stable_device_id(machine_guid)
@@ -214,9 +216,19 @@ def prepare_device_identity(
 
     token = brain_workstation_token(config)
     migrated = False
+    migration_error = ""
     if token:
-        _request_migration(config, old_device_id, new_device_id, opener)
-        migrated = True
+        try:
+            _request_migration(config, old_device_id, new_device_id, opener)
+            migrated = True
+        except DeviceIdentityError as error:
+            # 换机/拷了别人的 config 时，服务端会用 403 拒绝迁移（令牌绑在
+            # 原机器上）。本地桥接本身不依赖这个 id，没必要因此拒绝启动：
+            # allow_fallback 时记下原因、照常落新 id，让大脑侧如实报
+            # "令牌已绑另一台电脑"，而不是让整个助手起不来。
+            if not allow_fallback:
+                raise
+            migration_error = str(error)
 
     updated = dict(config)
     updated["device_id"] = new_device_id
@@ -225,4 +237,6 @@ def prepare_device_identity(
     except OSError as error:
         raise DeviceIdentityError(f"稳定设备标识保存失败：{error}") from error
     config["device_id"] = new_device_id
-    return DeviceIdentityResult(new_device_id, changed=True, migrated=migrated)
+    return DeviceIdentityResult(
+        new_device_id, changed=True, migrated=migrated, migration_error=migration_error
+    )

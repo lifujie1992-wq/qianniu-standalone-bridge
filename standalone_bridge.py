@@ -8356,7 +8356,11 @@ def main() -> int:
     config_path = Path(args.config)
     try:
         raw_config = json.loads(config_path.read_text(encoding="utf-8-sig"))
-        prepare_device_identity(raw_config, config_path)
+        identity = prepare_device_identity(raw_config, config_path, allow_fallback=True)
+        if identity.migration_error:
+            # 迁移被大脑拒绝（换机/拷了别人的 config）不该让桥接起不来：
+            # 本地收发不依赖这个 id，注册失败会由 brain_auth 如实报出来。
+            LOG.warning("device identity fallback: %s", identity.migration_error)
     except (OSError, ValueError, DeviceIdentityError) as error:
         LOG.error("device identity preparation failed: %s", error)
         if sys.stderr is not None:
