@@ -38,6 +38,9 @@ STATUS_TEXT = {
 class ComponentStatus:
     state: str = "stopped"
     detail: str = "未运行"
+    # 组件自己的两字状态词（如「已开启」「已关闭」）。留空时回落到
+    # STATUS_TEXT（运行正常/连接异常…），设置类组件不适合那套词。
+    label: str = ""
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,7 @@ def coerce_status(value: AppStatus | Mapping[str, object] | None) -> AppStatus:
                 components[str(key)] = ComponentStatus(
                     state=str(item.get("state") or "stopped"),
                     detail=str(item.get("detail") or ""),
+                    label=str(item.get("label") or ""),
                 )
     return AppStatus(
         state=state,
@@ -406,6 +410,7 @@ class TrayControlCenter:
     COMPONENTS = (
         ("bridge", "桥接服务"),
         ("qianniu", "千牛客户端"),
+        ("access", "无障碍模式"),
         ("dock", "浮窗"),
     )
 
@@ -431,8 +436,8 @@ class TrayControlCenter:
         self.show_file = self.state_dir / "tray.show"
         self.root = tk.Tk()
         self.root.title(PRODUCT_NAME)
-        self.root.geometry("460x360")
-        self.root.minsize(460, 360)
+        self.root.geometry("460x405")
+        self.root.minsize(460, 405)
         self.root.resizable(False, True)
         self.root.configure(background="#EFF5F1")
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
@@ -492,6 +497,11 @@ class TrayControlCenter:
             font=("Microsoft YaHei UI", 10),
         )
         self.primary_button.pack(side="right")
+        self.dock_button = tk.Button(
+            footer, text="启动/唤醒浮窗", command=lambda: self._invoke("dock"),
+            padx=12, pady=5,
+        )
+        self.dock_button.pack(side="right", padx=(0, 8))
         self.settings_button = tk.Button(
             footer, text="设置", command=lambda: self._invoke("settings"), padx=12, pady=5,
         )
@@ -648,7 +658,9 @@ class TrayControlCenter:
         self.error_label.configure(text=status.error)
         for key, _title in self.COMPONENTS:
             component = status.components.get(key, ComponentStatus())
-            label = STATUS_TEXT.get(component.state, component.state or "未知")
+            label = component.label or STATUS_TEXT.get(
+                component.state, component.state or "未知"
+            )
             color = "#14765A" if component.state == "healthy" else "#AD6200"
             if component.state == "stopped":
                 color = "#60766E"
@@ -665,6 +677,11 @@ class TrayControlCenter:
         )
         self.restart_button.configure(state=normal)
         self.settings_button.configure(state=normal)
+        dock = status.components.get("dock", ComponentStatus())
+        self.dock_button.configure(
+            text="唤醒浮窗" if dock.state == "healthy" else "启动浮窗",
+            state=normal,
+        )
         self.tray.update(status)
 
 

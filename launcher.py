@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import logging
 import os
 import re
 import socket
@@ -60,7 +61,12 @@ MB_ICONWARNING = 0x30
 MB_ICONERROR = 0x10
 IDYES = 6
 PASSIVE_UPGRADE_MARKER = "passive-bridge-v5.installed"
+LOG = logging.getLogger("qianniu_standalone.launcher")
+# 千牛客户端的进程名。注意 `qianniuagent.exe` 是**我们自己的助手**（托盘/桥接/
+# 浮窗都是这个 exe），2026-11-03 现场反馈的“一直说我已启动、让我关却关不掉”
+# 就是这个同名导致的：助手把自己当成千牛，升级守卫永远放不放行。
 QIANNIU_PROCESS_NAMES = {"aliworkbench.exe", "alirender.exe", "qianniuagent.exe"}
+OWN_PROCESS_NAME = "qianniuagent.exe"
 
 
 def app_root() -> Path:
@@ -258,18 +264,77 @@ def inject_zip(path: Path, injection: str) -> bool:
     return True
 
 
+def own_exe_path() -> str:
+    """本安装的助手可执行文件路径（打包后就是 QianniuAgent.exe）。"""
+    if getattr(sys, "frozen", False):
+        return str(Path(sys.executable).resolve()).lower()
+    return str((app_root() / OWN_PROCESS_NAME).resolve()).lower()
+
+
+def is_own_assistant_process(exe: str) -> bool:
+    """这个进程是不是我们自己的助手（含托盘/桥接/浮窗）。"""
+    if not exe:
+        return False
+    candidate = str(Path(exe).resolve()).lower()
+    return candidate == own_exe_path() or (
+        Path(candidate).name == OWN_PROCESS_NAME
+        and _path_is_within(candidate, app_root())
+    )
+
+
 def running_qianniu_processes() -> list[str]:
+    """真正在跑的千牛客户端进程名（不把自己的 QianniuAgent.exe 算进去）。"""
     found = set()
-    for process in psutil.process_iter(["name"]):
+    for process in psutil.process_iter(["name", "exe"]):
         try:
             if process.pid == os.getpid():
                 continue
             name = str(process.info.get("name") or "").lower()
-            if name in QIANNIU_PROCESS_NAMES:
-                found.add(name)
+            if name not in QIANNIU_PROCESS_NAMES:
+                continue
+            # 任何叫 QianniuAgent.exe 的都是本产品（含另一个安装目录），不是千牛。
+            if name == OWN_PROCESS_NAME or is_own_assistant_process(
+                str(process.info.get("exe") or "")
+            ):
+                continue
+            found.add(name)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
     return sorted(found)
+
+
+def running_assistant_processes(roles: set[str] | None = None) -> list[int]:
+    """我们自己的助手进程 pid（可按角色过滤：launcher / bridge / dock）。
+
+    托盘没有单独的 role：它跑在 launcher 进程里，所以命令行没有 `--role`
+    的助手进程一律算 launcher。
+    """
+    own = own_exe_path()
+    pids: list[int] = []
+    for process in psutil.process_iter(["pid", "exe", "cmdline"]):
+        try:
+            if process.pid == os.getpid():
+                continue
+            exe = str(process.info.get("exe") or "").lower()
+            if exe != own and not (
+                Path(exe).name == OWN_PROCESS_NAME
+                and _path_is_within(exe, app_root())
+            ):
+                continue
+            cmdline = [str(part) for part in (process.info.get("cmdline") or [])]
+            if roles is not None:
+                role = "launcher"
+                for index, part in enumerate(cmdline):
+                    if part == "--role" and index + 1 < len(cmdline):
+                        role = cmdline[index + 1].lower()
+                    elif part.startswith("--role="):
+                        role = part.split("=", 1)[1].lower()
+                if role not in roles:
+                    continue
+            pids.append(int(process.pid))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return sorted(pids)
 
 
 def inject_all_webui(config: dict) -> None:
@@ -324,6 +389,40 @@ def fetch_status_with_reason(config: dict, timeout: float = 2.0) -> tuple[dict |
 def fetch_status(config: dict, timeout: float = 2.0) -> dict | None:
     status, _reason = fetch_status_with_reason(config, timeout=timeout)
     return status
+
+
+def status_ready(status: dict | None) -> bool:
+    """Accept a usable local API during browser recovery.
+
+    The bridge can report ``ok=false`` briefly while 千牛 is reconnecting its
+    page hook.  The launcher must not kill that healthy process: a versioned
+    status payload with both local APIs available is enough to keep it alive.
+    """
+    if not isinstance(status, dict):
+        return False
+    if bool(status.get("ok")):
+        return True
+    api = status.get("api") if isinstance(status.get("api"), dict) else {}
+    workbench = status.get("workbench") if isinstance(status.get("workbench"), dict) else {}
+    return bool(
+        status.get("version")
+        and not api.get("error")
+        and not workbench.get("error")
+    )
+
+
+def managed_bridge_ready(config: dict, state_dir: Path) -> bool:
+    """Keep a live bridge when the final HTTP readiness probe transiently times out."""
+    if not live_managed_pid(state_dir / "standalone_bridge.pid"):
+        return False
+    ports = (int(config.get("api_port", 42111)), int(config.get("workbench_port", 18776)))
+    for port in ports:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                continue
+        except OSError:
+            return False
+    return True
 
 
 def live_managed_pid(pid_file: Path) -> int:
@@ -391,16 +490,19 @@ def sync_running_brain_config(config: dict, timeout: float = 3.0) -> dict:
     return payload
 
 
-def exe_command(role: str, config_path: Path) -> list[str]:
+def exe_command(role: str, config_path: Path, extra_args: list[str] | None = None) -> list[str]:
+    suffix = list(extra_args or [])
     if getattr(sys, "frozen", False):
-        return [str(sys.executable), "--role", role, "--config", str(config_path)]
+        return [str(sys.executable), "--role", role, "--config", str(config_path), *suffix]
     entry = Path(__file__).resolve().parent / "qianniu_app.py"
-    return [sys.executable, str(entry), "--role", role, "--config", str(config_path)]
+    return [sys.executable, str(entry), "--role", role, "--config", str(config_path), *suffix]
 
 
-def start_process(role: str, config_path: Path) -> subprocess.Popen:
+def start_process(
+    role: str, config_path: Path, extra_args: list[str] | None = None
+) -> subprocess.Popen:
     return subprocess.Popen(
-        exe_command(role, config_path),
+        exe_command(role, config_path, extra_args),
         cwd=str(app_root()),
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
@@ -596,8 +698,17 @@ def stop_all(*, include_tray: bool = True, include_qianniu: bool = True) -> None
             failed.append(int((root / "state" / "tray.pid").read_text(encoding="ascii").strip()))
         except (OSError, ValueError):
             pass
-    if not failed:
-        return
+    # 收尾：pid 文件只能盖住登记过的进程，但托盘/浮窗可能早就丢了 pid 文件。
+    # 这些残留会让「停止」看起来生效了、下次启动却又被升级守卫拦住谁看不见的
+    # 进程，所以这里按 exe + --role 再扫一遍。
+    roles = {"bridge", "dock"} | ({"launcher"} if include_tray else set())
+    for pid in running_assistant_processes(roles):
+        if pid in failed:
+            continue
+        if kill_tree(pid):
+            stopped += 1
+        else:
+            failed.append(pid)
     if failed:
         message_box(
             "千牛客服助手",
@@ -605,9 +716,7 @@ def stop_all(*, include_tray: bool = True, include_qianniu: bool = True) -> None
             MB_ICONERROR,
         )
     elif stopped:
-        message_box("千牛客服助手", "已停止千牛桥接和吸附窗。")
-    else:
-        message_box("千牛客服助手", "当前没有正在运行的桥接进程。")
+        LOG.info("stopped %s assistant process(es)", stopped)
 
 
 def start_all() -> int:
@@ -636,23 +745,45 @@ def start_all() -> int:
         # Probe timed out but the bridge process is alive: treat it as running
         # rather than starting a duplicate that would fight over the ports.
         current_status = {"ok": True}
-    if not passive_upgrade_marker.is_file():
-        running = running_qianniu_processes()
-        if current_status or running:
-            message_box(
-                "千牛客服助手 · 安全升级",
-                "检测到旧客服助手或千牛仍在运行。\n\n"
-                "请先运行“停止客服助手”，再完全退出千牛（包括托盘进程），\n"
-                "然后重新启动客服助手。这样才能清除旧页面中的消息轮询。",
-                MB_ICONWARNING,
-            )
-            return 5
-
     if current_status:
         message_box("千牛客服助手", "桥接服务已在运行，正在打开工作台。")
         if not config.get("dock_enabled", False):
             webbrowser.open(workbench_url(config))
         return 0
+
+    if not passive_upgrade_marker.is_file():
+        # 只拦真的东西：先清掉自己的残留桥接/浮窗（用户看不见它们，
+        # 却会把启动永久卡住），再看千牛客户端。自己的 exe 名和千牛不同，
+        # 不能再混在一起判断。
+        stale = running_assistant_processes({"bridge", "dock"})
+        if stale:
+            failed = [pid for pid in stale if not kill_tree(pid)]
+            if failed:
+                message_box(
+                    "千牛客服助手 · 启动受阻",
+                    "上一个版本的桥接/浮窗进程还在运行，但自动清理失败：\n"
+                    f"pid {', '.join(map(str, failed))}\n\n"
+                    "请以管理员身份运行“停止客服助手.cmd”，或在任务管理器里"
+                    "结束这些 QianniuAgent.exe 后再启动。",
+                    MB_ICONWARNING,
+                )
+                return 5
+            LOG.warning("launcher: cleaned stale assistant processes: %s", stale)
+        running = running_qianniu_processes()
+        if running:
+            message_box(
+                "千牛客服助手 · 请先退出千牛",
+                "检测到千牛客户端仍在运行：\n"
+                f"{', '.join(running)}\n\n"
+                "首次启动需要把新的桥注入千牛页面，所以必须先完全退出千牛：\n"
+                "1. 右键任务栏托盘里的千牛图标 → 退出（只关窗口不算退出）；\n"
+                "2. 任务管理器确认没有 AliWorkbench.exe / AliRender.exe；\n"
+                "3. 再双击“启动千牛客服助手.cmd”。\n\n"
+                "提示：如果任务管理器里一个千牛进程都没有，却仍然弹出本窗口，\n"
+                "请把这张截图连同《诊断-双击我》生成的报告一起发回。",
+                MB_ICONWARNING,
+            )
+            return 5
 
     if config.get("dock_enabled", False):
         ensure_edge(config, config_path)
@@ -706,11 +837,11 @@ def start_all() -> int:
         # first process/GPU scan; the old 1s probe timed out and made the
         # launcher kill a perfectly healthy bridge.
         status = fetch_status(config, timeout=5.0)
-        if status and bool(status.get("ok")):
+        if status_ready(status):
             break
         time.sleep(1.0)
 
-    if not status or not bool(status.get("ok")):
+    if not status_ready(status) and not managed_bridge_ready(config, state_dir):
         cleanup_started()
         message_box(
             "千牛客服助手",
@@ -749,24 +880,31 @@ def show_status() -> int:
     browser = status.get("browser") or {}
     appbiz = status.get("appbiz_send") or {}
     brain = status.get("brain") or {}
+    settings = status.get("client_settings") or {}
+    access = {True: "已开启", False: "已关闭（取不到订单）"}.get(
+        settings.get("enabled"), "未知"
+    )
     lines = [
         f"客户端版本: {status.get('version')}",
         f"运行状态: {'正常' if status.get('ok') else '异常'}",
         f"浏览器连接: {browser.get('connected')}",
         f"发送适配器就绪: {appbiz.get('ready')}",
+        f"无障碍模式: {access}",
         f"大脑在线: {brain.get('state')}",
     ]
     message_box("千牛客服助手状态", "\n".join(lines))
     return 0
 
 
-def start_dock() -> int:
+def start_dock(force_floating: bool = True) -> int:
     loaded = load_config()
     if loaded is None:
         return 2
     config, config_path = loaded
 
-    if not fetch_status(config, timeout=5.0):
+    status = fetch_status(config, timeout=5.0)
+    state_dir = app_root() / "state"
+    if not status_ready(status) and not managed_bridge_ready(config, state_dir):
         message_box(
             "千牛客服助手",
             "桥接服务未运行。请先双击“启动千牛客服助手.cmd”，再启动浮窗。",
@@ -790,7 +928,8 @@ def start_dock() -> int:
         except (OSError, ValueError):
             pass
 
-    dock = start_process("dock", config_path)
+    dock_args = ["--mode", "floating"] if force_floating else None
+    dock = start_process("dock", config_path, dock_args)
     write_pid("docked_workbench.pid", dock.pid)
     message_box("千牛客服助手", "浮窗已启动。")
     return 0

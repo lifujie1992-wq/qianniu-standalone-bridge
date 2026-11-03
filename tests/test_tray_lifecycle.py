@@ -32,6 +32,71 @@ class TrayStatusTests(unittest.TestCase):
         self.assertEqual(status.label, "运行正常")
         self.assertEqual(status.components["bridge"].detail, "ready")
 
+    def test_component_label_survives_normalization(self):
+        status = tray_control.coerce_status({
+            "state": "healthy",
+            "components": {"access": {"state": "degraded", "label": "已关闭"}},
+        })
+        self.assertEqual(status.components["access"].label, "已关闭")
+
+    def test_control_center_shows_accessibility_row(self):
+        keys = [key for key, _title in tray_control.TrayControlCenter.COMPONENTS]
+        titles = dict(tray_control.TrayControlCenter.COMPONENTS)
+        self.assertIn("access", keys)
+        self.assertEqual(titles["access"], "无障碍模式")
+
+    def test_build_status_flags_accessibility_off(self):
+        """无障碍关着时必须变红并给出结论：服务正常≠能取订单。"""
+        config = {"api_port": 42111}
+        payload = {
+            "ok": True,
+            "version": "1.6.78",
+            "client_settings": {"enabled": False},
+            "browser": {"connections": []},
+        }
+        tray_app._BRIDGE_PROBE_STATE.clear()
+        with patch.object(launcher, "load_config_silent", return_value=config), \
+                patch.object(launcher, "fetch_status_with_reason", return_value=(payload, "")), \
+                patch.object(tray_app, "_managed_qianniu_count", return_value=14):
+            status = tray_app.build_status(PROJECT)
+        self.assertEqual(status.state, "healthy")
+        access = status.components["access"]
+        self.assertEqual(access.state, "degraded")
+        self.assertEqual(access.label, "已关闭")
+        self.assertIn("取不到订单", access.detail)
+        self.assertIn("无障碍模式", status.error)
+
+    def test_build_status_marks_accessibility_healthy_only_when_page_hooked(self):
+        config = {"api_port": 42111}
+        base = {"ok": True, "version": "1.6.78", "client_settings": {"enabled": True}}
+        hooked = {**base, "browser": {"connections": [{"imsdk_hooked": True}]}}
+        unhooked = {**base, "browser": {"connections": [{"imsdk_hooked": False}]}}
+        tray_app._BRIDGE_PROBE_STATE.clear()
+        with patch.object(launcher, "load_config_silent", return_value=config), \
+                patch.object(launcher, "fetch_status_with_reason", return_value=(hooked, "")), \
+                patch.object(tray_app, "_managed_qianniu_count", return_value=1):
+            status = tray_app.build_status(PROJECT)
+        self.assertEqual(status.components["access"].state, "healthy")
+        self.assertEqual(status.components["access"].label, "已开启")
+        self.assertEqual(status.error, "")
+        tray_app._BRIDGE_PROBE_STATE.clear()
+        with patch.object(launcher, "load_config_silent", return_value=config), \
+                patch.object(launcher, "fetch_status_with_reason", return_value=(unhooked, "")), \
+                patch.object(tray_app, "_managed_qianniu_count", return_value=1):
+            status = tray_app.build_status(PROJECT)
+        self.assertEqual(status.components["access"].state, "degraded")
+        self.assertIn("彻底退出千牛", status.error)
+
+    def test_build_status_reports_unknown_when_bridge_cannot_be_read(self):
+        config = {"api_port": 42111}
+        tray_app._BRIDGE_PROBE_STATE.clear()
+        with patch.object(launcher, "load_config_silent", return_value=config), \
+                patch.object(launcher, "fetch_status_with_reason", return_value=(({"ok": True}, ""))), \
+                patch.object(tray_app, "_managed_qianniu_count", return_value=2):
+            status = tray_app.build_status(PROJECT)
+        self.assertEqual(status.components["access"].label, "未知")
+        self.assertEqual(status.error, "")
+
     def test_build_status_distinguishes_healthy_degraded_and_stopped(self):
         config = {"api_port": 42111}
         tray_app._BRIDGE_PROBE_STATE.clear()

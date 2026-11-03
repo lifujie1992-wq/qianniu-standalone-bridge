@@ -40,6 +40,7 @@ from standalone_bridge import (  # noqa: E402
     WorkbenchHandler,
     BUILD_HASH,
     VERSION,
+    WORKBENCH_HUMAN_SESSION_MAX_AGE_SECONDS,
     WORKBENCH_SESSION_LIMIT,
     brain_event_suppression_reason,
     canonical_event_id,
@@ -514,18 +515,83 @@ class BrowserReceiveCompatibilityTests(unittest.TestCase):
 
 
 class LauncherUpgradeSafetyTests(unittest.TestCase):
-    def test_passive_upgrade_refuses_while_old_bridge_is_running_without_status(self):
+    def test_passive_upgrade_refuses_when_stale_bridge_cannot_be_stopped(self):
+        """旧桥接还活着且清不掉时仍然拒绝启动（否则两条桥会抢端口）。"""
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(launcher, "app_root", return_value=Path(directory)), \
                 patch.object(launcher, "load_config_silent", return_value={}), \
                 patch.object(launcher, "ensure_device_identity", return_value=True), \
                 patch.object(launcher.config_dialog, "needs_setup", return_value=False), \
                 patch.object(launcher, "fetch_status", return_value=None), \
-                patch.object(launcher, "running_qianniu_processes", return_value=["qianniuagent.exe"]), \
-                patch.object(launcher, "message_box"), \
+                patch.object(launcher, "running_assistant_processes", return_value=[4242]), \
+                patch.object(launcher, "running_qianniu_processes", return_value=[]), \
+                patch.object(launcher, "kill_tree", return_value=False), \
+                patch.object(launcher, "message_box") as message_box, \
                 patch.object(launcher, "start_process") as start_process:
             self.assertEqual(launcher.start_all(), 5)
             start_process.assert_not_called()
+            self.assertIn("4242", message_box.call_args.args[1])
+
+    def test_own_assistant_processes_are_never_reported_as_qianniu(self):
+        """2026-11-03 现场：助手把自己的 QianniuAgent.exe 当成千牛，启动被永久拦住。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            own = root / "QianniuAgent.exe"
+            fake = [
+                SimpleNamespace(pid=101, info={"name": "QianniuAgent.exe", "exe": str(own)}),
+                SimpleNamespace(pid=102, info={"name": "AliWorkbench.exe",
+                                               "exe": str(root / "runtime" / "AliWorkbench.exe")}),
+            ]
+            with patch.object(launcher, "app_root", return_value=root), \
+                    patch.object(launcher.psutil, "process_iter", return_value=fake):
+                self.assertEqual(launcher.running_qianniu_processes(), ["aliworkbench.exe"])
+
+    def test_stale_bridge_is_cleaned_instead_of_blocking_the_start(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(launcher, "app_root", return_value=Path(directory)), \
+                patch.object(launcher, "load_config_silent", return_value={}), \
+                patch.object(launcher, "ensure_device_identity", return_value=True), \
+                patch.object(launcher.config_dialog, "needs_setup", return_value=False), \
+                patch.object(launcher, "fetch_status", return_value=None), \
+                patch.object(launcher, "running_assistant_processes", return_value=[4242]), \
+                patch.object(launcher, "running_qianniu_processes", return_value=[]), \
+                patch.object(launcher, "kill_tree", return_value=True) as kill_tree, \
+                patch.object(launcher, "inject_all_webui", side_effect=RuntimeError("no webui.zip")), \
+                patch.object(launcher, "message_box"), \
+                patch.object(launcher, "start_process") as start_process:
+            self.assertEqual(launcher.start_all(), 4)
+            kill_tree.assert_called_once_with(4242)
+            start_process.assert_not_called()
+
+    def test_running_bridge_opens_workbench_before_the_qianniu_guard(self):
+        """桥接已在跑时不能再让用户去关千牛。"""
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(launcher, "app_root", return_value=Path(directory)), \
+                patch.object(launcher, "load_config_silent", return_value={"dock_enabled": True}), \
+                patch.object(launcher, "ensure_device_identity", return_value=True), \
+                patch.object(launcher.config_dialog, "needs_setup", return_value=False), \
+                patch.object(launcher, "fetch_status", return_value={"ok": True}), \
+                patch.object(launcher, "running_qianniu_processes", return_value=["aliworkbench.exe"]), \
+                patch.object(launcher, "message_box") as message_box, \
+                patch.object(launcher, "start_process") as start_process:
+            self.assertEqual(launcher.start_all(), 0)
+            start_process.assert_not_called()
+            self.assertIn("已在运行", message_box.call_args.args[1])
+
+    def test_stop_all_sweeps_assistant_processes_without_pid_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(launcher, "app_root", return_value=root), \
+                    patch.object(launcher, "request_bridge_shutdown", return_value=True), \
+                    patch.object(launcher, "running_assistant_processes", return_value=[777]), \
+                    patch.object(launcher, "kill_tree", return_value=True) as kill_tree, \
+                    patch.object(launcher, "request_tray_exit", return_value=True), \
+                    patch.object(launcher, "stop_managed_qianniu", return_value=[]), \
+                    patch.object(launcher, "message_box") as message_box, \
+                    patch("docked_workbench.close_existing", return_value=0):
+                launcher.stop_all()
+            kill_tree.assert_called_once_with(777)
+            message_box.assert_not_called()
 
 
 class LauncherLifecycleTests(unittest.TestCase):
@@ -1885,6 +1951,26 @@ class ContextEnrichmentTests(unittest.TestCase):
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_stale_human_controls_do_not_fill_handoff_tab(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = StateDB(Path(directory) / "state.sqlite3")
+            buyer = "stale-buyer"
+            db.upsert_event({
+                "platform": "taobao", "msg_id": "stale-human-1",
+                "account": "seller", "buyer_id": buyer,
+                "role": "user", "content": "old message",
+                "ts": time.time() - WORKBENCH_HUMAN_SESSION_MAX_AGE_SECONDS - 60,
+            })
+            db.set_session_control("seller", buyer, "human", "manual")
+            connection = db.connect()
+            connection.execute(
+                "UPDATE session_controls SET updated_at=? WHERE account=? AND buyer_id=?",
+                (time.time() - WORKBENCH_HUMAN_SESSION_MAX_AGE_SECONDS - 60, "seller", buyer),
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(db.workbench_sessions(), [])
+
     def test_session_snapshot_is_cached_and_invalidated_by_new_events(self):
         with tempfile.TemporaryDirectory() as directory:
             db = StateDB(Path(directory) / "state.sqlite3")

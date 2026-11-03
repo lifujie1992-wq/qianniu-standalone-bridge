@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import os
+import socket
 import threading
 import time
 import webbrowser
@@ -97,6 +98,20 @@ _BRIDGE_STOP_AFTER_FAILURES = 2
 _BRIDGE_PROBE_STATE: dict[str, dict] = {}
 
 
+def _managed_bridge_alive(config: dict, root: Path) -> bool:
+    """Keep the tray status healthy across a slow status response."""
+    state_dir = root / "state"
+    if not launcher.live_managed_pid(state_dir / "standalone_bridge.pid"):
+        return False
+    for port in (int(config.get("api_port", 42111)), int(config.get("workbench_port", 18776))):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                continue
+        except OSError:
+            return False
+    return True
+
+
 def _bridge_failure_detail(reason: str, port: int) -> str:
     if reason == "timeout":
         return f"响应超时 {port}（进程在忙）"
@@ -142,6 +157,57 @@ def _probe_bridge(config: dict) -> tuple[bool, str, dict | None]:
     return False, detail, status
 
 
+def _accessibility_component(settings: object, bridge: dict | None) -> tuple[ComponentStatus, str]:
+    """千牛「无障碍模式」行 + 一句给现场的结论。
+
+    2026-11-03 现场：面板全绿、消息能收，但订单/商品取不到 —— 根因就是这个
+    开关关着（千牛不会把 `workbench` 等原生 JSAPI 注入 webview）。它必须直接
+    显示在状态面板上，不能让现场看到一个绿色的“运行正常”就走。
+    """
+    if not isinstance(settings, dict):
+        return (
+            ComponentStatus(state="stopped", label="未知", detail="助手版本不支持检测"),
+            "",
+        )
+    connections = ((bridge or {}).get("browser") or {}).get("connections") or []
+    hooked = any(
+        isinstance(page, dict) and page.get("imsdk_hooked") for page in connections
+    )
+    enabled = settings.get("enabled")
+    if enabled is False:
+        return (
+            ComponentStatus(
+                state="degraded",
+                label="已关闭",
+                detail="取不到订单 · 设置→通用→无障碍模式",
+            ),
+            "千牛「无障碍模式」未开启：订单和商品一定取不到。"
+            "请在 千牛 → 设置 → 通用 → 无障碍模式 打开，"
+            "然后彻底退出千牛（托盘也要退）再重开。",
+        )
+    if enabled is True:
+        if hooked:
+            return ComponentStatus(
+                state="healthy", label="已开启", detail="页面 JSAPI 已就绪"
+            ), ""
+        return (
+            ComponentStatus(
+                state="degraded",
+                label="已开启",
+                detail="页面无 JSAPI · 彻底退出千牛后重开",
+            ),
+            "无障碍模式已开启，但千牛页面里还没有原生 JSAPI："
+            "请彻底退出千牛（托盘也要退）后重新打开。",
+        )
+    error = str(settings.get("error") or "").strip()
+    return (
+        ComponentStatus(
+            state="stopped", label="读取失败", detail=(error or "读不到千牛配置")[:60]
+        ),
+        "读不到千牛「无障碍模式」设置，若取不到订单请先跑现场诊断脚本。",
+    )
+
+
 def build_status(root: Path) -> AppStatus:
     config = launcher.load_config_silent(root / "config.json") or {}
     # /api/v1/status can take a couple of seconds while the bridge runs its
@@ -149,6 +215,9 @@ def build_status(root: Path) -> AppStatus:
     # perfectly healthy bridge as stopped, leaving the tray stuck on
     # "部分组件未就绪".
     bridge_ok, bridge_detail, bridge = _probe_bridge(config)
+    if not bridge_ok and bridge is None and _managed_bridge_alive(config, root):
+        bridge_ok = True
+        bridge_detail = f"127.0.0.1:{int(config.get('api_port', 42111))}"
     bridge_reachable = isinstance(bridge, dict)
     qianniu_count = _managed_qianniu_count(root)
     dock_running = _pid_file_running(root / "state" / "docked_workbench.pid")
@@ -169,17 +238,23 @@ def build_status(root: Path) -> AppStatus:
             detail="浮窗已运行" if dock_running else "未运行",
         ),
     }
+    access, access_note = _accessibility_component(
+        (bridge or {}).get("client_settings"), bridge
+    )
+    components["access"] = access
     required_healthy = bridge_ok and qianniu_count > 0
     any_running = bridge_ok or bridge_reachable or qianniu_count > 0 or dock_running
     if required_healthy:
         state = "healthy"
-        error = ""
+        # 服务本身正常，但无障碍关着就是取不到订单 —— 用红字说清楚，
+        # 别让现场把“运行正常”当成“能取单”。
+        error = access_note
     elif any_running:
         state = "degraded"
-        error = "部分组件未就绪，请查看组件详情。"
+        error = access_note or "部分组件未就绪，请查看组件详情。"
     else:
         state = "stopped"
-        error = ""
+        error = access_note
     return AppStatus(
         state=state,
         version=str((bridge or {}).get("version") or VERSION),
@@ -254,15 +329,9 @@ def run() -> int:
                     user32.ShowWindow(hwnd, SW_RESTORE)
                     user32.SetForegroundWindow(hwnd)
                     return
-                # Edge may still be starting, or waiting for the Qianniu window.
-                # Repeated clicks must not kill the dock before it can appear.
-                try:
-                    if time.time() - psutil.Process(pid).create_time() < 30.0:
-                        return
-                except psutil.NoSuchProcess:
-                    pass
-                # The dock process is alive but its window is gone: retire the
-                # stale process so start_dock below can recreate it.
+                # A snap-mode dock can remain alive while waiting for a
+                # Qianniu window. An explicit wake click should replace it
+                # with the floating panel instead of silently doing nothing.
                 try:
                     psutil.Process(pid).terminate()
                 except psutil.NoSuchProcess:
