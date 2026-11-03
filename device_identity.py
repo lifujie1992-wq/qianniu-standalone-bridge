@@ -24,6 +24,25 @@ class DeviceIdentityError(RuntimeError):
     pass
 
 
+_DIRECT_OPENER: urllib.request.OpenerDirector | None = None
+
+
+def _direct_opener() -> urllib.request.OpenerDirector:
+    """绕过系统/环境代理直连大脑。
+
+    大脑是固定公网 IP，不需要代理；机器上装了代理/加速器时，系统代理
+    会把请求交给一个不存在的出口，报出「[Errno 2] No such file or
+    directory」这类误导性错误（2026-11-03 现场）。注入 opener 的调用方
+    （测试）不受影响。
+    """
+    global _DIRECT_OPENER
+    if _DIRECT_OPENER is None:
+        _DIRECT_OPENER = urllib.request.build_opener(
+            urllib.request.ProxyHandler({})
+        )
+    return _DIRECT_OPENER
+
+
 def http_header_value(value: Any, field: str) -> str:
     """Return a value safe for Python's HTTP/1 header encoder."""
     text = str(value or "").strip()
@@ -139,7 +158,7 @@ def _request_migration(
             "Content-Type": "application/json",
         },
     )
-    open_request = opener or urllib.request.urlopen
+    open_request = opener or _direct_opener()
     try:
         timeout = float(config.get("brain_request_timeout_seconds", 8.0))
     except (TypeError, ValueError) as error:

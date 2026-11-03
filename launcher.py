@@ -118,6 +118,25 @@ def save_config(data: dict, path: Path) -> None:
     atomic_write_json(path, data)
 
 
+def direct_opener() -> urllib.request.OpenerDirector:
+    """绕过系统/环境代理的直连 opener（带缓存）。
+
+    2026-11-03 现场（DESKTOP-FHQHG6C）：迁移请求报
+    「[Errno 2] No such file or directory」—— 机器上装了代理/加速器，
+    urllib 读取系统代理后把发往大脑/本机的请求交给了一个不存在的出口。
+    大脑是固定公网 IP、本地探测是 127.0.0.1，都不需要代理，一律直连。
+    """
+    global _DIRECT_OPENER
+    if _DIRECT_OPENER is None:
+        _DIRECT_OPENER = urllib.request.build_opener(
+            urllib.request.ProxyHandler({})
+        )
+    return _DIRECT_OPENER
+
+
+_DIRECT_OPENER: urllib.request.OpenerDirector | None = None
+
+
 def ensure_device_identity(config: dict, config_path: Path) -> bool:
     try:
         prepare_device_identity(config, config_path)
@@ -125,7 +144,10 @@ def ensure_device_identity(config: dict, config_path: Path) -> bool:
     except DeviceIdentityError as error:
         message_box(
             "千牛客服助手 · 设备身份迁移失败",
-            f"{error}\n\n本地仍保留旧 device_id，尚未连接或注册大脑。",
+            f"{error}\n\n本地仍保留旧 device_id，尚未连接或注册大脑。\n\n"
+            "常见原因：本机开了代理/加速器/VPN（Clash、v2ray、Proxifier 等）。\n"
+            "请先关闭它们再点“重试”；无效则以管理员运行 "
+            "netsh winsock reset 后重启电脑再启动助手。",
             MB_ICONERROR,
         )
         return False
@@ -366,7 +388,9 @@ def fetch_status_with_reason(config: dict, timeout: float = 2.0) -> tuple[dict |
         return None, "no_config"
     request = urllib.request.Request(status_url(config), method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # 本机探测不走系统代理：代理/加速器会把 127.0.0.1 的请求也接管，
+        # 让健康的桥被误报成“无法连接”。
+        with direct_opener().open(request, timeout=timeout) as response:
             if response.status != 200:
                 return None, f"http_{response.status}"
             return json.loads(response.read().decode("utf-8")), ""

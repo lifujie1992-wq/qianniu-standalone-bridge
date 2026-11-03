@@ -362,3 +362,47 @@ class ClearFilterTests(unittest.TestCase):
         self.assertIn("qn_dock_cleared_at", html)
         self.assertIn("恢复显示全部会话", html)
         self.assertIn("列表已被「清空」过滤", html)
+
+
+class DeviceMigrationProxyBypassTests(unittest.TestCase):
+    """1.6.81：迁移/本地探测必须绕过系统代理（现场 Errno 2 根因）。"""
+
+    def test_migration_uses_proxy_free_opener_by_default(self):
+        import device_identity
+        import urllib.request
+
+        captured = {}
+        real_build = urllib.request.build_opener
+
+        def spy(*handlers):
+            captured["handlers"] = handlers
+            return real_build(*handlers)
+
+        device_identity._DIRECT_OPENER = None
+        config = {
+            "brain_server_url": "http://127.0.0.1:1",
+            "brain_agent_token": "t",
+            "brain_request_timeout_seconds": 0.2,
+        }
+        with mock.patch.object(urllib.request, "build_opener", spy):
+            with self.assertRaises(device_identity.DeviceIdentityError):
+                device_identity._request_migration(config, "device-old", "device-new", None)
+        device_identity._DIRECT_OPENER = None
+        handlers = captured["handlers"]
+        self.assertTrue(any(isinstance(h, urllib.request.ProxyHandler) for h in handlers))
+
+    def test_explicit_opener_still_wins(self):
+        import device_identity
+
+        opener = mock.MagicMock()
+        opener.return_value.__enter__.return_value.status = 200
+        opener.return_value.__enter__.return_value.read.return_value = b'{"ok": true}'
+        config = {
+            "brain_server_url": "http://127.0.0.1:1",
+            "brain_agent_token": "t",
+        }
+        device_identity._request_migration(
+            config, "device-old", "device-new", opener
+        )
+        device_identity._DIRECT_OPENER = None
+        opener.assert_called_once()
