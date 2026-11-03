@@ -196,6 +196,12 @@ class AutoUpgradeTests(unittest.TestCase):
             seat.launch("tray")
         self.assertEqual(launch.call_args.kwargs["env"]["PYINSTALLER_RESET_ENVIRONMENT"], "1")
 
+    def test_local_probe_does_not_initialize_ssl(self):
+        with patch("ssl.create_default_context", side_effect=FileNotFoundError(2, "SSL unavailable")):
+            seat = upgrade.Seat(self.root)
+        self.assertFalse(any(isinstance(handler, upgrade.urllib.request.HTTPSHandler)
+                             for handler in seat.opener.handlers))
+
     def test_missing_helper_executable_has_concrete_path(self):
         seat = upgrade.Seat(self.root)
         executable = self.root / "QianniuAgent.exe"

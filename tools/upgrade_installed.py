@@ -257,7 +257,14 @@ class Seat:
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.config = read_json(root / "config.json")
-        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        # These requests only address 127.0.0.1 over HTTP. build_opener also
+        # constructs HTTPSHandler, whose SSL context can fail in frozen builds
+        # before any local request is made (FileNotFoundError / Errno 2).
+        self.opener = urllib.request.OpenerDirector()
+        for handler in (urllib.request.HTTPHandler(),
+                        urllib.request.HTTPDefaultErrorHandler(),
+                        urllib.request.HTTPErrorProcessor()):
+            self.opener.add_handler(handler)
         self.roles = {role for _, role in self.processes()}
         self.want_dock = "dock" in self.roles or bool(self.config.get("dock_enabled"))
 
@@ -546,20 +553,24 @@ def main():
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if args.check:
-        expected = read_json(resource_root()/"payload-manifest.json")
-        with tempfile.TemporaryDirectory(prefix="qn-check-") as directory:
-            source = extract_payload(resource_root()/"payload.zip",Path(directory),expected)
-            found = discover()
-            for row in found:
-                validate_runtime(Path(row["path"]),source)
-                Seat(Path(row["path"])).ensure_idle()
-        report = {"version": VERSION, "upgrader_revision": UPGRADER_REVISION,
-                  "payload_verified": True, "installations": found, "read_only": True}
+        report = {"version": VERSION, "upgrader_revision": UPGRADER_REVISION, "read_only": True}
+        try:
+            expected = read_json(resource_root()/"payload-manifest.json")
+            with tempfile.TemporaryDirectory(prefix="qn-check-") as directory:
+                source = extract_payload(resource_root()/"payload.zip",Path(directory),expected)
+                report["payload_verified"] = True
+                found = discover()
+                report["installations"] = found
+                for row in found:
+                    validate_runtime(Path(row["path"]),source)
+                    Seat(Path(row["path"])).ensure_idle()
+        except Exception as error:
+            report.update(error=str(error), traceback=traceback.format_exc())
         if args.report:
             args.report.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
         elif sys.stdout is not None:
             print(json.dumps(report,ensure_ascii=False))
-        return 0
+        return 1 if "error" in report else 0
     show_window()
     return 0
 
