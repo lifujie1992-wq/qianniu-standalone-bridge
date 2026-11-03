@@ -2025,6 +2025,37 @@ class StateDB:
         except (TypeError, ValueError):
             return {}
 
+    def cached_order_context(self, buyer_encrypt_id: str, limit: int = 300) -> list[dict[str, Any]]:
+        """Return the order rows captured in an earlier event for this buyer.
+
+        mtop 在多页面客户端里是广播、先答者胜：两家店的聊天页同时在线时，
+        按 A 店买家去查，可能被 B 店的空壳页面抢先答成"没有订单"
+        （2026-11-04 现场：邱misslucky 明明有 5 单，面板显示"暂无订单"）。
+        事件里的 ``recent_orders`` 是当时在正确页面上抓下来的，用它兜底，
+        保证"AI 看得到的订单，工作台也看得到"。
+        """
+        identity = str(buyer_encrypt_id or "").strip()
+        if not identity:
+            return []
+        with self.lock, closing(self.connect()) as connection:
+            rows = connection.execute(
+                "SELECT payload FROM events WHERE payload LIKE ? ORDER BY rowid DESC LIMIT ?",
+                (f"%{identity}%", int(limit)),
+            ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("buyer_encrypt_id") or "").strip() != identity:
+                continue
+            orders = payload.get("recent_orders")
+            if isinstance(orders, list) and orders:
+                return [item for item in orders if isinstance(item, dict)]
+        return []
+
     def replace_event_payload(self, event_id: str, payload: dict[str, Any]) -> bool:
         event_id = str(event_id or "").strip()
         if not event_id:
@@ -6910,6 +6941,20 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 if native is not None and (native.get("count") or native.get("known")):
                     self.send_json(200, native)
                     return
+                if not history:
+                    # 多页面串台兜底：mtop 可能被另一家店的空壳页抢先答成空，
+                    # 而事件里已经抓到过这个买家的订单（2026-11-04 邱misslucky）。
+                    cached = self.app.db.cached_order_context(buyer)
+                    if cached:
+                        self.send_json(200, {
+                            "ok": True,
+                            "orders": cached,
+                            "count": len(cached),
+                            "buyer_encrypt_id": buyer,
+                            "source": "event_context",
+                            "note": "mtop 返回空，改用本机已抓到的订单上下文",
+                        })
+                        return
             self.send_json(200, {"ok": True, **payload})
             return
 
