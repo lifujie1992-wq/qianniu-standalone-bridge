@@ -47,6 +47,22 @@ class FakeApp:
         self.config = config or {}
 
 
+class MultiPageBrowser(FakeBrowser):
+    """模拟多店铺客户端：每个聊天页各回一份结果。"""
+
+    def __init__(self, pages: list[object]):
+        super().__init__({})
+        self.pages = pages
+        self.select = None
+        self.execute_all_calls = 0
+
+    def execute_all(self, expression: str, timeout: float = 3.0, select=None):
+        self.expressions.append(expression)
+        self.execute_all_calls += 1
+        self.select = select
+        return list(self.pages)
+
+
 def mtop_success(data: object) -> dict:
     return {"ok": True, "value": {"ret": ["SUCCESS::调用成功"], "data": data}}
 
@@ -180,6 +196,30 @@ class CatalogTests(unittest.TestCase):
         expression = app.browser.expressions[-1]
         self.assertIn("securityBuyerUid", expression)
         self.assertIn("2217298756354", expression)
+
+    def test_buyer_orders_checks_all_chat_pages(self):
+        empty = mtop_success({"data": {"orders": []}})
+        filled = mtop_success({"data": {"orders": [{"bizOrderId": "8888", "orderPrice": "1.00"}]}})
+        app = FakeApp({})
+        app.browser = MultiPageBrowser([empty, filled])
+        catalog = qc.QnCatalog(app)
+        result = catalog.buyer_orders("2217298756354")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["orders"][0]["order_id"], "8888")
+        self.assertEqual(result["pages_checked"], 2)
+        self.assertEqual(result["pages_with_orders"], 1)
+        self.assertTrue(callable(app.browser.select))
+        self.assertTrue(app.browser.select({"page_kind": "chat_recent", "imsdk_hooked": True}))
+        self.assertFalse(app.browser.select({"page_kind": "other", "imsdk_hooked": False}))
+
+    def test_buyer_orders_all_pages_empty_returns_empty(self):
+        empty = mtop_success({"data": {"orders": []}})
+        app = FakeApp({})
+        app.browser = MultiPageBrowser([empty, empty])
+        catalog = qc.QnCatalog(app)
+        result = catalog.buyer_orders("2217298756354")
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["pages_checked"], 2)
 
     def test_non_success_ret_raises(self):
         app = FakeApp({qc.TRADE_QUERY_METHOD: {"ok": True, "value": {"ret": ["FAIL_SYS_TOKEN_EMPTY::x"]}}})

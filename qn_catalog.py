@@ -50,6 +50,18 @@ SHOP_INFO_METHOD = "mtop.taobao.jdy.resource.shop.info.get"
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
+# 订单查询只问聊天页：多店铺客户端里 dx-h5 空壳页会秒回“无通道/空结果”，
+# 先答的空结果会把真正有单的店铺页盖掉。
+CHAT_PAGE_KINDS = {"chat_recent", "chat_other"}
+ORDER_PAGE_TIMEOUT_SECONDS = 2.0
+
+
+def _is_order_page(diagnostics: dict[str, Any]) -> bool:
+    """只挑“聊天页且已挂钩”的页面执行订单 mtop。"""
+    kind = str(diagnostics.get("page_kind") or "")
+    return kind in CHAT_PAGE_KINDS and diagnostics.get("imsdk_hooked") is True
+
+
 # 页面侧表达式模板：与福客 `invoke_mtopchannel_service` 等价。
 # __PAYLOAD__ 用 json.dumps 结果替换，避免二次转义。
 # 同时返回 err / error：桥接转发层取的是 err 字段。
@@ -641,15 +653,84 @@ class QnCatalog:
         return {"goods_id": str(item_id), "images": images, "method": ITEM_DESC_METHOD, "version": "4.1"}
 
     # -- 订单 -------------------------------------------------------------
+    def _orders_over_pages(self, param: dict[str, Any], timeout: float | None = None,
+                           only_channel: str = "") -> dict[str, Any] | None:
+        """在所有聊天页上各问一次订单 mtop，挑“有单且最多”的那份。
+
+        多店铺客户端里同一个买家只在一个店铺有单；`execute` 是广播先答者胜，
+        别的店铺页先回一个 SUCCESS+空列表就会把有单的页盖掉（现场表现：
+        升级后部分买家“查不到订单”、本地缓存反而有单）。这里改成每页都问，
+        空结果只作为兜底，不算最终答案。
+        """
+        browser = getattr(self.app, "browser", None)
+        execute_all = getattr(browser, "execute_all", None)
+        if not callable(execute_all):
+            return None
+        payload: dict[str, Any] = {
+            "method": TRADE_QUERY_METHOD,
+            "param": _jsonable(param),
+            "version": "1.0",
+        }
+        if only_channel:
+            payload["__only"] = str(only_channel)
+        expression = _INVOKE_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload, ensure_ascii=False))
+        page_timeout = min(self._timeout(timeout), ORDER_PAGE_TIMEOUT_SECONDS)
+        self.requests += 1
+        try:
+            try:
+                values = execute_all(expression, timeout=page_timeout, select=_is_order_page)
+            except TypeError:
+                # 老版本 BrowserServer.execute_all 没有 select 参数
+                values = execute_all(expression, timeout=page_timeout)
+        except Exception as error:  # 页面全部不可用：交给 raw() 复现具体错误
+            self.last_error = str(error) or "Qianniu browser command failed"
+            raise QnCatalogError(self.last_error) from error
+
+        answered: list[tuple[dict[str, Any], Any, list[dict[str, Any]]]] = []
+        for item in values or []:
+            if not isinstance(item, dict) or item.get("ok") is not True:
+                continue
+            value = item.get("value")
+            if not mtop_ok(value):
+                continue
+            answered.append((item, value, normalize_orders(value)))
+        if not answered:
+            return None
+        answered.sort(key=lambda row: -len(row[2]))
+        item, value, orders = answered[0]
+        self.last_channel = str(item.get("channel") or "imsdk")
+        self.last_error = ""
+        self.last_success_at = time.time()
+        return {
+            "orders": orders,
+            "count": len(orders),
+            "buyer_encrypt_id": str(param.get("securityBuyerUid") or ""),
+            "method": TRADE_QUERY_METHOD,
+            "raw": _jsonable(value),
+            "channel": self.last_channel,
+            "pages_checked": len(values or []),
+            "pages_with_orders": sum(1 for row in answered if row[2]),
+        }
+
     def buyer_orders(self, buyer_encrypt_id: str, biz_order_id: str = "",
-                     timeout: float | None = None, only_channel: str = "") -> dict[str, Any]:
-        """买家在本店的近期订单（福客订单上下文用的就是这个）。"""
+                     timeout: float | None = None, only_channel: str = "",
+                     multi_page: bool = True) -> dict[str, Any]:
+        """买家在本店的近期订单（福客订单上下文用的就是这个）。
+
+        multi_page=True（默认）时先在所有聊天页各查一次，取有单的那份；
+        所有页面都明确返回空时才返回空列表。
+        """
         encrypt_id = str(buyer_encrypt_id or "").strip()
         if not encrypt_id:
             raise QnCatalogError("buyer_encrypt_id is required")
+        param = {"securityBuyerUid": encrypt_id, "bizOrderId": str(biz_order_id or "")}
+        if multi_page:
+            picked = self._orders_over_pages(param, timeout=timeout, only_channel=only_channel)
+            if picked is not None:
+                return picked
         value = self.raw(
             TRADE_QUERY_METHOD,
-            {"securityBuyerUid": encrypt_id, "bizOrderId": str(biz_order_id or "")},
+            param,
             timeout=timeout,
             only_channel=only_channel,
         )
