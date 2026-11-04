@@ -672,8 +672,11 @@
         node.textContent = left === 0 ? '已超时' : `待回复 ${String(Math.floor(left / 60)).padStart(2, '0')}:${String(left % 60).padStart(2, '0')}`;
         node.title = left === 0 ? '买家消息超过 180 秒未回复' : `回复倒计时：剩余 ${left} 秒`;
       }
-      const overdue = state.sessions.filter(item => item.ai_mode === 'human' && item.last_message_role === 'user' && Number(item.reply_due_at) > 0 && Number(item.reply_due_at) <= now).length;
-      const handoffCount = state.sessions.filter(item => item.ai_mode === 'human').length;
+      const visibleForCount = state.clearedAt > 0
+        ? state.sessions.filter(item => Number(item.last_ts || 0) > state.clearedAt)
+        : state.sessions;
+      const overdue = visibleForCount.filter(item => item.ai_mode === 'human' && item.last_message_role === 'user' && Number(item.reply_due_at) > 0 && Number(item.reply_due_at) <= now).length;
+      const handoffCount = visibleForCount.filter(item => item.ai_mode === 'human').length;
       el('handoffSessionsTab').textContent = `待人工 ${handoffCount}${overdue ? ` · 超时 ${overdue}` : ''}`;
       el('handoffSessionsTab').classList.toggle('alert', overdue > 0);
     }
