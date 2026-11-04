@@ -4136,18 +4136,30 @@ class BrowserServer:
                              isinstance(value, str) and value.startswith(("http://", "https://")))
         return value if isinstance(value, str) else ""
 
-    def execute_all(self, expression: str, timeout: float = 3.0) -> list[Any]:
+    def execute_all(self, expression: str, timeout: float = 3.0, select: Any = None) -> list[Any]:
         """Run an expression on every connected page and return the successes.
 
         `execute` broadcasts and keeps whichever page answers first. That is
         wrong for capability probes: dx-h5 stays connected but cannot answer
         conversation questions, so it can win the race with a useless reply.
         Callers that need "some page can do this" use this instead.
+
+        `select(diagnostics)` 可限制只在某一类页面上执行（例如只问聊天页）。
+        多店铺客户端里同一个 mtop 查询在不同店铺页面上返回的结果不同，
+        订单取数必须"每页都问一遍再挑"，否则先答的空结果会把有单的页面盖掉。
         """
         with self.connection_lock:
             connections = list(self.connections)
+            diagnostics = dict(self.connection_diagnostics)
         if not connections:
             raise RuntimeError("Qianniu browser bridge is not connected")
+        if select is not None:
+            picked = [item for item in connections if select(diagnostics.get(item) or {})]
+            # 选择器没命中任何页面时退回全部，避免诊断缺字段导致彻底取不到数
+            if picked:
+                connections = picked
+        connections.sort(key=lambda item: _connection_priority(diagnostics.get(item) or {}))
+
         values: list[Any] = []
         last_error: Exception | None = None
         for connection in connections:
