@@ -1,7 +1,6 @@
 """Recover image media and handoff context from the authenticated native client."""
 from __future__ import annotations
 
-from datetime import datetime
 import json
 import re
 import struct
@@ -119,6 +118,15 @@ def native_event(row: list[Any], account: str, buyer_id: str) -> dict[str, Any] 
             value = {}
         if isinstance(value, dict) and isinstance(value.get('url'), str) and value['url'].startswith(('https://', 'http://')):
             content = media = value['url']
+    rich = False
+    if not content and role == 'mall_cs' and str(row[4]) not in ('1', '101'):
+        # Robot (服务助手/店小蜜) and staff often answer with cards or rich text.
+        # Their packed bodies vary by template, but AIM keeps a readable
+        # summary in content_label; keep it so the next seat (and the brain)
+        # can see the question was already answered.
+        label = re.sub(r'\s+', ' ', str(row[5] or '')).strip()
+        if label and not re.fullmatch(r'\[[^\]]{0,12}\]', label):
+            content, rich = label[:500], True
     if not content:
         return None
     result = {'type':'message', 'platform':'taobao', 'account':account, 'buyer_id':buyer_id,
@@ -126,7 +134,9 @@ def native_event(row: list[Any], account: str, buyer_id: str) -> dict[str, Any] 
               'content':content, 'role':role, 'ts':stamp, 'original_timestamp':stamp,
               'capture_mode':'history_snapshot', 'source':'qianniu_native_message_store',
               'sender_uid':sender, 'sender_nick':sender_nick, 'recipient_nick':recipient_nick,
-              'raw_type':'image' if media else 'text'}
+              'raw_type':'image' if media else ('rich' if rich else 'text')}
+    if rich:
+        result.update(content_type=str(row[4]), content_from='content_label')
     if role == 'mall_cs':
         result['staff_name'] = sender_nick
     if media:
@@ -134,6 +144,7 @@ def native_event(row: list[Any], account: str, buyer_id: str) -> dict[str, Any] 
     return result
 
 
+HISTORY_WINDOW_SECONDS = 86400
 _TRANSFER_TARGET = re.compile(r'转交给\s*([^\s:：，,。（(]+)')
 
 
@@ -165,18 +176,24 @@ class NativeContext:
         self.history_rows = 0
         self.last_error = ''
         self.last_lookup_ms = 0
+        self.last_dropped = 0
 
     def read(self, event: dict[str, Any], message_id: str = '') -> list[dict[str, Any]]:
         account, buyer_id = str(event.get('account') or ''), str(event.get('buyer_id') or '')
         stamp = epoch(event.get('original_timestamp') or event.get('ts')) or time.time()
-        start = datetime.fromtimestamp(stamp).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        # Look back a full day, not just since local midnight: a conversation
+        # started late in the evening and transferred after midnight still
+        # needs its earlier turns.
+        start = stamp - HISTORY_WINDOW_SECONDS
         before = int((max(stamp,time.time())+300)*1000) if message_id else int((stamp+1)*1000)
         after = 0 if message_id else int(start*1000)
         response = self.app.appbiz.read_messages(account, buyer_id, before, after, message_id, 1 if message_id else 100)
         if not isinstance(response, dict) or response.get('ok') is not True:
             raise RuntimeError(str((response or {}).get('error') or 'native_history_unavailable'))
-        return [event for row in response.get('rows', []) if isinstance(row, list)
-                if (event := native_event(row, account, buyer_id)) is not None]
+        rows = [row for row in response.get('rows', []) if isinstance(row, list)]
+        events = [event for row in rows if (event := native_event(row, account, buyer_id)) is not None]
+        self.last_dropped = len(rows) - len(events)
+        return events
 
     def prepare(self, event: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Run on the upload worker, after durable capture and before brain ingest."""
@@ -220,7 +237,8 @@ class NativeContext:
                     stamp = parent['ts']
                     history = [item for item in self.read(dict(event,original_timestamp=stamp))
                                if item['msg_id'] != message_id and item['ts'] <= stamp]
-                    event = dict(event, native_history={'status':'loaded' if history else 'empty', 'count':len(history), 'source':'native_message_store', 'platform_timestamp':stamp})
+                    event = dict(event, native_history={'status':'loaded' if history else 'empty', 'count':len(history), 'source':'native_message_store', 'platform_timestamp':stamp,
+                                                        'dropped':self.last_dropped, 'window_seconds':HISTORY_WINDOW_SECONDS})
                     self.history_rows += len(history)
                 if history or event.get('image_url'):
                     self.last_error = ''

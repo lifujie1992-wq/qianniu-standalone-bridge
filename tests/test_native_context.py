@@ -65,6 +65,25 @@ class NativeContentTests(unittest.TestCase):
         self.assertEqual(event['staff_name'],'联想官方旗舰店:京京')
         self.assertEqual(event['recipient_nick'],'tb_7715324')
 
+    def test_robot_card_keeps_its_readable_label_as_context(self):
+        value=row(sender='888@cntaobao',text='设备激活步骤：扫码充值→实名认证→关机重启')
+        value[4]='65'
+        value[6]=pack({1:65,2:{1:'tpl'}}).hex()
+        value[7]=json.dumps({'sender_nick':'cntaobao联想官方旗舰店:服务助手','receiver_nick':'cntaobaotb_7715324'})
+        event=native_event(value,ACCOUNT,BUYER)
+        self.assertEqual(event['role'],'mall_cs')
+        self.assertEqual(event['staff_name'],'联想官方旗舰店:服务助手')
+        self.assertEqual(event['content'],'设备激活步骤：扫码充值→实名认证→关机重启')
+        self.assertEqual(event['raw_type'],'rich')
+        self.assertEqual(event['content_from'],'content_label')
+
+    def test_buyer_cards_and_placeholder_labels_are_still_dropped(self):
+        buyer=row(text='[商品卡片]');buyer[4]='65';buyer[6]=pack({1:65,2:{1:'tpl'}}).hex()
+        self.assertIsNone(native_event(buyer,ACCOUNT,BUYER))
+        staff=row(sender='888@cntaobao',text='[卡片]');staff[4]='65';staff[6]=pack({1:65,2:{1:'tpl'}}).hex()
+        staff[7]=json.dumps({'sender_nick':'cntaobao联想官方旗舰店:服务助手','receiver_nick':'cntaobaotb_7715324'})
+        self.assertIsNone(native_event(staff,ACCOUNT,BUYER))
+
     def test_truncation_and_unbounded_structures_fail_closed(self):
         for value in [b'',b'\xda\xff\xff',b'\x81\x01',b'\xdf\xff\xff\xff\xff',b'\x01\x02']:
             with self.assertRaises((ValueError,TypeError)):
@@ -106,6 +125,19 @@ class NativePrepareTests(unittest.TestCase):
         updated,history=context.prepare({'account':ACCOUNT,'buyer_id':BUYER,'msg_id':'transfer.PNM','content':notice,'ts':STAMP})
         self.assertEqual([x['msg_id'] for x in history],['123.PNM'])
         self.assertEqual(updated['native_history']['status'],'loaded')
+
+    def test_history_window_reaches_back_a_full_day_and_reports_dropped_rows(self):
+        notice='由 服务助手 转交给 花花 原因：机器人接待触发转人工'
+        late=STAMP-20*3600
+        dropped=row('drop.PNM',stamp=STAMP-30);dropped[8]='1'
+        context,app=self.make_context([])
+        app.appbiz.read_messages.side_effect=lambda *args: {'ok':True,'rows':[row('transfer.PNM',text=notice)]} if args[4] else {'ok':True,'rows':[row(stamp=late),dropped]}
+        updated,history=context.prepare({'account':ACCOUNT,'buyer_id':BUYER,'msg_id':'transfer.PNM','content':notice,'ts':STAMP})
+        after=app.appbiz.read_messages.call_args.args[3]
+        self.assertLessEqual(after,int((STAMP-86400)*1000)+1000)
+        self.assertEqual([x['msg_id'] for x in history],['123.PNM'])
+        self.assertEqual(updated['native_history']['dropped'],1)
+        self.assertEqual(updated['native_history']['window_seconds'],86400)
 
     def test_transfer_target_parsing(self):
         from native_context import transfer_target, seat_name
