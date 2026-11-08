@@ -134,6 +134,29 @@ def native_event(row: list[Any], account: str, buyer_id: str) -> dict[str, Any] 
     return result
 
 
+_TRANSFER_TARGET = re.compile(r'转交给\s*([^\s:：，,。（(]+)')
+
+
+def transfer_target(content: Any) -> str:
+    """Seat name a transfer notice hands the buyer to, or '' if it is not one.
+
+    Robot handoffs carry a reason after the seat name, e.g.
+    「由 服务助手 转交给 小羊 原因：机器人接待触发转人工」; the reason (and any
+    line break before it) is not part of the seat name.
+    """
+    text = re.sub(r'\s+', ' ', str(content or '')).strip()
+    if not TRANSFER.fullmatch(text):
+        return ''
+    found = _TRANSFER_TARGET.findall(text)
+    name = found[-1] if found else ''
+    return re.sub(r'原因$', '', name)
+
+
+def seat_name(account: Any) -> str:
+    """「联想官方旗舰店:小羊」→「小羊」 (full-width colon too)."""
+    return re.split(r'[:：]', str(account or ''))[-1].strip()
+
+
 class NativeContext:
     def __init__(self, app: Any):
         self.app = app
@@ -160,10 +183,15 @@ class NativeContext:
         history: list[dict[str, Any]] = []
         enabled = bool(self.app.config.get('bridge_native_image_lookup', True))
         content = str(event.get('content') or '').strip()
-        is_transfer = bool(TRANSFER.fullmatch(content)) and content.rsplit('转交给', 1)[-1].strip() == str(event.get('account') or '').split(':')[-1]
+        target = transfer_target(content)
+        is_transfer = bool(target) and target == seat_name(event.get('account'))
         needs_image = enabled and is_placeholder_image_event(event) and not event.get('image_url')
         # History-only uploads must never recursively fetch another history window.
         if not needs_image and (not is_transfer or event.get('capture_mode') == 'history_snapshot'):
+            if target and not is_transfer and event.get('capture_mode') != 'history_snapshot':
+                # Make "never attempted" distinguishable from "empty" on the server.
+                event = dict(event, native_history={'status': 'skipped', 'count': 0, 'reason': 'other_seat',
+                                                    'target': target[:40]})
             return event, history
         started = time.perf_counter()
         with self.lock:

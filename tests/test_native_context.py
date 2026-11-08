@@ -97,6 +97,32 @@ class NativePrepareTests(unittest.TestCase):
             context.prepare(dict(event,account=ACCOUNT,buyer_id=BUYER,ts=STAMP))
         app.appbiz.read_messages.assert_not_called()
 
+    def test_robot_handoff_with_reason_fetches_history_for_this_seat(self):
+        # 2026-11-08: 「由 服务助手 转交给 花花 原因：机器人接待触发转人工」 was compared
+        # verbatim with the seat name, so robot handoffs never read pre-transfer history.
+        notice='由 服务助手 转交给 花花 原因：机器人接待触发转人工'
+        context,app=self.make_context([])
+        app.appbiz.read_messages.side_effect=lambda *args: {'ok':True,'rows':[row('transfer.PNM',text=notice)]} if args[4] else {'ok':True,'rows':[row(stamp=STAMP-20)]}
+        updated,history=context.prepare({'account':ACCOUNT,'buyer_id':BUYER,'msg_id':'transfer.PNM','content':notice,'ts':STAMP})
+        self.assertEqual([x['msg_id'] for x in history],['123.PNM'])
+        self.assertEqual(updated['native_history']['status'],'loaded')
+
+    def test_transfer_target_parsing(self):
+        from native_context import transfer_target, seat_name
+        self.assertEqual(transfer_target('由 服务助手 转交给 小羊 原因：机器人接待触发转人工'),'小羊')
+        self.assertEqual(transfer_target('由 服务助手 转交给 小羊\n原因：机器人接待触发转人工'),'小羊')
+        self.assertEqual(transfer_target('由 服务助手 转交给 小羊原因：机器人接待触发转人工'),'小羊')
+        self.assertEqual(transfer_target('由 钰林 转交给 铭铭'),'铭铭')
+        self.assertEqual(transfer_target('你好，转交给客服吧'),'')
+        self.assertEqual(seat_name('联想官方旗舰店：小羊'),'小羊')
+
+    def test_transfer_to_another_seat_is_marked_skipped_not_empty(self):
+        context,app=self.make_context([])
+        updated,_=context.prepare({'account':ACCOUNT,'buyer_id':BUYER,'content':'由 服务助手 转交给 京京 原因：机器人接待触发转人工','ts':STAMP})
+        app.appbiz.read_messages.assert_not_called()
+        self.assertEqual(updated['native_history']['status'],'skipped')
+        self.assertEqual(updated['native_history']['reason'],'other_seat')
+
     def test_delayed_transfer_uses_native_platform_day_and_keeps_original_timestamp(self):
         context,app=self.make_context([])
         app.appbiz.read_messages.side_effect=lambda *args: {'ok':True,'rows':[row('transfer.PNM',text='由 小迎 转交给 花花')]} if args[4] else {'ok':True,'rows':[row(stamp=STAMP-20)]}
