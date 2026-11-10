@@ -1270,7 +1270,7 @@
     return Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
   }
 
-  function probeHistory(ccode) {
+  function probeHistory(ccode, seller, transferHistory) {
     if (!HISTORY_PROBE || !ccode || historyProbeCcodes[ccode]) return;
     diagnostics.history_probe_last_ccode = ccode;
     diagnostics.history_probe_last_at_ms = Date.now();
@@ -1282,26 +1282,48 @@
     }
     historyProbeCcodes[ccode] = true;
     diagnostics.history_probe_runs += 1;
-    var params = Object.assign({ ccode: ccode, count: 100 }, HISTORY_PROBE_PARAMS);
+    // 千牛历史 API 的参数是 {cid:{ccode}, gohistory, count}，不是直接的 ccode。
+    var params = Object.assign({ cid: { ccode: ccode }, gohistory: 1, count: 100 }, HISTORY_PROBE_PARAMS);
     // Parameter-name experiments must not redirect a transfer's probe to a
     // different buyer. The event's full conversation ID is authoritative.
-    params.ccode = ccode;
-    // 只拉当天：本地零点。服务端仍会按 original_timestamp 再过滤一次。
-    if (!("startTime" in params) && !("start_time" in params) && !("beginTime" in params)) {
-      params.startTime = sameDayStartSeconds();
-    }
+    params.cid = { ccode: ccode };
+    // 默认拉最近 100 条；需要限定时间时在 bridge_history_probe_params 里传 startTime。
     ["im.singlemsg.GetRemoteHisMsg", "im.singlemsg.GetLocalHisMsg"].forEach(function (api) {
       invokeWithTimeout(api, params, INVOKE_TIMEOUT_MS).then(function (res) {
         var ok = !!res && res.ok !== false;
         var payload = res && res.result != null ? res.result : res;
+        var msgs = payload && payload.msgs;
         var record = ok
-          ? { api: api, ok: true, shape: diagnosticSample(payload) }
+          ? { api: api, ok: true, shape: diagnosticSample(payload), ingested: 0 }
           : { api: api, ok: false, error: diagnosticSample(res) };
+        // 关键：把历史 msgs 真正 ingest 成事件，而不是只记录 shape。
+        // 只接收本次请求 ccode 的消息：GetLocalHisMsg 在页面切会话时
+        // 可能返回“当前会话”的历史，不能把它挂到别的买家身上。
+        if (ok && msgs && msgs.length) {
+          var wanted = String(ccode);
+          var scopedMsgs = msgs.filter(function (m) {
+            return m && m.cid && String(m.cid.ccode) === wanted;
+          });
+          if (!scopedMsgs.length) {
+            record.skipped_other_ccode = msgs.length;
+          } else {
+            try {
+              var scopedPayload = { hasMore: payload.hasMore, msgs: scopedMsgs };
+              var ingested = emitChatPayload(scopedPayload, seller || "", "history_snapshot:" + api, transferHistory || 0);
+              record.ingested = (ingested && ingested.captured) || 0;
+              diagnostics.history_probe_ingested = (diagnostics.history_probe_ingested || 0) + record.ingested;
+            } catch (e) {
+              record.ingest_error = String(e && e.message || e);
+            }
+          }
+        }
         diagnostics.history_probe_results.push(record);
         if (diagnostics.history_probe_results.length > 4) diagnostics.history_probe_results.shift();
       });
     });
   }
+
+  window.__qn_standalone_probe_history = probeHistory;
 
   function emitChatPayload(payload, sellerHint, captureMode, transferHistory) {
     var result = { details: 0, captured: 0, sent: 0, ccodes: [] };
@@ -1320,7 +1342,7 @@
         if (!row) return;
         // 转接通知：诊断模式下一次性探测该会话的历史 API。
         if (/^由\s*.+?\s*转交给\s*.+$/.test(String(row.content || ""))) {
-          probeHistory(String(row.buyer_id || ""));
+          probeHistory(String(row.buyer_id || ""), String(row.account || ""), Number(row.ts || 0) * 1000);
         }
         var immediate = tmallGuardScope(row.account);
         var queuedId = queueEnvelope(row, !immediate && !row.nickname && !!row.account);
