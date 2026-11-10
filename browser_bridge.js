@@ -27,6 +27,9 @@
   var HISTORY_PROBE = OPTIONS.history_probe === true;
   var HISTORY_PROBE_PARAMS = (OPTIONS.history_probe_params && typeof OPTIONS.history_probe_params === "object")
     ? OPTIONS.history_probe_params : {};
+  // 转接时只补“转接前最近 N 条”，默认 2 条，避免把整段历史灌进事件流。
+  var HISTORY_CONTEXT_LIMIT = Number(OPTIONS.history_context_limit) > 0
+    ? Math.min(Number(OPTIONS.history_context_limit), 10) : 2;
   // 被动扫描间隔可在注入时通过 bridge_passive_dom_ms / bridge_passive_cache_ms
   // 调整；缺失或非法值回落到默认。
   function clampIntervalMs(value, fallback, minimum, maximum) {
@@ -1299,18 +1302,33 @@
         // 关键：把历史 msgs 真正 ingest 成事件，而不是只记录 shape。
         // 只接收本次请求 ccode 的消息：GetLocalHisMsg 在页面切会话时
         // 可能返回“当前会话”的历史，不能把它挂到别的买家身上。
+        // 并且只补转接前最近 N 条（默认 2 条），不整段回灌。
         if (ok && msgs && msgs.length) {
           var wanted = String(ccode);
           var scopedMsgs = msgs.filter(function (m) {
             return m && m.cid && String(m.cid.ccode) === wanted;
           });
+          scopedMsgs.sort(function (a, b) {
+            function ts(m) {
+              var v = Number(m && (m.sendTime || (m.sortTimeMicrosecond ? Number(m.sortTimeMicrosecond) / 1000 : 0)));
+              return isFinite(v) ? v : 0;
+            }
+            return ts(a) - ts(b);
+          });
+          var beforeTransfer = transferHistory > 0
+            ? scopedMsgs.filter(function (m) { return (Number(m.sendTime) || 0) < transferHistory; })
+            : scopedMsgs;
+          var selected = beforeTransfer.slice(-HISTORY_CONTEXT_LIMIT);
           if (!scopedMsgs.length) {
             record.skipped_other_ccode = msgs.length;
+          } else if (!selected.length) {
+            record.skipped_no_pre_transfer = scopedMsgs.length;
           } else {
             try {
-              var scopedPayload = { hasMore: payload.hasMore, msgs: scopedMsgs };
+              var scopedPayload = { hasMore: false, msgs: selected };
               var ingested = emitChatPayload(scopedPayload, seller || "", "history_snapshot:" + api, transferHistory || 0);
               record.ingested = (ingested && ingested.captured) || 0;
+              record.context_limit = HISTORY_CONTEXT_LIMIT;
               diagnostics.history_probe_ingested = (diagnostics.history_probe_ingested || 0) + record.ingested;
             } catch (e) {
               record.ingest_error = String(e && e.message || e);
