@@ -1290,6 +1290,7 @@
     // Parameter-name experiments must not redirect a transfer's probe to a
     // different buyer. The event's full conversation ID is authoritative.
     params.cid = { ccode: ccode };
+    delete params.ccode; // 旧参数名，千牛 API 不认，避免和 cid.ccode 混淆
     // 默认拉最近 100 条；需要限定时间时在 bridge_history_probe_params 里传 startTime。
     ["im.singlemsg.GetRemoteHisMsg", "im.singlemsg.GetLocalHisMsg"].forEach(function (api) {
       invokeWithTimeout(api, params, INVOKE_TIMEOUT_MS).then(function (res) {

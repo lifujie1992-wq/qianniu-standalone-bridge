@@ -633,9 +633,30 @@ test('history probe is opt-in, targets only the transferred conversation and run
   await settle();
   const calls = on.calls.filter(call => /Get(?:Remote|Local)HisMsg/.test(call.api));
   assert.equal(calls.length, 2);
-  assert.ok(calls.every(call => call.params.ccode === NUMERIC_BUYER));
-  assert.ok(calls.every(call => call.params.startTime > 0 && call.params.count === 10));
+  assert.ok(calls.every(call => call.params.cid && call.params.cid.ccode === NUMERIC_BUYER));
+  assert.ok(calls.every(call => call.params.gohistory === 1 && call.params.count === 10));
+  assert.ok(calls.every(call => call.params.ccode === undefined));
   assert.equal(on.window.__qn_standalone_diag.history_probe_results.length, 2);
+});
+
+test('history probe ingests only the last 2 pre-transfer messages and ignores other ccodes', async () => {
+  const transferTs = Date.now();
+  const pre1 = {...message(NUMERIC_BUYER, 'buyer', 'hist-pre-1', 'pre one'), sendTime: transferTs - 30000};
+  const pre2 = {...message(NUMERIC_BUYER, 'buyer', 'hist-pre-2', 'pre two'), sendTime: transferTs - 20000};
+  const post = {...message(NUMERIC_BUYER, 'buyer', 'hist-post', 'post'), sendTime: transferTs + 20000};
+  const other = {...message('other#1@cntaobao', 'other', 'hist-other', 'other'), sendTime: transferTs - 10000};
+  const b = loadBridge({asyncRpc:true, bridgeOptions:{history_probe:true},
+    invoke: (api) => /Get(?:Remote|Local)HisMsg/.test(api)
+      ? {ok:true, result:{hasMore:false, msgs:[pre1, pre2, post, other]}}
+      : {}});
+  b.handlers.get('im.singlemsg.onReceiveNewMsg')(uidMessage('transfer-limit', {
+    summary: '由 服务助手 转交给 燕燕', sendTime: transferTs,
+  }));
+  await settle();
+  const hist = captured(b).filter(e => String(e.capture_mode || '').startsWith('history_snapshot'));
+  assert.deepEqual(hist.map(e => e.msg_id).sort(), ['hist-pre-1', 'hist-pre-2']);
+  assert.equal(hist.every(e => e.buyer_id === NUMERIC_BUYER), true);
+  assert.equal(b.window.__qn_standalone_diag.history_probe_ingested, 2);
 });
 
 test('history probe retries after the SDK becomes available', async () => {
