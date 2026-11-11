@@ -117,15 +117,18 @@ def buyer_nick_is_placeholder(nick: str, buyer_id: str = "") -> bool:
 def preferred_buyer_nick(
     payload: dict[str, Any], buyer_id: str, fallback: str = ""
 ) -> str:
-    candidates = [str(payload.get("nickname") or "").strip(), str(fallback or "").strip()]
     messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
-    for message in reversed(messages):
-        if isinstance(message, dict):
-            candidates.append(str(message.get("nickname") or "").strip())
+    candidates = [
+        event_nickname({**message, "buyer_id": buyer_id})
+        for message in reversed(messages)
+        if isinstance(message, dict)
+        and str(message.get("role") or "").lower() in {"user", "buyer", "customer"}
+    ]
+    candidates.extend([str(payload.get("nickname") or "").strip(), str(fallback or "").strip()])
     for candidate in candidates:
         if candidate and not buyer_nick_is_placeholder(candidate, buyer_id):
             return candidate
-    return next((candidate for candidate in candidates if candidate), "")
+    return ""
 
 # 出站内容不再做关键词拦截（大脑生成了就发）：此前的“测试/桥接/站外”规则会
 # 误伤正常客服话术（例如“可以带回去当地测试测试”），导致真实回复被拦。

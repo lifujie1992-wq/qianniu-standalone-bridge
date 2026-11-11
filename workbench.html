@@ -736,7 +736,7 @@
         if (!state.current || keyOf(state.current) !== sessionKey || sequence !== state.messageLoadSequence) return;
         state.messageError = '';
         const newest = data.messages.length ? data.messages[data.messages.length - 1].event_id : '';
-        const revision = data.messages.map(item => `${item.event_id}\u0000${item.msg_id}\u0000${item.role}\u0000${item.status}\u0000${item.content}`).join('\u0001');
+        const revision = data.messages.map(item => `${item.event_id}\u0000${item.msg_id}\u0000${item.role}\u0000${item.status}\u0000${item.content}\u0000${JSON.stringify(item.context || {})}`).join('\u0001');
         const changed = newest !== state.lastNewest || revision !== state.lastMessageRevision;
         state.messages = data.messages; state.lastNewest = newest; state.lastMessageRevision = revision;
         if (changed || forceScroll) renderMessages(forceScroll || changed);
@@ -1022,9 +1022,14 @@
     async function refresh() {
       if (state.busy) return; state.busy = true;
       try {
-        const requests = [api('/api/v1/status'), api('/api/v1/sessions')];
-        if (!dockMode) requests.push(api('/api/v1/diagnostics'));
-        const [status, sessions, diagnostics] = await Promise.all(requests);
+        // Customer rows render independently of slow status/diagnostic reads.
+        const statusRequest = api('/api/v1/status').then(status => {
+          state.status = status; renderBridgeStatus();
+        }).catch(error => { el('qianniuText').textContent = error.message; });
+        const diagnosticsRequest = dockMode ? Promise.resolve() : api('/api/v1/diagnostics').then(data => {
+          state.diagnostics = data; renderEvidence();
+        }).catch(() => {});
+        const sessions = await api('/api/v1/sessions');
         const nextSessions = sessions.sessions;
         const nextSessionRevision = nextSessions.map(item => [
           item.account, item.buyer_id, item.buyer_nick, item.last_message, item.last_ts,
@@ -1032,14 +1037,14 @@
           item.last_message_role, item.reply_wait_started_at, item.reply_due_at,
         ].join('\u0000')).join('\u0001');
         const sessionsChanged = state.sessionRevision !== nextSessionRevision;
-        state.status = status; state.sessions = nextSessions; state.sessionRevision = nextSessionRevision;
-        if (diagnostics) state.diagnostics = diagnostics;
+        state.sessions = nextSessions; state.sessionRevision = nextSessionRevision;
         if (state.current) { const latest = state.sessions.find(item => keyOf(item) === keyOf(state.current)); if (latest) state.current = latest; }
         renderSessionMode();
-        renderBridgeStatus(); if (sessionsChanged) renderSessions();
+        if (sessionsChanged) renderSessions();
         if (!state.current && state.sessions.length) await selectSession(state.sessions[0], false);
         else if (state.current) await loadMessages(false);
         renderEvidence();
+        await Promise.allSettled([statusRequest, diagnosticsRequest]);
       } catch (error) {
         dotState(el('qianniuDot'), 'bad'); el('qianniuText').textContent = error.message;
       } finally { state.busy = false; }
