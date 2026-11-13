@@ -534,6 +534,27 @@ test('transfer cache preserves an older buyer question as context before the liv
   assert.equal(bridge.invokeCalls, 0);
 });
 
+test('native transfer can request one targeted passive cache refresh', () => {
+  const account = '联想官方旗舰店:铭铭';
+  const bridge = loadBridge();
+  const common = {loginid: {nick: account}, toid: {nick: account}, senderNick: '真实买家'};
+  const now = Date.now();
+  bridge.window._db.msgDataMap.set(NUMERIC_BUYER, [
+    uidMessage('old-question', {...common, summary: '充值后为什么还是停机', sendTime: now-3000}),
+    uidMessage('live-transfer', {...common, summary: '由 服务助手 转交给 铭铭 原因：机器人接待触发转人工', sendTime: now}),
+  ]);
+
+  const result = bridge.window.__qn_standalone_refresh_conversation(NUMERIC_BUYER);
+  const events = captured(bridge);
+  const question = events.find(event => event.msg_id === 'old-question');
+
+  assert.ok(question);
+  assert.equal(question.capture_mode, 'history_snapshot');
+  assert.ok(events.findIndex(event => event.msg_id === 'old-question') < events.findIndex(event => event.msg_id === 'live-transfer'));
+  assert.equal(result.sent, 2);
+  assert.equal(bridge.invokeCalls, 0);
+});
+
 test('transfer context marking preserves a newer buyer question and does not enable other shops', () => {
   for (const account of ['联想官方旗舰店:燕燕', '普通淘宝店:客服']) {
     const bridge = loadBridge();

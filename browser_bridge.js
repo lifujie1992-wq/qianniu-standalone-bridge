@@ -157,6 +157,7 @@
     recovery_scan_requests: 0,
     recovery_scan_runs: 0,
     recovery_scan_last_reason: "",
+    targeted_refresh_requests: 0,
     passive_dom_interval_ms: PASSIVE_DOM_INTERVAL_MS,
     passive_cache_interval_ms: PASSIVE_CACHE_INTERVAL_MS,
     invoke_observer_enabled: INVOKE_OBSERVER,
@@ -1605,6 +1606,21 @@
       }
     }, LOCAL_RETRY_DELAYS_MS[attempt]);
   }
+
+  // AppBiz.dll can report a transfer before the browser's periodic passive
+  // scan sees the same conversation. Give the native adapter one narrow,
+  // read-only entry point that flushes this conversation from msgDataMap.
+  // Do not call imsdk history APIs here: those may move Qianniu's own cursor.
+  function refreshConversationFromLocalCache(ccode) {
+    diagnostics.targeted_refresh_requests += 1;
+    ccode = registerConversation(ccode, "native-transfer-refresh", true);
+    if (!ccode) return { details: 0, captured: 0, sent: 0, ccodes: [] };
+    var result = emitLocalConversation(ccode);
+    if (!result || !result.sent) retryLocalConversation(ccode);
+    return result || { details: 0, captured: 0, sent: 0, ccodes: [ccode] };
+  }
+
+  window.__qn_standalone_refresh_conversation = refreshConversationFromLocalCache;
 
   function receiveNewMessageHandler() {
     diagnostics.event_callbacks += 1;

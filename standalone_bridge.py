@@ -33,7 +33,10 @@ import psutil
 import websocket
 
 from app_version import VERSION
-from taobao_message_contract import select_parent as tmall_select_parent
+from taobao_message_contract import (
+    notification_kind as tmall_notification_kind,
+    select_parent as tmall_select_parent,
+)
 from tmall_delivery_guard import in_scope as tmall_guard_scope, blocked_reason as tmall_command_blocked, projection_status as tmall_projection_status, parent_guard_evidence as tmall_parent_guard_evidence
 from tmall_delivery_guard import delivery_identity_view as tmall_delivery_identity_view
 from brain_ws import (
@@ -4038,6 +4041,7 @@ class BrowserServer:
             "passive_dom_interval_ms", "passive_cache_interval_ms",
             "recovery_scan_requests", "recovery_scan_runs",
             "recovery_scan_last_reason",
+            "targeted_refresh_requests",
             "history_poll_enabled", "history_poll_calls", "history_poll_errors",
             "history_probe_enabled", "history_probe_runs",
             "history_probe_last_ccode", "history_probe_last_at_ms",
@@ -5781,6 +5785,12 @@ class AppBizSendAdapter:
         self.last_callback_at = 0.0
         self.last_result_code: int | None = None
         self.last_error = ""
+        self.history_refresh_requests = 0
+        self.history_refresh_successes = 0
+        self.history_refresh_errors = 0
+        self.history_refresh_last_error = ""
+        self._history_refresh_lock = threading.Lock()
+        self._history_refresh_seen: dict[tuple[str, str], float] = {}
 
     def start(self) -> None:
         self.thread.start()
@@ -5843,6 +5853,59 @@ class AppBizSendAdapter:
                 continue
         return min(candidates, key=lambda item: item.create_time()) if candidates else None
 
+    def request_transfer_history_refresh(self, event: dict[str, Any]) -> None:
+        """Flush one Tmall transfer conversation from the browser local cache."""
+        if tmall_notification_kind(event) != "transfer":
+            return
+        buyer_id = str(event.get("buyer_id") or "").strip()
+        browser = getattr(self.app, "browser", None)
+        if not buyer_id or browser is None or getattr(browser, "connected", 0) <= 0:
+            return
+        message_id = str(event.get("original_msg_id") or event.get("msg_id") or "").strip()
+        dedupe_key = (buyer_id, message_id)
+        now = time.monotonic()
+        with self._history_refresh_lock:
+            last_seen = self._history_refresh_seen.get(dedupe_key, 0.0)
+            if last_seen and now - last_seen < 60.0:
+                return
+            self._history_refresh_seen[dedupe_key] = now
+            if len(self._history_refresh_seen) > 512:
+                cutoff = now - 300.0
+                self._history_refresh_seen = {
+                    key: seen_at for key, seen_at in self._history_refresh_seen.items()
+                    if seen_at >= cutoff
+                }
+            self.history_refresh_requests += 1
+
+        encoded_buyer_id = json.dumps(buyer_id, ensure_ascii=False)
+        expression = (
+            "(function(){var fn=window.__qn_standalone_refresh_conversation;"
+            "if(typeof fn==='function')return fn(" + encoded_buyer_id + ");"
+            "var heal=window.__qn_standalone_self_heal;"
+            "if(typeof heal==='function'){heal('native-transfer-refresh');return {fallback:true};}"
+            "return {available:false};})()"
+        )
+
+        def refresh() -> None:
+            try:
+                values = browser.execute_all(
+                    expression,
+                    timeout=1.5,
+                    select=lambda row: bool(row.get("imsdk_hooked")) or row.get("page_kind") == "chat",
+                )
+                if any(isinstance(value, dict) and value.get("sent", 0) for value in values):
+                    self.history_refresh_successes += 1
+                self.history_refresh_last_error = ""
+            except Exception as error:
+                self.history_refresh_errors += 1
+                self.history_refresh_last_error = str(error)[:500]
+
+        threading.Thread(
+            target=refresh,
+            name="tmall-transfer-history-refresh",
+            daemon=True,
+        ).start()
+
     def on_message(self, message: dict[str, Any], _data: Any) -> None:
         if message.get("type") != "send":
             self.last_error = str(message)[:500]
@@ -5892,6 +5955,8 @@ class AppBizSendAdapter:
             # workers so a missing browser cache cannot block this callback.
             try:
                 self.app.ingest_event(clean_event)
+                if event == "appbiz_receive":
+                    self.request_transfer_history_refresh(clean_event)
                 self.last_error = ""
             except Exception as error:
                 self.last_error = f"AppBiz message ingest failed: {error}"[:500]
@@ -7942,6 +8007,10 @@ class StandaloneBridge:
                 "received_calls": self.appbiz.received_calls,
                 "received_messages": self.appbiz.received_messages,
                 "last_receive_at": self.appbiz.last_receive_at,
+                "history_refresh_requests": self.appbiz.history_refresh_requests,
+                "history_refresh_successes": self.appbiz.history_refresh_successes,
+                "history_refresh_errors": self.appbiz.history_refresh_errors,
+                "history_refresh_last_error": self.appbiz.history_refresh_last_error,
                 "receive_ready": bool(self.appbiz.script is not None),
                 "helper_loaded": self.appbiz.helper_loaded,
                 "last_observation_at": self.appbiz.last_observation_at,

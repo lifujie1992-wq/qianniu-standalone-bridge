@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from standalone_bridge import AppBizSendAdapter, Config
 from pathlib import Path
 
@@ -54,3 +54,45 @@ class NativeReadinessTests(unittest.TestCase):
             adapter.send_text('buyer#1@cntaobao','答复','test',tmall_account='其他店铺:客服')
         exports.status.assert_not_called();exports.preparesend.assert_not_called()
         exports.sendtext.assert_not_called()
+
+    def test_native_tmall_transfer_requests_targeted_passive_history_refresh(self):
+        browser = SimpleNamespace(
+            connected=1,
+            execute_all=Mock(return_value=[{"captured": 2, "sent": 2}]),
+        )
+        app = SimpleNamespace(
+            config=Config(Path("config.json"), {}),
+            browser=browser,
+            ingest_event=Mock(return_value=("event-1", True)),
+        )
+        adapter = AppBizSendAdapter(app)
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        event = {
+            "platform": "taobao",
+            "role": "user",
+            "account": "联想官方旗舰店:铭铭",
+            "buyer_id": "buyer#1@cntaobao",
+            "content": "由 服务助手 转交给 铭铭 原因：机器人接待触发转人工",
+            "msg_id": "transfer.PNM",
+            "original_msg_id": "transfer.PNM",
+        }
+        with patch("standalone_bridge.threading.Thread", ImmediateThread):
+            adapter.on_message({
+                "type": "send",
+                "payload": {"event": "appbiz_receive", "message": event},
+            }, None)
+
+        browser.execute_all.assert_called_once()
+        expression = browser.execute_all.call_args.args[0]
+        self.assertIn("__qn_standalone_refresh_conversation", expression)
+        self.assertIn("__qn_standalone_self_heal", expression)
+        self.assertIn("buyer#1@cntaobao", expression)
+        self.assertNotIn("GetNewMsg", expression)
+        self.assertNotIn("GetRemoteHisMsg", expression)
