@@ -73,3 +73,27 @@ WS 重连重新塞回上传队列——这一点不需要额外改动，这里�
   名额且能排空、跨批不重复认领、`window=0` 保持旧 FIFO；
 - `WsAckFailoverTests`：2.5s 默认与夹取、连续 miss 熔断、任意确认即复位、熔断
   到期、`post_events` 的 WS/HTTP 三种分支、示例配置与迁移、回执退避常量。
+
+## 打包与启动验证（2026-11-20 实测）
+
+`tools/build_windows.ps1` 产出 `delivery/windows-2.0.0-20261120-162606/`：
+`QianniuAgent.exe` 57 MB、`QianniuAIService-2.0.0-windows-x64.zip` 54.2 MB
+（sha256 `2d5761e047726583…`），`build-info.json` 记录 commit `5fda5cc`。
+
+把包解到独立目录（端口 42120/42121/18786，`dock_enabled=false`）启动
+`QianniuAgent.exe --role bridge`，用一个同端口的假大脑（HTTP + 从不回 ack 的 WS）
+实测：
+
+| 验证项 | 实测结果 |
+|---|---|
+| 包启动 | `standalone bridge started version=2.0.0`，`/health` 200，工作台 `/` 200 |
+| 配置迁移 | revision 10；`brain_ws_ack_timeout_seconds` 10.0 → 2.5；三个新键写入 |
+| 实时优先 | 同一批先发的 5 条中，2 条实时消息排在 3 条历史重放之前（假大脑侧按到达顺序记录） |
+| WS 短超时 | 发帧后 **2.5s** 放弃并当场 `POST /api/bridge/v1/events`（t+2.5s 出现 HTTP 上报，misses=1） |
+| 熔断 | 第 2 次无确认后 `event_ws_failover_active=true`（窗口 30s）；随后 12s 内 WS 发帧数不变、HTTP 上报继续 |
+| 队列不丢 | HTTP 故意回 503 时事件保持 pending 重试，不丢不重复 |
+
+注：入口门控 `brain_event_delay_seconds`（0.2s）会作用于**新入队**事件，所以
+在门控窗口内恰好走到认领的积压会先发一批——这是门控语义，不是分层失效；
+两者都过了门控时，实时消息稳定排在积压前。
+
