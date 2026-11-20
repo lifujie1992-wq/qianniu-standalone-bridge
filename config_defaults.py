@@ -7,7 +7,7 @@ from typing import Any
 from brain_endpoint import enforce as enforce_brain_endpoint
 
 
-CONFIG_DEFAULTS_REVISION = 9
+CONFIG_DEFAULTS_REVISION = 10
 CONFIG_DEFAULTS_REVISION_KEY = "config_defaults_revision"
 LEGACY_WORKBENCH_PORT = 18767
 DEFAULT_WORKBENCH_PORT = 18776
@@ -143,6 +143,23 @@ def apply_operational_defaults(config: dict[str, Any]) -> bool:
         config.setdefault("dock_skip_taskbar", True)
         config.setdefault("dock_follow_height", True)
         config.setdefault("dock_topmost", False)
+
+    if revision < 10:
+        # Revision 10 修上报时延的两段尾巴：
+        #   - WS 确认超时从 10s 降到 2.5s，并加连续 2 次无确认 → 30s 熔断。
+        #     旧默认值时每一批 WS 卡顿都要白白干等 10s 才回退 HTTP。
+        #   - 实时窗口 30s：窗口内新捕获的消息优先出队，不再排在转接历史/重连
+        #     重放的积压后面（现场上报均值 8~29s 主要就是这一段）。
+        # 客户自己调过的非默认值不动。
+        try:
+            legacy_ack_timeout = float(config.get("brain_ws_ack_timeout_seconds")) == 10.0
+        except (TypeError, ValueError):
+            legacy_ack_timeout = False
+        if legacy_ack_timeout:
+            config["brain_ws_ack_timeout_seconds"] = 2.5
+        config.setdefault("brain_ws_failover_misses", 2)
+        config.setdefault("brain_ws_failover_seconds", 30.0)
+        config.setdefault("brain_event_live_window_seconds", 30.0)
 
     config[CONFIG_DEFAULTS_REVISION_KEY] = CONFIG_DEFAULTS_REVISION
     return True

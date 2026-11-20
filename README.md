@@ -140,8 +140,15 @@ py -3.10 tools\inject_runtime_webui.py runtime config.json browser_bridge.js
 | `brain_event_delay_seconds` | 0.2 | 捕获到的事件在本地队列里等多久才首次上传。事件入队时会唤醒上传线程，所以这个值就是入口延迟；上下文增强到达后由 `enrich_event` 以新 revision 重传，大脑按 msg_id 判重，不会二次回复 |
 | `command_sender_pool_enabled` | true | 把"取指令"与"发送"解耦：一条指令等平台回执（appbiz 回调 2s 典型、`send_confirmation_timeout_seconds` 15s 最坏）时，不再占住取指令循环 |
 | `command_sender_workers` | 6 | 发送池线程数（夹在 1–8）。同一 `(account, buyer_id)` 由逐会话锁保证有序，池满（64）回退串行形成背压；关掉开关即回到改动前的串行行为 |
+| `event_upload_concurrency` | 4 | 上报 worker 数（夹在 1–8）。认领是 `BEGIN IMMEDIATE` + `status='sending'` 的原子操作，多 worker 不会领到同一行 |
+| `event_upload_batch_size` | 100 | 每次认领的事件条数（上限 100） |
+| `brain_event_live_window_seconds` | 30 | 实时窗口：窗口内**捕获并入库**的消息排在队列最前面，历史重放/重试积压只占 `limit//4` 的名额补位，实时通道不会被积压堵死；设 0 回到纯 FIFO |
+| `brain_ws_ack_timeout_seconds` | 2.5 | WS 等事件确认的时长。原来默认 10s，WS 一卡每批都白等 10s 才回退 HTTP |
+| `brain_ws_failover_misses` | 2 | 连续多少批拿不到任何 WS 确认就熔断（整批 0 确认才算卡住，部分确认视为正常） |
+| `brain_ws_failover_seconds` | 30 | 熔断窗口：这期间事件直接走 HTTP `POST /api/bridge/v1/events`，窗口过后再试 WS |
 
 改动前入口延迟约 2.5s（门控）+ 0~0.5s（轮询），出站单线程时吞吐上限约几条/分钟。回归测试见 `tests/test_latency_p0.py`。
+升级迁移只把仍为旧默认 `10.0` 的 `brain_ws_ack_timeout_seconds` 改成 `2.5`，现场自己调过的值保持不变。
 
 ## 客户端版本自检
 

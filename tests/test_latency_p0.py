@@ -342,5 +342,251 @@ class CaptureCadenceTests(unittest.TestCase):
             self.assertIn(f"{key}: diagnostics.{key},", source, f"{key} missing from heartbeat snapshot")
 
 
+class RealtimePriorityClaimTests(unittest.TestCase):
+    """Real-time captures must not queue behind replayed history.
+
+    Production sees clients with hundreds of pending ``brain_events`` (transfer
+    history shards, WS reconnect replays). A plain ``ORDER BY queued_at`` FIFO
+    puts a brand new buyer message behind that whole backlog, which is what
+    showed up as an 8~29s client-side upload delay.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = bridge.StateDB(Path(self.tmp.name) / "priority.sqlite3")
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _seed(self, name: str, age_seconds: float) -> str:
+        event_id, _changed = self.db.upsert_event({
+            "platform": "taobao",
+            "role": "user",
+            "content": f"probe {name}",
+            "account": "seller",
+            "buyer_id": "buyer#1@cntaobao",
+            "buyer_nick": "buyer",
+            "msg_id": f"m-{name}",
+            "ts": time.time(),
+            "source": "test",
+        })
+        self.assertTrue(self.db.enqueue_brain_event(event_id))
+        if age_seconds > 0:
+            stamp = time.time() - age_seconds
+            with self.db.lock:
+                connection = self.db.connect()
+                try:
+                    connection.execute(
+                        "UPDATE events SET created_at=? WHERE event_id=?",
+                        (stamp, event_id),
+                    )
+                    connection.execute(
+                        "UPDATE brain_events SET queued_at=? WHERE event_id=?",
+                        (stamp, event_id),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+        return event_id
+
+    def test_fresh_capture_is_claimed_before_the_backlog(self) -> None:
+        backlog = [self._seed(f"old-{index}", 600) for index in range(10)]
+        fresh = self._seed("fresh", 0)
+        rows = self.db.claim_brain_events(0.0, 20)
+        self.assertEqual(len(rows), 11)
+        self.assertEqual(rows[0]["event_id"], fresh, "the live message must go first")
+        self.assertEqual({row["event_id"] for row in rows[1:]}, set(backlog))
+
+    def test_backlog_keeps_a_reserved_share_under_live_flood(self) -> None:
+        backlog = {self._seed(f"old-{index}", 600) for index in range(200)}
+        live = {self._seed(f"live-{index}", 0) for index in range(100)}
+        rows = self.db.claim_brain_events(0.0, 100)
+        self.assertEqual(len(rows), 100, "a full batch must still be claimed")
+        claimed = {str(row["event_id"]) for row in rows}
+        self.assertEqual(len(claimed & live), 75, "live messages keep the live quota")
+        self.assertEqual(
+            len(claimed & backlog), 25, "backlog keeps its reserved share (limit//4)"
+        )
+
+    def test_backlog_is_not_starved_and_never_claimed_twice(self) -> None:
+        backlog = [self._seed(f"old-{index}", 600) for index in range(30)]
+        for index in range(100):
+            self._seed(f"live-{index}", 0)
+        claimed: list[str] = []
+        for _ in range(10):
+            rows = self.db.claim_brain_events(0.0, 20)
+            if not rows:
+                break
+            ids = [str(row["event_id"]) for row in rows]
+            self.assertEqual(len(ids), len(set(ids)), "no duplicate claim in a batch")
+            claimed.extend(ids)
+            self.db.finish_brain_events(rows, set(ids))
+        self.assertEqual(len(claimed), len(set(claimed)), "no event claimed twice")
+        self.assertTrue(
+            set(backlog) <= set(claimed),
+            "historical backlog must still drain while live traffic flows",
+        )
+
+    def test_window_zero_keeps_the_legacy_fifo(self) -> None:
+        first = self._seed("first", 600)
+        second = self._seed("second", 300)
+        rows = self.db.claim_brain_events(0.0, 10, 0.0)
+        self.assertEqual([row["event_id"] for row in rows], [first, second])
+
+    def test_upload_loop_passes_the_live_window(self) -> None:
+        source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
+        self.assertIn("event_live_window_seconds", source)
+        self.assertIn("self.event_live_window_seconds(),", source)
+
+
+class WsAckFailoverTests(unittest.TestCase):
+    """A stalled WS link must not cost a full ack timeout on every batch."""
+
+    def _connector(self, **config):
+        return bridge.BrainConnector(_app(**config))
+
+    def test_default_ack_timeout_is_short(self) -> None:
+        self.assertEqual(self._connector().event_ws_ack_timeout(), 2.5)
+
+    def test_ack_timeout_is_clamped(self) -> None:
+        self.assertEqual(
+            self._connector(brain_ws_ack_timeout_seconds=0).event_ws_ack_timeout(), 0.3
+        )
+        self.assertEqual(
+            self._connector(brain_ws_ack_timeout_seconds=120).event_ws_ack_timeout(), 30.0
+        )
+        self.assertEqual(
+            self._connector(brain_ws_ack_timeout_seconds="bad").event_ws_ack_timeout(),
+            2.5,
+        )
+
+    def test_consecutive_misses_open_the_breaker(self) -> None:
+        connector = self._connector()
+        self.assertFalse(connector.event_ws_failover_active())
+        connector.note_event_ws_ack(0, 5)
+        self.assertFalse(connector.event_ws_failover_active(), "one miss is not enough")
+        connector.note_event_ws_ack(0, 5)
+        self.assertTrue(connector.event_ws_failover_active(), "two misses short-circuit WS")
+
+    def test_a_single_ack_closes_the_breaker(self) -> None:
+        connector = self._connector()
+        connector.note_event_ws_ack(0, 5)
+        connector.note_event_ws_ack(3, 5)
+        self.assertEqual(connector._ws_ack_misses, 0)
+        self.assertFalse(connector.event_ws_failover_active())
+
+    def test_breaker_expires(self) -> None:
+        connector = self._connector()
+        connector.note_event_ws_ack(0, 1)
+        connector.note_event_ws_ack(0, 1)
+        self.assertTrue(connector.event_ws_failover_active())
+        connector._ws_failover_until = time.time() - 1.0
+        self.assertFalse(connector.event_ws_failover_active())
+
+    def test_transmit_skips_ws_while_the_breaker_is_open(self) -> None:
+        source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
+        self.assertIn("event_ws_failover_active()", source)
+        self.assertIn("self.note_event_ws_ack(", source)
+        self.assertNotIn("brain_ws_ack_timeout_seconds',10.0", source)
+
+    def test_example_config_ships_the_new_defaults(self) -> None:
+        import json as _json
+
+        example = _json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
+        self.assertEqual(example["brain_ws_ack_timeout_seconds"], 2.5)
+        self.assertEqual(example["brain_ws_failover_misses"], 2)
+        self.assertEqual(example["brain_ws_failover_seconds"], 30.0)
+        self.assertEqual(example["brain_event_live_window_seconds"], 30.0)
+
+    def test_send_receipt_polling_keeps_the_tight_backoff(self) -> None:
+        source = (ROOT / "standalone_bridge.py").read_text(encoding="utf-8")
+        self.assertIn("time.sleep(0.025 if elapsed < 0.5 else 0.04)", source)
+        self.assertNotIn("time.sleep(0.025 if elapsed < 0.5 else 0.1)", source)
+
+    def _channel_stub(self, *, acked: int = 0, raises=None):
+        class _Channel:
+            available = True
+
+            def __init__(self) -> None:
+                self.calls: list[tuple[int, float]] = []
+
+            def send_events(self, batch, *, timeout=0.0):
+                self.calls.append((len(batch), timeout))
+                if raises is not None:
+                    raise raises
+                return {
+                    "ack_version": 1,
+                    "event_acks": [
+                        {
+                            "event_id": str(item["event_id"]),
+                            "status": "accepted",
+                            "committed": True,
+                        }
+                        for item in batch[:acked]
+                    ],
+                }
+
+        return _Channel()
+
+    def _connector_with(self, channel):
+        connector = self._connector()
+        connector.event_channel = lambda: channel  # type: ignore[assignment]
+        self.http_calls: list[dict] = []
+
+        def fake_request(method, path, body=None, **_kwargs):
+            self.http_calls.append({"method": method, "path": path, "body": body})
+            return {"event_acks": [], "accepted": 0}
+
+        connector.request = fake_request  # type: ignore[assignment]
+        return connector
+
+    def test_acked_ws_batch_stays_on_ws(self) -> None:
+        channel = self._channel_stub(acked=2)
+        connector = self._connector_with(channel)
+        payload, transport = connector.post_events([{"event_id": "e1"}, {"event_id": "e2"}])
+        self.assertEqual(transport, "ws")
+        self.assertEqual(len(payload["event_acks"]), 2)
+        self.assertEqual(self.http_calls, [], "an acked WS batch must not also POST")
+        self.assertFalse(connector.event_ws_failover_active())
+
+    def test_unacked_ws_batch_falls_back_to_http_immediately(self) -> None:
+        channel = self._channel_stub(acked=0)
+        connector = self._connector_with(channel)
+        payload, transport = connector.post_events([{"event_id": "e1"}])
+        self.assertEqual(transport, "http")
+        self.assertEqual(len(self.http_calls), 1, "zero-ack WS must not wait for the next round")
+        self.assertEqual(channel.calls[0][1], 2.5, "the WS wait must use the short timeout")
+        self.assertEqual(payload.get("event_acks"), [])
+
+    def test_ws_error_falls_back_to_http(self) -> None:
+        channel = self._channel_stub(raises=bridge.BrainWsError("link down"))
+        connector = self._connector_with(channel)
+        _payload, transport = connector.post_events([{"event_id": "e1"}])
+        self.assertEqual(transport, "http")
+        self.assertEqual(len(self.http_calls), 1)
+
+    def test_open_breaker_skips_ws_entirely(self) -> None:
+        channel = self._channel_stub(acked=1)
+        connector = self._connector_with(channel)
+        connector.note_event_ws_ack(0, 1)
+        connector.note_event_ws_ack(0, 1)
+        self.assertTrue(connector.event_ws_failover_active())
+        _payload, transport = connector.post_events([{"event_id": "e1"}])
+        self.assertEqual(transport, "http")
+        self.assertEqual(channel.calls, [], "no WS attempt while the breaker is open")
+
+    def test_migration_shortens_the_legacy_ten_second_ack_timeout(self) -> None:
+        from config_defaults import apply_operational_defaults
+
+        config = {"config_defaults_revision": 9, "brain_ws_ack_timeout_seconds": 10.0}
+        apply_operational_defaults(config)
+        self.assertEqual(config["brain_ws_ack_timeout_seconds"], 2.5)
+        self.assertEqual(config["brain_event_live_window_seconds"], 30.0)
+
+        tuned = {"config_defaults_revision": 9, "brain_ws_ack_timeout_seconds": 6.0}
+        apply_operational_defaults(tuned)
+        self.assertEqual(tuned["brain_ws_ack_timeout_seconds"], 6.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

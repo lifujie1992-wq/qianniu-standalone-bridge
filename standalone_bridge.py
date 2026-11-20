@@ -2033,19 +2033,64 @@ class StateDB:
             self._invalidate_session_cache()
             return True
 
-    def claim_brain_events(self, min_age_seconds: float, limit: int = 100) -> list[dict[str, Any]]:
-        cutoff = time.time() - max(0.0, min_age_seconds)
+    def claim_brain_events(
+        self,
+        min_age_seconds: float,
+        limit: int = 100,
+        live_window_seconds: float = 30.0,
+    ) -> list[dict[str, Any]]:
+        """认领待上报事件：实时新消息优先，历史积压定量补位。
+
+        原来只有 ``ORDER BY queued_at`` 一条 FIFO：一旦转接历史分片或重连重放
+        在队列里堆了几百条 pending，新进来的实时买家消息就得排在整批历史之后，
+        线上表现为客户端上报延迟被拉到 8~29s（瑞秋机器 28.9s）。现在分两段认领：
+
+        - 实时段：``queued_at`` 与本地首次捕获时间 ``events.created_at`` 都落在
+          live 窗口（默认 30s）内的，排在最前面按 queued_at 先后出队；
+        - 积压段：窗口外的历史/重试事件按 queued_at FIFO 补满剩余名额。
+
+        给积压保留固定名额（默认 limit//4），实时洪峰持续时历史也不会被饿死。
+        两段在同一个 BEGIN IMMEDIATE 事务里原子认领，多 worker 不会重复领。
+        """
+        limit = max(1, min(limit, 100))
+        now = time.time()
+        cutoff = now - max(0.0, min_age_seconds)
+        try:
+            window = max(0.0, float(live_window_seconds or 0.0))
+        except (TypeError, ValueError):
+            window = 0.0
+        live_cutoff = now - window
+        reserve = max(1, limit // 4)
+        live_quota = max(1, limit - reserve) if window > 0 else 0
+        select = (
+            "SELECT b.event_id,b.revision,e.payload "
+            "FROM brain_events b JOIN events e ON e.event_id=b.event_id "
+        )
         with self.lock, closing(self.connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                """
-                SELECT b.event_id,b.revision,e.payload
-                FROM brain_events b JOIN events e ON e.event_id=b.event_id
-                WHERE b.status='pending' AND b.queued_at<=?
-                ORDER BY b.queued_at LIMIT ?
-                """,
-                (cutoff, max(1, min(limit, 100))),
-            ).fetchall()
+            rows = []
+            if live_quota:
+                rows = connection.execute(
+                    select
+                    + "WHERE b.status='pending' AND b.queued_at<=? "
+                    + "AND b.queued_at>=? AND e.created_at>=? "
+                    + "ORDER BY b.queued_at LIMIT ?",
+                    (cutoff, live_cutoff, live_cutoff, live_quota),
+                ).fetchall()
+            remaining = limit - len(rows)
+            if remaining > 0:
+                backlog = "WHERE b.status='pending' AND b.queued_at<=?"
+                params: list[Any] = [cutoff]
+                if live_quota:
+                    # 与实时段严格互斥，避免同一行被两段同时选中。
+                    backlog += " AND (b.queued_at<? OR e.created_at<?)"
+                    params.extend([live_cutoff, live_cutoff])
+                rows.extend(
+                    connection.execute(
+                        select + backlog + " ORDER BY b.queued_at LIMIT ?",
+                        (*params, remaining),
+                    ).fetchall()
+                )
             if rows:
                 placeholders = ",".join("?" for _ in rows)
                 connection.execute(
@@ -2618,6 +2663,9 @@ class BrainConnector:
         self.last_event_response: dict[str, Any] = {}
         self._event_channel: BrainEventChannel | None = None
         self._event_channel_key = ""
+        # WS 确认熔断状态：连续 N 批拿不到 WS 确认就把通道短路一段时间。
+        self._ws_ack_misses = 0
+        self._ws_failover_until = 0.0
         self.server_status: dict[str, Any] = {}
         self.last_server_status_at = 0.0
         self.server_status_error = ""
@@ -2731,6 +2779,87 @@ class BrainConnector:
             "type": str(command.get("type") or ""),
         })
         self.dispatch_command(command)
+
+    def event_ws_ack_timeout(self) -> float:
+        """WS 等待事件确认的时长。默认 2.5s：WS 一卡就马上回退 HTTP，
+        而不是像原来一样整批干等 10s。"""
+        try:
+            timeout = float(self.app.config.get("brain_ws_ack_timeout_seconds", 2.5))
+        except (TypeError, ValueError):
+            timeout = 2.5
+        return max(0.3, min(timeout, 30.0))
+
+    def event_ws_failover_threshold(self) -> int:
+        """连续多少批拿不到 WS 确认就熔断改走 HTTP（默认 2）。"""
+        try:
+            threshold = int(self.app.config.get("brain_ws_failover_misses", 2) or 2)
+        except (TypeError, ValueError):
+            threshold = 2
+        return max(1, min(threshold, 10))
+
+    def event_ws_failover_seconds(self) -> float:
+        """熔断窗口时长（默认 30s）。"""
+        try:
+            seconds = float(self.app.config.get("brain_ws_failover_seconds", 30.0))
+        except (TypeError, ValueError):
+            seconds = 30.0
+        return max(5.0, min(seconds, 300.0))
+
+    def event_ws_failover_active(self) -> bool:
+        with self.lock:
+            return time.time() < self._ws_failover_until
+
+    def note_event_ws_ack(self, acked: int, expected: int) -> None:
+        """登记一批 WS 上报的确认结果，驱动短期熔断。
+
+        只要回来过任意一条确认就算链路还在（服务器会按自身规则跳过或拒绝某些
+        事件，不能把部分确认当成 WS 卡死）；整批 0 确认才是真正的 WS 卡顿。
+        """
+        if expected <= 0 or acked > 0:
+            with self.lock:
+                self._ws_ack_misses = 0
+                self._ws_failover_until = 0.0
+            return
+        with self.lock:
+            self._ws_ack_misses += 1
+            misses = self._ws_ack_misses
+            threshold = self.event_ws_failover_threshold()
+            if misses < threshold:
+                return
+            self._ws_ack_misses = 0
+            self._ws_failover_until = time.time() + self.event_ws_failover_seconds()
+        self.record("brain", "warn", "WS 上报连续无确认，短期改走 HTTP", {
+            "misses": misses,
+            "failover_seconds": self.event_ws_failover_seconds(),
+        })
+
+    def post_events(self, batch: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+        """上报一批事件，返回 (服务端响应, 实际通道)。
+
+        WS 优先；熔断窗口内直接走 HTTP；WS 整批 0 确认时当场回退 HTTP（服务端
+        按 event_id 幂等，duplicate 也算 committed），不再拖到下一轮重试。
+        """
+        payload = None
+        transport = "http"
+        channel = None if self.event_ws_failover_active() else self.event_channel()
+        expected = len([item for item in batch if isinstance(item, dict)])
+        if channel is not None and channel.available:
+            try:
+                ws_payload = channel.send_events(batch, timeout=self.event_ws_ack_timeout())
+                acked = len(ws_payload.get("event_acks") or [])
+                self.note_event_ws_ack(acked, expected)
+                if acked:
+                    payload, transport = ws_payload, "ws"
+            except BrainWsError as error:
+                self.note_event_ws_ack(0, expected)
+                with self.lock:
+                    self.last_error = f"WS 上报失败，回退 HTTP：{error}"[:500]
+        if payload is None:
+            payload = self.request("POST", "/api/bridge/v1/events", {
+                "agent_id": self.agent_id(),
+                "events": batch,
+            })
+        return payload, transport
 
     @staticmethod
     def account_shop_id(account: str) -> str:
@@ -3758,20 +3887,7 @@ class BrainConnector:
         allowed_rows = uploaded_rows
         if not events:
             return scope_blocked | suppressed_ids
-        def transmit(batch: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
-            payload = None
-            transport = 'http'
-            channel = self.event_channel()
-            if channel is not None and channel.available:
-                try:
-                    payload = channel.send_events(batch, timeout=float(self.app.config.get('brain_ws_ack_timeout_seconds',10.0)))
-                    transport = 'ws'
-                except BrainWsError as error:
-                    with self.lock:
-                        self.last_error = f'WS 上报失败，回退 HTTP：{error}'[:500]
-            if payload is None:
-                payload = self.request('POST','/api/bridge/v1/events',{'agent_id':self.agent_id(),'events':batch})
-            return payload,transport
+        transmit = self.post_events
 
         # Supplemental context can exceed the original claim's batch size.
         # Await each chunk before transmitting the next one so a transfer's
@@ -3963,6 +4079,14 @@ class BrainConnector:
             size = 100
         return max(1, min(size, 100))
 
+    def event_live_window_seconds(self) -> float:
+        """实时窗口：这么久内捕获并入库的消息走实时优先通道，不计入 FIFO 积压。"""
+        try:
+            window = float(self.app.config.get("brain_event_live_window_seconds", 30.0))
+        except (TypeError, ValueError):
+            window = 30.0
+        return max(0.0, min(window, 600.0))
+
     def event_upload_loop(self, index: int) -> None:
         """单个上传 worker：原子认领一批 → 上传 → 落库。
 
@@ -3979,6 +4103,7 @@ class BrainConnector:
             rows = self.app.db.claim_brain_events(
                 float(self.app.config.get("brain_event_delay_seconds", 0.2)),
                 self.event_upload_batch_size(),
+                self.event_live_window_seconds(),
             )
             if not rows:
                 # 空转：短暂挂起，enqueue_brain_event 会 set(event_wakeup)。
@@ -4066,6 +4191,11 @@ class BrainConnector:
                     self._event_channel.status()
                     if self._event_channel is not None else None
                 ),
+                "event_ws_ack_timeout_seconds": self.event_ws_ack_timeout(),
+                "event_ws_failover_active": self.event_ws_failover_active(),
+                "event_ws_ack_misses": self._ws_ack_misses,
+                "event_ws_failover_until": self._ws_failover_until,
+                "event_live_window_seconds": self.event_live_window_seconds(),
                 "server_status": dict(self.server_status),
                 "last_server_status_at": self.last_server_status_at,
                 "server_status_error": self.server_status_error,
@@ -6309,9 +6439,10 @@ class AppBizSendAdapter:
             # Each poll is a Frida RPC into the client process, and the send pool
             # can have several senders waiting at once: poll tightly only for the
             # first half second, then back off so the adapter never becomes a
-            # cross-process busy loop.
+            # cross-process busy loop. 100ms 退避会让回执确认平白多等 ~50ms，
+            # 5 条串行回复就是 250ms 以上的尾部延迟，改成 40ms。
             elapsed = time.monotonic() - started
-            time.sleep(0.025 if elapsed < 0.5 else 0.1)
+            time.sleep(0.025 if elapsed < 0.5 else 0.04)
         if not callback_received and self.script is not None:
             try:
                 self.script.exports_sync.cancelsend(str(token))
