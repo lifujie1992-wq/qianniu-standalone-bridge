@@ -76,19 +76,35 @@ WS 重连重新塞回上传队列——这一点不需要额外改动，这里�
 
 ## 打包与启动验证（2026-11-20 实测）
 
-`tools/build_windows.ps1` 产出 `delivery/windows-2.0.0-20261120-162606/`：
-`QianniuAgent.exe` 57 MB、`QianniuAIService-2.0.0-windows-x64.zip` 54.2 MB
-（sha256 `2d5761e047726583…`），`build-info.json` 记录 commit `5fda5cc`。
+`tools/build_windows.ps1` 产出：
 
-把包解到独立目录（端口 42120/42121/18786，`dock_enabled=false`）启动
+| 产物 | 大小 | sha256 |
+|---|---|---|
+| `delivery/windows-2.0.1-20261120-163724/QianniuAIService/QianniuAgent.exe` | 57 MB | `a405e1e80569765e…` |
+| `delivery/windows-2.0.1-20261120-163724/QianniuAIService-2.0.1-windows-x64.zip` | 54.2 MB | `df826c9079c02976…` |
+| `delivery/auto-upgrade-2.0.1/千牛助手-2.0.1-自动升级.exe` | 67.3 MB | `ff328a1be17f28b6…` |
+
+两个打包坑（本轮修掉）：
+
+1. **zip 必须包含 `QianniuAIService/` 顶层目录**。原来 `Compress-Archive -Path $package\*`
+   打的是目录内容，`tools/upgrade_installed.py` 的 `extract_payload` 因此报
+   「升级包含有非法文件路径」。现在改为打目录本身。
+2. **payload-manifest.json 要带 `exe_sha256`**（除 `version`/`commit`/`zip_sha256` 外），
+   否则升级器自检抛 `KeyError: 'exe_sha256'`。
+
+升级器自检 `千牛助手-2.0.1-自动升级.exe --check --report <path>`：
+`read_only=true`、`payload_verified=true`、`error=null`，并自动发现本机
+`D:\QianniuAIService`（2.0.0）。
+
+把 2.0.1 包解到独立目录（端口 42120/42121/18786，`dock_enabled=false`）启动
 `QianniuAgent.exe --role bridge`，用一个同端口的假大脑（HTTP + 从不回 ack 的 WS）
 实测：
 
 | 验证项 | 实测结果 |
 |---|---|
-| 包启动 | `standalone bridge started version=2.0.0`，`/health` 200，工作台 `/` 200 |
+| 包启动 | `standalone bridge started version=2.0.1`，`ok=true`，`/health` 200，工作台 `/` 200 |
 | 配置迁移 | revision 10；`brain_ws_ack_timeout_seconds` 10.0 → 2.5；三个新键写入 |
-| 实时优先 | 同一批先发的 5 条中，2 条实时消息排在 3 条历史重放之前（假大脑侧按到达顺序记录） |
+| 实时优先 | 同一批起发的 5 条中，2 条实时消息排在 3 条历史重放之前（假大脑侧按到达顺序记录） |
 | WS 短超时 | 发帧后 **2.5s** 放弃并当场 `POST /api/bridge/v1/events`（t+2.5s 出现 HTTP 上报，misses=1） |
 | 熔断 | 第 2 次无确认后 `event_ws_failover_active=true`（窗口 30s）；随后 12s 内 WS 发帧数不变、HTTP 上报继续 |
 | 队列不丢 | HTTP 故意回 503 时事件保持 pending 重试，不丢不重复 |
@@ -96,4 +112,5 @@ WS 重连重新塞回上传队列——这一点不需要额外改动，这里�
 注：入口门控 `brain_event_delay_seconds`（0.2s）会作用于**新入队**事件，所以
 在门控窗口内恰好走到认领的积压会先发一批——这是门控语义，不是分层失效；
 两者都过了门控时，实时消息稳定排在积压前。
+
 

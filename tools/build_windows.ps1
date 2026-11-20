@@ -49,7 +49,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Unable to record source commit.' }
 @{ version=$version; commit=$commit; exe_sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash } |
     ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $package 'build-info.json')
 $zip = Join-Path $output "QianniuAIService-$version-windows-x64.zip"
-Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip
+# 必须把包目录本身打进去（entries 形如 QianniuAIService/QianniuAgent.exe）：
+# tools/upgrade_installed.py 的 extract_payload 只接受这个结构，否则
+# 自动升级器会报「升级包含有非法文件路径」。
+Compress-Archive -Path (Join-Path $output 'QianniuAIService') -DestinationPath $zip
 Get-FileHash -Algorithm SHA256 -LiteralPath $zip
 Write-Output "Package: $zip"
-Write-Output 'Upgrade files only: close the old assistant, retain its config.json and runtime folder, then copy package contents into that installation. Validate sending on Windows before distributing.'
+Write-Output 'Upgrade files only: close the old assistant, retain its config.json and runtime folder, then copy the QianniuAIService package contents into that installation. Validate sending on Windows before distributing.'
