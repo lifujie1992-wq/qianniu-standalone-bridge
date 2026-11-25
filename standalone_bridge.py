@@ -107,6 +107,8 @@ def _app_root() -> Path:
 
 ROOT = _app_root()
 LOG = logging.getLogger("qianniu_standalone")
+NATIVE_ORDER_CAPTURE = "appbiz_native_callback"
+ORDER_CONTEXT_WAIT_SECONDS = 0.7
 EMPTY_VALUES = (None, "", [], {})
 
 
@@ -1911,6 +1913,14 @@ class StateDB:
                 return False
             payload = json.loads(row["payload"])
             merged = merge_events(payload, enrichment)
+            info = enrichment.get("order_info", {})
+            if info.get("bridge_capture_mode") == NATIVE_ORDER_CAPTURE:
+                for field in ("order_info", "order_context", "context_enrich", "local_context_lookup"):
+                    if field in enrichment:
+                        merged[field] = enrichment[field]
+                for field in ("recent_orders", "orders", "order_id"):
+                    if field in merged or field in enrichment:
+                        merged[field] = enrichment.get(field, info.get(field))
             merged["event_id"] = event_id
             encoded = json_text(merged)
             revision = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -1923,7 +1933,8 @@ class StateDB:
             connection.execute(
                 """
                 UPDATE brain_events
-                SET revision=?,status='pending',attempts=0,last_error='',updated_at=?,delivered_at=NULL
+                SET revision=?,status=CASE WHEN status='sending' THEN 'sending' ELSE 'pending' END,
+                    attempts=0,last_error='',updated_at=?,delivered_at=NULL
                 WHERE event_id=? AND revision<>?
                 """,
                 (revision, now, event_id, revision),
@@ -1981,10 +1992,13 @@ class StateDB:
                 """
                 SELECT b.event_id,b.revision,e.payload
                 FROM brain_events b JOIN events e ON e.event_id=b.event_id
-                WHERE b.status='pending' AND b.queued_at<=?
+                WHERE b.status='pending'
+                  AND (b.queued_at<=? OR json_extract(e.payload,'$.order_info.bridge_capture_mode')=?)
+                  AND (b.queued_at<=? OR json_extract(e.payload,'$.order_info.fetch_status') IS NOT 'pending')
                 ORDER BY b.queued_at LIMIT ?
                 """,
-                (cutoff, max(1, min(limit, 100))),
+                (cutoff, NATIVE_ORDER_CAPTURE, time.time() - ORDER_CONTEXT_WAIT_SECONDS,
+                 max(1, min(limit, 100))),
             ).fetchall()
             if rows:
                 placeholders = ",".join("?" for _ in rows)
@@ -2013,6 +2027,12 @@ class StateDB:
             for row in rows:
                 event_id = str(row["event_id"])
                 revision = str(row["revision"])
+                # Release a newer revision only after the in-flight upload finishes.
+                connection.execute(
+                    "UPDATE brain_events SET status='pending',updated_at=? "
+                    "WHERE event_id=? AND revision<>? AND status='sending'",
+                    (now, event_id, revision),
+                )
                 if event_id in committed:
                     connection.execute(
                         """
@@ -2911,7 +2931,8 @@ class BrainConnector:
         payload = self.request("POST", "/api/bridge/v1/heartbeat", {
             "agent_id": self.agent_id(),
             "agent_name": str(self.app.config.get("brain_agent_name") or "千牛本机工位"),
-            "status": status,
+            "client_version": VERSION,
+            "status": {**status, "client_version": VERSION},
         })
         with self.lock:
             self.last_heartbeat_at = time.time()
@@ -3659,6 +3680,7 @@ class BrainConnector:
                 "shop_id": str(event.get("shop_id") or self.account_shop_id(account)),
                 "agent_id": self.agent_id(),
                 "captured_at": float(captured_at or time.time()),
+                "client_version": VERSION,
             })
             for item in supplemental:
                 snapshot = normalize_event(item)
@@ -3666,7 +3688,10 @@ class BrainConnector:
                     continue
                 if snapshot['event_id'] in primary_ids or snapshot['event_id'] in history_ids:
                     continue
-                snapshot.update(shop_id=event['shop_id'], agent_id=event['agent_id'], captured_at=event['captured_at'])
+                snapshot.update(
+                    shop_id=event['shop_id'], agent_id=event['agent_id'],
+                    captured_at=event['captured_at'], client_version=VERSION,
+                )
                 history_ids.add(snapshot['event_id'])
                 events.append(snapshot)
             events.append(event)
@@ -3753,6 +3778,8 @@ class BrainConnector:
         for row, event in zip(allowed_rows, primary_events):
             ack = ack_by_id.get(str(row["event_id"])) or {}
             ack_status = str(ack.get("status") or "")
+            if ack_status == "context_updated":
+                continue
             if ack_status in {"rejected", "error", "ignored", "context_traced"}:
                 if ack_status == "rejected":
                     error = ack.get("error") if isinstance(ack.get("error"), dict) else {}
@@ -3899,7 +3926,7 @@ class BrainConnector:
             )
             if not rows:
                 # 空转：短暂挂起，enqueue_brain_event 会 set(event_wakeup)。
-                wakeup.wait(0.2)
+                wakeup.wait(0.05)
                 wakeup.clear()
                 continue
             try:
@@ -4069,7 +4096,7 @@ class BrowserServer:
 
     def execute(
         self, expression: str, timeout: float = 3.0, *, result_filter: Any = None,
-        raise_on_no_match: bool = False,
+        raise_on_no_match: bool = False, prefer: Any = None,
     ) -> Any:
         request_id = uuid.uuid4().hex
         with self.connection_lock:
@@ -4100,6 +4127,8 @@ class BrowserServer:
                 raise RuntimeError("Qianniu browser command could not be sent")
             deadline = time.monotonic() + timeout
             last_error: RuntimeError | None = None
+            best_value = None
+            best_rank = 0
             for _ in range(sent):
                 try:
                     response = response_queue.get(timeout=max(0.0, deadline - time.monotonic()))
@@ -4114,8 +4143,17 @@ class BrowserServer:
                     continue
                 value = response.get("value")
                 if result_filter is None or result_filter(value):
-                    return value
+                    if prefer is None:
+                        return value
+                    rank = prefer(value)
+                    if rank == 3:
+                        return value
+                    if rank > best_rank:
+                        best_value, best_rank = value, rank
+                    continue
                 last_error = RuntimeError("Qianniu browser response did not match the requested capability")
+            if best_rank:
+                return best_value
             if raise_on_no_match:
                 raise last_error or RuntimeError("Qianniu browser returned no matching response")
             if result_filter is None and last_error is not None:
@@ -4500,6 +4538,7 @@ class ContextEnricher:
         self.lock = threading.RLock()
         self.queued: set[str] = set()
         self.thread = threading.Thread(target=self.run, name="context-enrich", daemon=True)
+        self.buyer_locks = [threading.Lock() for _ in range(64)]
         self.requests = 0
         self.successes = 0
         self.skipped = 0
@@ -4513,10 +4552,12 @@ class ContextEnricher:
         self.last_buyer_encrypt_id = ""
         self.order_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self.shop_cache: dict[str, dict[str, Any]] = {}
-        self.context_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self.context_cache: dict[tuple[str, str, bool], dict[str, Any]] = {}
 
     def start(self) -> None:
         self.thread.start()
+        for index in range(1, 4):
+            threading.Thread(target=self.run, name=f"context-enrich-{index}", daemon=True).start()
 
     @staticmethod
     def buyer_encrypt_id(event: dict[str, Any]) -> str:
@@ -4547,11 +4588,15 @@ class ContextEnricher:
     def enqueue(self, event_id: str, event: dict[str, Any]) -> None:
         with self.lock:
             self.enqueue_calls += 1
+        native = event.get("capture_mode") == NATIVE_ORDER_CAPTURE
+        db = getattr(self.app, "db", None)
         if not self.app.config.get("context_enrich_enabled", True):
+            if native and db is not None:
+                db.enrich_event(event_id, self.native_order_state("failed", "context_enrich_disabled"))
             self._record_skip("disabled")
             return
         role = str(event.get("role") or "user").strip().lower()
-        if role not in {"user", "buyer", "customer"} and not tmall_guard_scope(event.get("account")):
+        if role not in {"user", "buyer", "customer"} and not tmall_guard_scope(event.get("account")) and not (native and role == "system"):
             self._record_skip("role_filtered")
             return
         encrypt_id = self.buyer_encrypt_id(event)
@@ -4561,20 +4606,46 @@ class ContextEnricher:
             self._record_skip("missing_buyer_encrypt_id")
             # Persist the reason before ingestion queues the event for upload.
             # Absence of a lookup must never look like evidence of no orders.
-            db = getattr(self.app, "db", None)
             if db is not None:
-                db.enrich_event(event_id, {"context_enrich": {
+                enrichment = self.native_order_state("failed", "missing_buyer_encrypt_id") if native else {}
+                enrichment["context_enrich"] = {
                     "ok": False, "status": "error_unknown",
                     "error": "missing_buyer_encrypt_id", "retry_count": 0,
                     "provider": "qianniu_standalone_mtop", "build_hash": BUILD_HASH,
                     "mtop_api": self.ORDER_METHOD, "trace_id": uuid.uuid4().hex,
-                }})
+                }
+                db.enrich_event(event_id, enrichment)
             return
+        if native and db is not None:
+            account = str(event.get("account") or "").strip()
+            order_id = self.event_order_id(event)
+            cached = self.cached_context(self.context_cache_key(account, encrypt_id, order_id, True))
+            if cached is not None:
+                db.enrich_event(event_id, cached)
+                self._record_skip("snapshot_cache")
+                return
         with self.lock:
             if event_id in self.queued:
                 self._record_skip("already_queued")
                 return
             self.queued.add(event_id)
+        if native:
+            current = ((db.event_payload(event_id) or {}).get("order_info") or {}) if db is not None else {}
+            has_context = current.get("context_received") is True
+            if db is not None and not has_context:
+                db.enrich_event(event_id, self.native_order_state("pending"))
+            try:
+                self.pending.put_nowait(event_id)
+            except queue.Full:
+                with self.lock:
+                    self.queued.discard(event_id)
+                self._record_skip("queue_full")
+                if db is not None and not has_context:
+                    db.enrich_event(event_id, self.native_order_state("failed", "context_queue_full"))
+            else:
+                with self.lock:
+                    self.enqueued += 1
+            return
         # Bound memory without dropping enrichment: a full queue applies
         # backpressure while the original message remains durable in SQLite.
         while True:
@@ -4590,6 +4661,17 @@ class ContextEnricher:
                         self.queued.discard(event_id)
                     self._record_skip("stopped")
                     return
+
+    @staticmethod
+    def native_order_state(status: str, error: str = "") -> dict[str, Any]:
+        info = {
+            "bridge_capture_mode": NATIVE_ORDER_CAPTURE,
+            "context_received": False,
+            "fetch_status": status,
+        }
+        if error:
+            info["fetch_error"] = error
+        return {"order_info": info, "order_context": dict(info)}
 
     def _record_skip(self, reason: str) -> None:
         with self.lock:
@@ -4796,18 +4878,35 @@ class ContextEnricher:
                     return output
         return output
 
-    def fetch(self, encrypt_id: str, biz_order_id: str = "", account: str = "", nick: str = "", buyer_id: str = "") -> dict[str, Any]:
+    @staticmethod
+    def context_cache_key(
+        account: str, encrypt_id: str, order_id: str, native: bool,
+    ) -> tuple[str, str, bool]:
+        if order_id and (native or tmall_guard_scope(account)):
+            encrypt_id = f"{encrypt_id}|{order_id}"
+        return account, encrypt_id, native
+
+    def cached_context(self, key: tuple[str, str, bool]) -> dict[str, Any] | None:
+        with self.lock:
+            entry = self.context_cache.get(key)
+            if entry and time.monotonic() < entry["expires"]:
+                result = deepcopy(entry["value"])
+                result["context_enrich"]["snapshot_cache"] = True
+                return result
+        return None
+
+    def fetch(
+        self, encrypt_id: str, biz_order_id: str = "", account: str = "",
+        nick: str = "", buyer_id: str = "", *, native: bool = False,
+    ) -> dict[str, Any]:
         account = str(account or "").strip()
-        cache_key = (account, encrypt_id + ("|" + biz_order_id if tmall_guard_scope(account) and biz_order_id else ""))
-        if tmall_guard_scope(account):
-            # Transfer/history bursts share one buyer lookup, while every raw
-            # platform event is still persisted and uploaded independently.
-            with self.lock:
-                cached = self.context_cache.get(cache_key)
-                if cached and time.monotonic() < cached["expires"]:
-                    result = deepcopy(cached["value"])
-                    result["context_enrich"]["snapshot_cache"] = True
-                    return result
+        guarded = tmall_guard_scope(account)
+        snapshot_key = self.context_cache_key(account, encrypt_id, biz_order_id, native)
+        cache_key = snapshot_key[:2]
+        if guarded or native:
+            cached = self.cached_context(snapshot_key)
+            if cached is not None:
+                return cached
         attempts: list[dict[str, Any]] = []
         found: dict[str, Any] | None = None
         # 店铺信息在会话期间基本不变：命中缓存就不再重复调用 MTop，只做一次。
@@ -4825,6 +4924,7 @@ class ContextEnricher:
                     encrypt_id, biz_order_id,
                     include_shop and attempt == 0,
                     include_history and attempt == 0,
+                    **({"native": True} if native else {}),
                 )
             except Exception as error:
                 lookup_failed = True
@@ -4837,15 +4937,18 @@ class ContextEnricher:
                     "orders_ok": False, "errors": [str(error)[:500]],
                     "raw_context": {}, "ret_code": "", "raw_order_count": 0,
                 }
-            if tmall_guard_scope(account) and not lookup_failed:
+            if (guarded or native) and not lookup_failed:
                 # Invocation success does not prove MTop business success or
                 # an understood empty-order response. Preserve evidence below.
                 raw_orders = snapshot.get("raw_context", {}).get("orders")
                 code = self._mtop_ret_code(raw_orders)
                 lists = self.collect_lists(raw_orders, {"orders", "orderList", "list"})
-                if (code and not all(part.strip().startswith("SUCCESS") for part in code.split(","))) or not lists:
+                success = self._order_success(raw_orders)
+                if ((native or code) and not success) or not lists or (
+                    native and any(lists) and not snapshot["orders"]
+                ):
                     snapshot["orders_ok"] = False
-                    snapshot["errors"].append(code or "unrecognized_order_response")
+                    snapshot["errors"].append(code if code and not success else "unrecognized_order_response")
             attempts.append(snapshot)
             if attempt == 0:
                 shop = dict(snapshot.get("shop") or {}) or dict(cached_shop or {})
@@ -4853,12 +4956,14 @@ class ContextEnricher:
             if snapshot["orders_ok"] and snapshot["orders"]:
                 found = snapshot
                 break
-            if channel_unavailable:
+            if native and snapshot["orders_ok"]:
+                break
+            if channel_unavailable and not native:
                 # Repeating the same script cannot create an SDK or reconnect
                 # a page. A later event can try again after the short cache TTL.
                 break
             if attempt < self.EMPTY_ORDER_RETRIES:
-                time.sleep(min(0.6, 0.15 * (attempt + 1)))
+                time.sleep((1.0, 3.0)[attempt] if native else 0.15 * (attempt + 1))
         if shop and account:
             self._remember_shop(account, shop)
 
@@ -4870,7 +4975,7 @@ class ContextEnricher:
             self._remember_order(cache_key, orders)
         else:
             status = "confirmed_empty" if (attempts and attempts[-1]["orders_ok"]) else "error_unknown"
-            cached = self._cached_order(cache_key) if status == "confirmed_empty" else None
+            cached = self._cached_order(cache_key) if status == "confirmed_empty" and not native else None
             if cached is not None:
                 orders = cached
                 items = list(attempts[-1]["items"]) if attempts else []
@@ -4885,7 +4990,7 @@ class ContextEnricher:
         # 自己渲染接待列表时会调 reception.detail.get 并写进 app.log。
         # 这里做兜底，保证 AI 侧也能拿到订单上下文。
         native_source = ""
-        if not orders:
+        if not orders and not native:
             native_log = getattr(self.app, "native_orders", None)
             if native_log is not None:
                 native_rows = native_log.orders_for(encrypt_id, nick=nick) or native_log.orders_for(buyer_id, nick=nick)
@@ -4947,7 +5052,7 @@ class ContextEnricher:
             "order_count": len(orders),
             "total_order_count": len(orders),
         }
-        if tmall_guard_scope(account):
+        if guarded or native:
             order_info["raw_context"] = {
                 **dict(last_attempt.get("raw_context") or {}),
                 "account": account,
@@ -4957,12 +5062,19 @@ class ContextEnricher:
                 "trace_id": trace_id,
                 "lookup_at_ms": int(time.time() * 1000),
             }
-            # An empty API result is not evidence that this buyer has no order.
-            order_info["empty_response_only"] = status == "confirmed_empty"
+            order_info["empty_response_only"] = status == "confirmed_empty" and not native
+        if native:
+            order_info["bridge_capture_mode"] = NATIVE_ORDER_CAPTURE
+            order_info["fetch_status"] = "succeeded" if ok else "failed"
+            order_info["order_id"] = str(orders[0].get("order_id") or "") if len(orders) == 1 else ""
+            if not ok:
+                order_info["fetch_error"] = errors[:500] or ret_code or "mtop_order_lookup_failed"
+                for field in ("orders", "recent_orders", "order_id", "order_count", "total_order_count"):
+                    order_info.pop(field, None)
         if status != "error_unknown":
             order_info.update({
                 "context_received": True,
-                "no_orders": status == "confirmed_empty" and not tmall_guard_scope(account),
+                "no_orders": status == "confirmed_empty" and (native or not guarded),
                 "ambiguous": len(orders) > 1,
                 "order_status": status,
                 "orders_from_cache": from_cache,
@@ -5030,10 +5142,11 @@ class ContextEnricher:
             enrichment["history_order_count"] = len(history_orders)
             order_info.setdefault("history_order_count", len(history_orders))
             enrichment["order_context"].setdefault("history_order_count", len(history_orders))
-        if tmall_guard_scope(account):
+        if (guarded or native) and (not native or ok):
             with self.lock:
-                self.context_cache[cache_key] = {
-                    "expires": time.monotonic() + (2.0 if status == "error_unknown" else 10.0),
+                ttl = self.ORDER_CACHE_TTL_SECONDS if native else (10.0 if ok else 2.0)
+                self.context_cache[snapshot_key] = {
+                    "expires": time.monotonic() + ttl,
                     "value": deepcopy(enrichment),
                 }
                 while len(self.context_cache) > 512:
@@ -5046,6 +5159,8 @@ class ContextEnricher:
         biz_order_id: str = "",
         include_shop: bool = True,
         include_history: bool = False,
+        *,
+        native: bool = False,
     ) -> dict[str, Any]:
         trace_id = uuid.uuid4().hex
         started = time.perf_counter()
@@ -5095,6 +5210,7 @@ class ContextEnricher:
                     isinstance(value, dict) and isinstance(value.get("orders"), dict)
                 ),
                 raise_on_no_match=True,
+                **({"prefer": self._order_response_rank} if native else {}),
             )
         except RuntimeError as error:
             if str(error) in {
@@ -5146,6 +5262,24 @@ class ContextEnricher:
                 "history_orders": history_result.get("value") if include_history else None,
             },
         }
+
+    @classmethod
+    def _order_response_rank(cls, response: dict[str, Any]) -> int:
+        result = response["orders"]
+        payload = result.get("value")
+        lists = cls.collect_lists(payload, {"orders", "orderList", "list"})
+        if result.get("ok") is not True or not lists or not cls._order_success(payload):
+            return 1
+        if cls.parse_orders(payload):
+            return 3
+        return 1 if any(lists) else 2
+
+    @classmethod
+    def _order_success(cls, payload: Any) -> bool:
+        code = cls._mtop_ret_code(payload)
+        return bool(code) and all(
+            part.split("::", 1)[0].strip() == "SUCCESS" for part in code.split(",")
+        )
 
     @classmethod
     def _raw_order_count(cls, payload: Any) -> int:
@@ -5257,22 +5391,27 @@ class ContextEnricher:
                 account = str(event.get("account") or "").strip()
                 nick = str(event.get("buyer_nick") or event.get("nickname") or "").strip()
                 buyer_id = str(event.get("buyer_id") or "").strip()
-                self.requests += 1
-                enrichment = self.fetch(encrypt_id, biz_order_id, account, nick, buyer_id)
+                with self.lock:
+                    self.requests += 1
+                native = event.get("capture_mode") == NATIVE_ORDER_CAPTURE
+                options = {"native": True} if native else {}
+                buyer_lock = self.buyer_locks[hash((account, encrypt_id)) % len(self.buyer_locks)]
+                with buyer_lock:
+                    enrichment = self.fetch(encrypt_id, biz_order_id, account, nick, buyer_id, **options)
                 self.app.db.enrich_event(event_id, enrichment)
                 status = str(enrichment.get("context_enrich", {}).get("status") or "")
                 with self.lock:
                     self.result_counts[status] = self.result_counts.get(status, 0) + 1
-                if status != "error_unknown":
-                    self.successes += 1
-                    self.last_success_at = time.time()
-                    self.last_error = ""
-                else:
-                    self.last_error = str(
-                        enrichment.get("context_enrich", {}).get("error") or "unknown context error"
-                    )[:500]
-                self.last_event_id = event_id
-                self.last_buyer_encrypt_id = encrypt_id
+                    if status != "error_unknown":
+                        self.successes += 1
+                        self.last_success_at = time.time()
+                        self.last_error = ""
+                    else:
+                        self.last_error = str(
+                            enrichment.get("context_enrich", {}).get("error") or "unknown context error"
+                        )[:500]
+                    self.last_event_id = event_id
+                    self.last_buyer_encrypt_id = encrypt_id
                 brain = getattr(self.app, "brain", None)
                 if brain is not None:
                     brain.wakeup.set()
@@ -5289,6 +5428,7 @@ class ContextEnricher:
                     )
             except Exception as error:
                 self.last_error = str(error)[:500]
+                LOG.warning("Context enrichment failed for event %s: %s", event_id, self.last_error)
             finally:
                 with self.lock:
                     self.queued.discard(event_id)
