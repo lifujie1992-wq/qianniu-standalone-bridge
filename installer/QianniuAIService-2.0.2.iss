@@ -36,7 +36,8 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "autostart"; Description: "登录 Windows 后自动启动客服助手"; GroupDescription: "自动启动："; Flags: unchecked
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "state\*,config.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "state\*,config.json,runtime\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\config.example.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist uninsneveruninstall skipifsourcedoesntexist
 
 [Icons]
